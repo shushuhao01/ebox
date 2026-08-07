@@ -60,4 +60,4 @@ jobs:
           fi
 
       - name: Purge jsDelivr CDN
-        run: curl -s -X POST "https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json" || true
+        run: curl -s "https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json" || true
