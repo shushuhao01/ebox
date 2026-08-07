@@ -1,19 +1,18 @@
 {
-    "latestVersion": "v2.8.0",
-    "latestVersionCode": 20800,
+    "latestVersion": "v2.8.1",
+    "latestVersionCode": 20801,
     "releaseDate": "2026/8/7",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.0/eBox.exe",
-    "downloadSha256": "f89320ec757ad4db20676e4d75c2f10082036d1e073b3c0ec252548104586e9f",
-    "downloadSize": 2590720,
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.1/eBox.exe",
+    "downloadSha256": "a0015474624da2dacebdc015c55876a671e0d0e88a3b53d48d2fd1dd19dd2aa3",
+    "downloadSize": 2596864,
     "changelog": [
-        "eBox v2.8.0 正式版发布",
-        "更新内容",
-        "新增自动升级功能：标题栏红点提示新版本，点击可查看更新日志并一键下载安装",
-        "每 6 小时自动检查一次更新，重启后可自动清理旧版本备份",
-        "优化更新弹窗：展示版本号、发布日期、安装包大小与完整更新日志",
-        "下载完成后二次确认安装，失败自动回滚恢复旧版本",
-        "修复 manifest 解析兼容性（支持标准 JSON 空白格式）",
-        "安装包：eBox.exe（约 2.5 MB）"
+        "修复：网络检查失败时不再误报“已是最新版本”，区分提示",
+        "修复：forceUpdate 强制更新 / 关键修复版本不再允许“以后再说”跳过",
+        "修复：下载更新中关闭窗口不再卡住进程（可中断取消）",
+        "修复：升级成功后自动清理备份文件 .bak",
+        "修复：取消下载立即中断并清理临时文件",
+        "修复：更新失败自动回滚，下次启动提示“上次更新失败”",
+        "体验：更新流程更稳定可靠"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
