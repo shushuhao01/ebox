@@ -53,6 +53,7 @@ eBox_update_v*.exe
 
 # ===== 分发产物（不应入库）=====
 update.json
+!dist/update.json
 releases/
 
 # ===== 密钥文件 =====

@@ -1,0 +1,16 @@
+{
+    "latestVersion": "v2.7.0",
+    "latestVersionCode": 20700,
+    "releaseDate": "2026/8/7",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.7.0/eBox.exe",
+    "downloadSha256": "535e7fdf8c69b73d03e42e34e7916ab6444e9f99450c7750aa45451a9d92a9c8",
+    "downloadSize": 2590720,
+    "changelog": [
+        "项目更名为 eBox（兼容旧版 2Box 数据与注册表）",
+        "新增自动升级机制：标题栏红点提示、SHA-256 校验、一键安装替换",
+        "新增 jsDelivr CDN 分发，支持时间戳破缓存",
+        "移除源码中的 ECDSA 私钥，避免敏感信息泄露"
+    ],
+    "minSkipVersionCode": 0,
+    "forceUpdate": false
+}

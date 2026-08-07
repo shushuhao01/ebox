@@ -1,4 +1,8 @@
 // ReSharper disable CppZeroConstantCanBeReplacedWithNullptr
+module;
+#include <Windows.h>
+#include <winhttp.h>
+#pragma comment(lib, "winhttp.lib")
 export module WinHttp;
 
 import std;

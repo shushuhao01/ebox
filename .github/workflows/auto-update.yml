@@ -1,0 +1,57 @@
+# 自动发布：发布 GitHub Release（上传 eBox.exe + tag vX.Y.Z + 正文每行一条更新日志）后自动：
+#   1. 下载 release 资产 exe
+#   2. 计算 SHA-256 / 文件大小，从 tag 解析版本号，从 release 正文提取 changelog
+#   3. 更新 dist/update.json 并推回 main 分支
+#   4. Purge jsDelivr CDN 缓存（客户端拉取 update.json 走 CDN，不 purge 会拿到旧缓存）
+name: Auto Update Manifest
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  update-manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download release exe
+        run: |
+          mkdir -p release_assets
+          gh release download "${{ github.event.release.tag_name }}" \
+            --pattern "*.exe" --dir release_assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Save release body
+        run: gh api "repos/${{ github.repository }}/releases/tags/${{ github.event.release.tag_name }}" \
+            --jq .body > release_body.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Compute hash & update manifest
+        env:
+          TAG: ${{ github.event.release.tag_name }}
+          PUBLISHED_AT: ${{ github.event.release.published_at }}
+        run: python3 .github/scripts/update_manifest.py release_assets release_body.txt "$TAG" "$PUBLISHED_AT"
+
+      - name: Commit & push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add dist/update.json
+          if git diff --cached --quiet; then
+            echo "manifest unchanged, skip commit"
+          else
+            git commit -m "chore: auto update update.json for ${{ github.event.release.tag_name }}"
+            git push origin main
+          fi
+
+      - name: Purge jsDelivr CDN
+        run: curl -s -X POST "https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json" || true

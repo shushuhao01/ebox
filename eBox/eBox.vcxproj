@@ -49,12 +49,7 @@
     <ClCompile Include="biz\essential_data\EssentialData.ixx" />
     <ClCompile Include="biz\file_redirect\FileRedirect.cpp" />
     <ClCompile Include="biz\file_redirect\FileRedirect.ixx" />
-    <ClCompile Include="biz\http\WinHttp.ixx">
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
-      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
-    </ClCompile>
+    <ClCompile Include="biz\http\WinHttp.ixx" />
     <ClCompile Include="biz\injector\Injector.ixx">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
@@ -65,6 +60,8 @@
     <ClCompile Include="biz\launcher\Launcher.ixx" />
     <ClCompile Include="biz\license\License.cpp" />
     <ClCompile Include="biz\license\License.ixx" />
+    <ClCompile Include="biz\update\Update.cpp" />
+    <ClCompile Include="biz\update\Update.ixx" />
     <ClCompile Include="biz\rpc\RpcServer.cpp" />
     <ClCompile Include="biz\symbols\SymbolLoader.ixx">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>

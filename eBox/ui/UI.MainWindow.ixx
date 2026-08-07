@@ -6,6 +6,7 @@ import UI.Core;
 import UI.Page;
 import UI.Button;
 import Coroutine;
+import biz.Update;
 
 namespace ui
 {
@@ -25,6 +26,7 @@ namespace ui
 	protected:
 		void drawToTryBtn(const RenderContext& renderCtx, Button::EState state) const;
 		void drawToLicenseBtn(const RenderContext& renderCtx, Button::EState state) const;
+		void drawToUpdateBtn(const RenderContext& renderCtx, Button::EState state) const;
 		virtual void onResize(float width, float height) override;
 		virtual void onActivate(WParam wParam, LParam lParam) override;
 		virtual bool onClose() override;
@@ -47,6 +49,14 @@ namespace ui
 		ID2D1Bitmap* getTitleIconBitmap(ID2D1HwndRenderTarget* renderTarget);
 		// coro::LazyTask<void> initSymbols();
 		bool ncBtnHitTest(POINT pt) const;
+
+		// ===== 自动升级 =====
+		void startUpdateCheck();
+		coro::LazyTask<void> checkUpdateTask();
+		void onCheckUpdateDone(biz::update::CheckOutcome outcome);
+		void showUpdateDialog();
+		void startDownloadAndApply(biz::update::UpdateManifest manifest);
+		static HRESULT CALLBACK downloadDlgCallback(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LONG_PTR lpRefData);
 
 	private:
 		template <typename PageType>
@@ -105,7 +115,21 @@ namespace ui
 		float m_captionBtnWidth{};
 		Button m_btnToTray{this};
 		Button m_btnLicense{this};
+		Button m_btnUpdate{this};
 		HWND m_hLicenseTooltip{nullptr};
+		HWND m_hUpdateTooltip{nullptr};
+
+		// ===== 自动升级状态 =====
+		coro::AsyncScope m_updateScope;
+		std::optional<biz::update::UpdateManifest> m_pendingUpdate;  // 有更新时存 manifest
+		bool m_hasUpdate{false};          // 红点是否亮起
+		std::stop_source m_updateTimerStop;  // 6小时周期复检的取消令牌
+
+		// ===== 下载进度（跨线程 atomic，供进度弹窗轮询）=====
+		std::atomic<std::uint64_t> m_dlDownloaded{0};
+		std::atomic<std::uint64_t> m_dlTotal{0};
+		std::atomic<int> m_dlState{0};   // 0=进行中 1=成功 2=失败 3=用户取消
+		std::optional<biz::update::DownloadOutcome> m_dlOutcome;  // 下载完成结果（主线程读）
 	};
 
 	export MainWindow* g_main_wnd{nullptr};

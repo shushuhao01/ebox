@@ -1,6 +1,7 @@
 module;
 #include <Windows.h>
 #include <bcrypt.h>
+#include <winhttp.h>
 #pragma comment(lib, "bcrypt.lib")
 module biz.Update;
 
@@ -355,7 +356,11 @@ namespace biz::update
 			std::vector<std::byte> response = co_await req->request({}, {});
 
 			// 解析 JSON
-			std::string jsonText(response.begin(), response.end());
+			std::string jsonText;
+			if (!response.empty())
+			{
+				jsonText.assign(reinterpret_cast<const char*>(response.data()), response.size());
+			}
 			UpdateManifest manifest;
 			if (!parseManifest(jsonText, manifest))
 			{
@@ -434,7 +439,7 @@ namespace biz::update
 
 			// 共享状态：累计下载字节数（move_only_function 不能拷贝，用 shared_ptr 传递）
 			auto downloaded = std::make_shared<std::atomic<std::uint64_t>>(0);
-			auto total = std::make_shared<std::atomic<std::uint64_t>>(manifest.downloadSize));
+			auto total = std::make_shared<std::atomic<std::uint64_t>>(manifest.downloadSize);
 			auto userCb = std::move(progressCb);
 
 			auto contentLenCb = [total](std::uint64_t len)
@@ -550,8 +555,8 @@ namespace biz::update
 	bool applyUpdate(const std::wstring& downloadedExePath)
 	{
 		namespace fs = std::filesystem;
-		const std::wstring exePath{MainApp::exeFullName()};
-		const std::wstring exeDir{MainApp::exeDir()};
+		const std::wstring exePath{app().exeFullName()};
+		const std::wstring exeDir{app().exeDir()};
 		const std::wstring bakPath = exePath + L".bak";
 		const std::wstring batPath = exeDir + L"\\eBox_updater.bat";
 		const DWORD currentPid = GetCurrentProcessId();
@@ -654,7 +659,7 @@ namespace biz::update
 	void cleanupBackupIfNeeded()
 	{
 		namespace fs = std::filesystem;
-		const std::wstring bakPath{std::wstring{MainApp::exeFullName()} + L".bak"};
+		const std::wstring bakPath{std::wstring{app().exeFullName()} + L".bak"};
 		std::error_code ec;
 		if (fs::exists(bakPath, ec) && !ec)
 		{

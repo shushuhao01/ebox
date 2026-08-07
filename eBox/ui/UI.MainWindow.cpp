@@ -6,6 +6,7 @@ module;
 #endif
 #include <Windows.h>
 #include <tlhelp32.h>
+#include <cstdio>
 #pragma comment(lib, "Comctl32.lib")
 #include <commctrl.h>
 module UI.MainWindow;
@@ -22,6 +23,7 @@ import Scheduler;
 import Biz.Core;
 import UI.Core;
 import biz.License;
+import biz.Update;
 
 namespace ui
 {
@@ -30,6 +32,8 @@ namespace ui
 
 	static constexpr UINT TRAY_ID = 1;
 	static constexpr UINT TRAY_MESSAGE = WM_USER + 9527;
+	// 升级检查协程完成回调（跨线程：IO 线程 → UI 线程）
+	static constexpr UINT WM_UPDATE_CHECK_DONE = WM_USER + 9528;
 
 	MainWindow::MainWindow() : WindowBase({MainApp::appName})
 	{
@@ -76,6 +80,24 @@ namespace ui
 		});
 		m_btnLicense.setDrawCallback(std::bind(&MainWindow::drawToLicenseBtn, this, std::placeholders::_1, std::placeholders::_2));
 
+		// 右上角"更新"按钮：有新版本时亮红点，点击查看更新内容
+		m_btnUpdate.setBackgroundColor(D2D1::ColorF(0, 0.f), Button::EState::Normal);
+		m_btnUpdate.setBackgroundColor(D2D1::ColorF(0, 0.102f), Button::EState::Hover);
+		m_btnUpdate.setBackgroundColor(D2D1::ColorF(0, 0.208f), Button::EState::Active);
+		m_btnUpdate.setOnClick([this] { showUpdateDialog(); });
+		m_btnUpdate.setDrawCallback(std::bind(&MainWindow::drawToUpdateBtn, this, std::placeholders::_1, std::placeholders::_2));
+		m_btnUpdate.setDontDrawDefault(true);
+		// Win32 tooltip：悬浮更新按钮
+		m_hUpdateTooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr,
+		                                   WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+		                                   CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		                                   nativeHandle(), nullptr, GetModuleHandleW(nullptr), nullptr);
+		if (m_hUpdateTooltip)
+		{
+			SendMessageW(m_hUpdateTooltip, TTM_SETMAXTIPWIDTH, 0, 300);
+			SendMessageW(m_hUpdateTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
+		}
+
 		// Win32 tooltip：悬浮授权按钮时显示"授权信息"
 		m_hLicenseTooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr,
 		                                    WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
@@ -107,11 +129,22 @@ namespace ui
 			return;
 		}
 		changePageTo<HomePage>();
+		startUpdateCheck();
+		// 每 6 小时复检一次（调度器周期任务，窗口销毁时 request_stop 取消）
+		app().get_scheduler().addPeriodicTimer(std::chrono::hours(6), [this]
+		{
+			if (nativeHandle())
+			{
+				startUpdateCheck();
+			}
+		}, m_updateTimerStop.get_token());
 #endif
 	}
 
 	MainWindow::~MainWindow()
 	{
+		m_updateTimerStop.request_stop();
+		m_updateScope.join();
 		// 引起MainWindow析构，也即导致main函数中的ui::MainWindow mainWnd析构的情况：
 		// 1、程序式的主动调用destroyWindow, 引起的app().exit()退出消息循环。
 		//		这种情况nativeHandle为空就不能也不需要调用destroyTray了, 因为主动调用destroyWindow引发的onBeforeWindowDestroy中已经destroyTray了
@@ -180,9 +213,10 @@ namespace ui
 			const float captionHeight = m_margins.top - paddingTop;
 			const float titleIconSize = captionHeight * 0.618f;
 
-			// 授权按钮宽度：与最小化按钮等宽
+			// 授权按钮宽度：与最小化按钮等宽；更新按钮同宽
 			const float licenseBtnWidth = toTrayBthWidth;
-			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - 8.f;
+			const float updateBtnWidth = toTrayBthWidth;
+			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - 8.f;
 
 			if (ID2D1Bitmap* bitmap = getTitleIconBitmap(renderTarget))
 			{
@@ -212,6 +246,29 @@ namespace ui
 			m_btnLicense.setBounds(D2D1::Rect(licenseBtnXPos, paddingTop + 1.f, licenseBtnXPos + licenseBtnWidth, m_margins.top));
 			m_btnLicense.setDontDrawDefault(true);
 			m_btnLicense.draw(renderCtx);
+			// 更新按钮（授权按钮左侧）：有新版本时亮红点
+			const float updateBtnXPos = licenseBtnXPos - updateBtnWidth;
+			m_btnUpdate.setBounds(D2D1::Rect(updateBtnXPos, paddingTop + 1.f, updateBtnXPos + updateBtnWidth, m_margins.top));
+			m_btnUpdate.draw(renderCtx);
+			if (m_hUpdateTooltip)
+			{
+				const float d2p = dpiInfo().deviceToPhysical;
+				RECT rcTool{
+					static_cast<LONG>(updateBtnXPos * d2p),
+					static_cast<LONG>((paddingTop + 1.f) * d2p),
+					static_cast<LONG>((updateBtnXPos + updateBtnWidth) * d2p),
+					static_cast<LONG>(m_margins.top * d2p)};
+				TOOLINFOW ti{};
+				ti.cbSize = sizeof(ti);
+				ti.uFlags = TTF_SUBCLASS;
+				ti.hwnd = nativeHandle();
+				ti.uId = 2;
+				ti.rect = rcTool;
+				ti.lpszText = const_cast<LPWSTR>(m_hasUpdate ? L"发现新版本，点击更新" : L"检查更新");
+				SendMessageW(m_hUpdateTooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+				SendMessageW(m_hUpdateTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+				SendMessageW(m_hUpdateTooltip, TTM_UPDATE, 0, 0);
+			}
 			// 更新 tooltip 工具矩形（物理像素）
 			if (m_hLicenseTooltip)
 			{
@@ -356,6 +413,82 @@ namespace ui
 			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
 			DrawTextW(hdc, L"授权", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		SelectObject(hdc, hOld);
+		ReleaseDC(nativeHandle(), hdc);
+	}
+}
+
+	void MainWindow::drawToUpdateBtn(const RenderContext& renderCtx, Button::EState state) const
+	{
+		// draw() 已将坐标系平移到按钮原点，使用本地坐标 (0,0)-(width,height)
+		const float width = m_btnUpdate.getBounds().right - m_btnUpdate.getBounds().left;
+		const float height = m_btnUpdate.getBounds().bottom - m_btnUpdate.getBounds().top;
+
+		if (isCompositionEnabled())
+		{
+			const UniqueComPtr<ID2D1HwndRenderTarget>& renderTarget = renderCtx.renderTarget;
+			const UniqueComPtr<ID2D1SolidColorBrush>& solidBrush = renderCtx.brush;
+			// 悬浮/按下时浅蓝高亮
+			if (state == Button::EState::Hover || state == Button::EState::Active)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 0.12f));
+				renderTarget->FillRoundedRectangle(
+					D2D1::RoundedRect(D2D1::RectF(0.f, 0.f, width, height), 4.f, 4.f),
+					solidBrush);
+			}
+			// 绘制"下载"图标：向下箭头 + 底线（简约线图标）
+			const float cx = width * 0.5f;
+			const float cy = height * 0.5f;
+			const float arrowSize = std::min(width, height) * 0.34f;
+			// 箭头颜色：有更新用主题蓝，无更新用灰色
+			solidBrush->SetColor(m_hasUpdate
+			                     ? D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 1.f)
+			                     : D2D1::ColorF(0.45f, 0.45f, 0.45f, 1.f));
+			// 箭头杆（竖线）
+			renderTarget->DrawLine(
+				D2D1::Point2F(cx, cy - arrowSize * 0.5f),
+				D2D1::Point2F(cx, cy + arrowSize * 0.25f),
+				solidBrush, 1.5f);
+			// 箭头头（V 形左半 + 右半）
+			renderTarget->DrawLine(
+				D2D1::Point2F(cx - arrowSize * 0.35f, cy - arrowSize * 0.05f),
+				D2D1::Point2F(cx, cy + arrowSize * 0.25f),
+				solidBrush, 1.5f);
+			renderTarget->DrawLine(
+				D2D1::Point2F(cx + arrowSize * 0.35f, cy - arrowSize * 0.05f),
+				D2D1::Point2F(cx, cy + arrowSize * 0.25f),
+				solidBrush, 1.5f);
+			// 底线
+			renderTarget->DrawLine(
+				D2D1::Point2F(cx - arrowSize * 0.55f, cy + arrowSize * 0.55f),
+				D2D1::Point2F(cx + arrowSize * 0.55f, cy + arrowSize * 0.55f),
+				solidBrush, 1.5f);
+			// 红点：有更新时显示在右上角
+			if (m_hasUpdate)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0.929f, 0.1176f, 0.1176f, 1.f));  // #ED1E1E
+				const float dotR = std::min(width, height) * 0.13f;
+				renderTarget->FillEllipse(
+					D2D1::Ellipse(D2D1::Point2F(width - dotR - 2.f, dotR + 2.f), dotR, dotR),
+					solidBrush);
+			}
+		}
+		else
+		{
+			const D2D1_RECT_F& bounds = m_btnUpdate.getBounds();
+			HDC hdc = GetWindowDC(nativeHandle());
+			const float deviceToPhysical = dpiInfo().deviceToPhysical;
+			D2D1_RECT_F physicalBounds = D2D1::RectF((bounds.left + m_margins.left) * deviceToPhysical,
+			                                         (bounds.top + m_margins.top) * deviceToPhysical,
+			                                         (bounds.right + m_margins.left) * deviceToPhysical,
+			                                         (bounds.bottom + m_margins.top) * deviceToPhysical);
+			RECT rc{static_cast<LONG>(physicalBounds.left), static_cast<LONG>(physicalBounds.top),
+			        static_cast<LONG>(physicalBounds.right), static_cast<LONG>(physicalBounds.bottom)};
+			SetBkMode(hdc, TRANSPARENT);
+			SetTextColor(hdc, m_hasUpdate ? RGB(0x00, 0x78, 0xd4) : RGB(0x80, 0x80, 0x80));
+			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
+			DrawTextW(hdc, L"↓", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			SelectObject(hdc, hOld);
 			ReleaseDC(nativeHandle(), hdc);
 		}
@@ -592,6 +725,11 @@ namespace ui
 		m_btnLicense.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth, 6 - m_margins.top, toTrayBthXPos, -2.f));
 		m_btnLicense.setDontDrawDefault(true);
 		m_btnLicense.drawImpl(renderContext());
+		// 更新按钮（授权按钮左侧）
+		const float updateBtnWidthNc = toTrayBthWidth;
+		m_btnUpdate.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc, 6 - m_margins.top, toTrayBthXPos - licenseBtnWidth, -2.f));
+		m_btnUpdate.setDontDrawDefault(true);
+		m_btnUpdate.drawImpl(renderContext());
 	}
 
 	void MainWindow::onDropFiles(WParam wParam)
@@ -686,12 +824,18 @@ namespace ui
 					}
 				}
 				else if (id == 3)
-				{
-					// 退出：结束所有环境中的进程并退出
-					killAllEnvProcesses();
-					destroyWindow();
-				}
+			{
+				// 退出：结束所有环境中的进程并退出
+				killAllEnvProcesses();
+				destroyWindow();
 			}
+		}
+		}
+		else if (message == WM_UPDATE_CHECK_DONE)
+		{
+			// IO 线程检查完毕：取出堆上结果，所有权转移到 UI 线程
+			std::unique_ptr<biz::update::CheckOutcome> pOutcome(reinterpret_cast<biz::update::CheckOutcome*>(wParam));
+			onCheckUpdateDone(std::move(*pOutcome));
 		}
 	}
 
@@ -911,6 +1055,230 @@ namespace ui
 		//这里的入参pt是相对于屏幕的
 		ScreenToClient(nativeHandle(), &pt);
 		const D2D1_POINT_2F local = D2D1::Point2F(pt.x * dpiInfo().physicalToDevice, pt.y * dpiInfo().physicalToDevice);
-		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local);
+		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local);
+	}
+
+	// ===== 自动升级实现 =====
+
+	void MainWindow::startUpdateCheck()
+	{
+		m_updateScope.spawn(checkUpdateTask());
+	}
+
+	coro::LazyTask<void> MainWindow::checkUpdateTask()
+	{
+		biz::update::CheckOutcome outcome = co_await biz::update::checkUpdateAsync();
+		// 协程在 IO 线程完成：PostMessage 回 UI 线程（不依赖 scheduler，避免析构死锁）
+		auto* pOutcome = new biz::update::CheckOutcome(std::move(outcome));
+		PostMessageW(nativeHandle(), WM_UPDATE_CHECK_DONE, reinterpret_cast<WPARAM>(pOutcome), 0);
+		co_return;
+	}
+
+	void MainWindow::onCheckUpdateDone(biz::update::CheckOutcome outcome)
+	{
+		if (outcome.result == biz::update::CheckResult::HasUpdate && outcome.manifest.latestVersionCode > 0)
+		{
+			m_pendingUpdate = std::move(outcome.manifest);
+			m_hasUpdate = true;
+			RedrawWindow(nativeHandle(), nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE | RDW_NOINTERNALPAINT | RDW_ERASENOW);
+		}
+		else
+		{
+			// 无更新/失败/已忽略：保持红点熄灭
+			m_hasUpdate = false;
+		}
+	}
+
+	void MainWindow::showUpdateDialog()
+	{
+		if (!m_pendingUpdate)
+		{
+			MessageBoxW(nativeHandle(), L"当前已是最新版本。", MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+			return;
+		}
+		const auto& manifest = *m_pendingUpdate;
+
+		// 组装 changelog 文本
+		std::wstring content;
+		for (const auto& line : manifest.changelog)
+		{
+			content += line;
+			content += L"\r\n";
+		}
+		// 大小显示
+		wchar_t sizeBuf[64] = {};
+		if (manifest.downloadSize > 0)
+		{
+			const double mb = static_cast<double>(manifest.downloadSize) / (1024.0 * 1024.0);
+			swprintf_s(sizeBuf, L"  ·  约 %.1f MB", mb);
+		}
+		const std::wstring mainInstr = L"eBox " + manifest.latestVersion + L" 已发布";
+		const std::wstring windowTitle = std::wstring(MainApp::appName) + L" 更新";
+		const std::wstring contentFull = L"发布日期：" + manifest.releaseDate + sizeBuf +
+		                                 L"\r\n\r\n更新内容：\r\n" + content;
+
+		TASKDIALOGCONFIG config{};
+		config.cbSize = sizeof(config);
+		config.hwndParent = nativeHandle();
+		config.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_USE_COMMAND_LINKS;
+		config.pszWindowTitle = windowTitle.c_str();
+		config.pszMainIcon = TD_INFORMATION_ICON;
+		config.pszMainInstruction = mainInstr.c_str();
+		config.pszContent = contentFull.c_str();
+
+		TASKDIALOG_BUTTON buttons[2];
+		buttons[0].nButtonID = IDOK;
+		buttons[0].pszButtonText = L"立即更新";
+		buttons[1].nButtonID = IDCANCEL;
+		buttons[1].pszButtonText = L"以后再说";
+		config.cButtons = 2;
+		config.pButtons = buttons;
+		config.nDefaultButton = IDOK;
+
+		int nButton = -1;
+		if (FAILED(TaskDialogIndirect(&config, &nButton, nullptr, nullptr)))
+		{
+			// TaskDialog 不可用：回退到 MessageBox
+			const int ret = MessageBoxW(nativeHandle(), (mainInstr + L"\r\n\r\n" + contentFull).c_str(),
+			                           windowTitle.c_str(), MB_YESNO | MB_ICONINFORMATION);
+			nButton = (ret == IDYES) ? IDOK : IDCANCEL;
+		}
+
+		if (nButton == IDOK)
+		{
+			startDownloadAndApply(manifest);
+		}
+		else
+		{
+			// 以后再说：记录忽略此版本，熄灭红点
+			biz::update::ignoreVersion(manifest.latestVersionCode);
+			m_hasUpdate = false;
+			RedrawWindow(nativeHandle(), nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE | RDW_NOINTERNALPAINT | RDW_ERASENOW);
+		}
+	}
+
+	HRESULT CALLBACK MainWindow::downloadDlgCallback(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LONG_PTR lpRefData)
+	{
+		auto* self = reinterpret_cast<MainWindow*>(lpRefData);
+		switch (msg)
+		{
+		case TDN_CREATED:
+			SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_RANGE, 0, MAKELPARAM(0, 100));
+			SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS, 0, 0);
+			SendMessageW(hwnd, TDM_SET_MARQUEE_PROGRESS_BAR, FALSE, 0);
+			break;
+		case TDN_TIMER:
+		{
+			const std::uint64_t dl = self->m_dlDownloaded.load();
+			const std::uint64_t total = self->m_dlTotal.load();
+			if (total > 0)
+			{
+				int pct = static_cast<int>(dl * 100 / total);
+				if (pct > 100) pct = 100;
+				SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS, pct, 0);
+				wchar_t buf[128] = {};
+				const double mbDl = static_cast<double>(dl) / (1024.0 * 1024.0);
+				const double mbTotal = static_cast<double>(total) / (1024.0 * 1024.0);
+				swprintf_s(buf, L"已下载 %.1f / %.1f MB  ·  %d%%", mbDl, mbTotal, pct);
+				SendMessageW(hwnd, TDM_SET_ELEMENT_TEXT, TDE_CONTENT, reinterpret_cast<LPARAM>(buf));
+			}
+			const int state = self->m_dlState.load(std::memory_order_acquire);
+			if (state != 0)
+			{
+				// 下载完成/失败：自动关闭弹窗
+				SendMessageW(hwnd, TDM_CLICK_BUTTON, IDOK, 0);
+			}
+			break;
+		}
+		case TDN_BUTTON_CLICKED:
+			if (wParam == IDCANCEL)
+			{
+				// 用户点取消：仅关闭弹窗（后台下载不强制中断）
+				self->m_dlState.store(3);
+			}
+			break;
+		default:
+			break;
+		}
+		return S_OK;
+	}
+
+	void MainWindow::startDownloadAndApply(biz::update::UpdateManifest manifest)
+	{
+		// 重置下载状态
+		m_dlDownloaded.store(0);
+		m_dlTotal.store(manifest.downloadSize);
+		m_dlState.store(0);
+		m_dlOutcome.reset();
+
+		// 启动后台下载协程（IO 线程）
+		m_updateScope.spawn(([this, manifest]() -> coro::LazyTask<void>
+		{
+			biz::update::DownloadOutcome outcome = co_await biz::update::downloadAndVerifyAsync(
+				manifest,
+				[this](const biz::update::DownloadProgress& p)
+				{
+					m_dlDownloaded.store(p.downloaded);
+					if (p.total > 0) m_dlTotal.store(p.total);
+				});
+			m_dlOutcome = std::move(outcome);
+			m_dlState.store(outcome.result == biz::update::DownloadResult::Success ? 1 : 2,
+			                std::memory_order_release);
+			co_return;
+		})());
+
+		// 显示进度弹窗（模态，由 callback 轮询 atomic 更新）
+		TASKDIALOGCONFIG config{};
+		config.cbSize = sizeof(config);
+		config.hwndParent = nativeHandle();
+		config.dwFlags = TDF_SHOW_PROGRESS_BAR | TDF_CALLBACK_TIMER | TDF_ALLOW_DIALOG_CANCELLATION;
+		config.pszWindowTitle = L"正在下载更新";
+		config.pszMainInstruction = L"正在下载 eBox 更新包...";
+		config.pszContent = L"请耐心等待，下载完成后将自动安装。";
+		config.pfCallback = &MainWindow::downloadDlgCallback;
+		config.lpCallbackData = reinterpret_cast<LONG_PTR>(this);
+		TASKDIALOG_BUTTON cancelBtn{};
+		cancelBtn.nButtonID = IDCANCEL;
+		cancelBtn.pszButtonText = L"取消";
+		config.cButtons = 1;
+		config.pButtons = &cancelBtn;
+		config.nDefaultButton = IDCANCEL;
+
+		int nButton = -1;
+		TaskDialogIndirect(&config, &nButton, nullptr, nullptr);
+
+		// 弹窗关闭：根据状态处理
+		const int state = m_dlState.load();
+		if (state == 1 && m_dlOutcome && m_dlOutcome->result == biz::update::DownloadResult::Success)
+		{
+			// 二次确认安装
+			if (MessageBoxW(nativeHandle(), L"更新下载完成，点击确定开始安装（程序将退出并自动重启）。",
+			                MainApp::appName.data(), MB_OKCANCEL | MB_ICONINFORMATION) == IDOK)
+			{
+				if (biz::update::applyUpdate(m_dlOutcome->filePath))
+				{
+					destroyWindow();  // 退出当前进程，bat 接管覆盖 + 重启
+				}
+				else
+				{
+					MessageBoxW(nativeHandle(), L"启动更新失败，请稍后重试。", MainApp::appName.data(), MB_OK | MB_ICONERROR);
+				}
+			}
+		}
+		else if (state == 3)
+		{
+			// 用户取消：不处理
+		}
+		else
+		{
+			// 失败
+			std::wstring msg = L"下载更新失败。";
+			if (m_dlOutcome && !m_dlOutcome->errorMessage.empty())
+			{
+				msg += L"\r\n";
+				msg += m_dlOutcome->errorMessage;
+			}
+			MessageBoxW(nativeHandle(), msg.c_str(), MainApp::appName.data(), MB_OK | MB_ICONERROR);
+		}
 	}
 }
