@@ -23,7 +23,7 @@ HANDLE login_two_box()
 	__try
 	{
 		const rpc::ClientDefault c;
-		unsigned long long boxHandle = c.login2Box(GetCurrentProcessId(), global::Data::get().envFlag());
+		unsigned long long boxHandle = c.login2EBox(GetCurrentProcessId(), global::Data::get().envFlag());
 		return reinterpret_cast<HANDLE>(boxHandle);
 	}
 	__except (filter_offline_error(RpcExceptionCode()))
@@ -49,10 +49,10 @@ void initialize_global_data(SystemVersionInfo versionInfo, unsigned long long en
 	global::Data::get().initialize(versionInfo, envFlag, envIndex, rootPath);
 }
 
-// 目前虽然处理了2box临时退出的情况, 但是当进程重新登录2box后必定会存在一段时间无法阻止其访问其他env内的窗口（因为其他env内的进程也可能正在登录），这可能会引起问题
-// 从另一方面讲，允许2box临时退出其实没什么必要，唯一的好处是当有进程需要以管理员身份启动子进程时可以通知2box以管理员身份重启并作为父进程启动需要管理员权限的进程。。。没什么必要，目前直接全部强制退出就行，以后再说吧，
-// 所以暂时不允许2Box退出。
-#define ALLOW_2BOX_EXIT 0
+// 目前虽然处理了eBox临时退出的情况, 但是当进程重新登录eBox后必定会存在一段时间无法阻止其访问其他env内的窗口（因为其他env内的进程也可能正在登录），这可能会引起问题
+// 从另一方面讲，允许eBox临时退出其实没什么必要，唯一的好处是当有进程需要以管理员身份启动子进程时可以通知eBox以管理员身份重启并作为父进程启动需要管理员权限的进程。。。没什么必要，目前直接全部强制退出就行，以后再说吧，
+// 所以暂时不允许eBox退出。
+#define ALLOW_EBOX_EXIT 0
 
 void initialize_rpc()
 {
@@ -63,7 +63,7 @@ void initialize_rpc()
 
 		explicit BoxSimpleWatcher(HANDLE boxHandle)
 		{
-#if !ALLOW_2BOX_EXIT
+#if !ALLOW_EBOX_EXIT
 			if (boxHandle == nullptr)
 			{
 				TerminateProcess(GetCurrentProcess(), 0);
@@ -130,7 +130,7 @@ void initialize_rpc()
 					CloseHandle(boxHandle);
 					boxHandle = nullptr;
 				}
-#if !ALLOW_2BOX_EXIT
+#if !ALLOW_EBOX_EXIT
 				TerminateProcess(GetCurrentProcess(), 0);
 #endif
 				std::this_thread::sleep_for(std::chrono::seconds(1));

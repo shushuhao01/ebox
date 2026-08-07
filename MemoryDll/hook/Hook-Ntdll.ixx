@@ -422,9 +422,9 @@ namespace hook
 			}
 			NtClose(tempSrcHandle);
 
-			// 到这里，重定向的文件不存在，但原始文件成功，请求2box去copy源文件过来
+			// 到这里，重定向的文件不存在，但原始文件成功，请求eBox去copy源文件过来
 			// 为什么不直接在这里创建文件并copy?
-			// 因为要考虑多进程架构的软件可能同时都要访问同一个文件，在这里做并发限制比较困难，而且NtCreateFile还被hook了，用不了高阶接口。干脆用2box做
+			// 因为要考虑多进程架构的软件可能同时都要访问同一个文件，在这里做并发限制比较困难，而且NtCreateFile还被hook了，用不了高阶接口。干脆用eBox做
 			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
 
 			// 最终再次尝试重定向位置

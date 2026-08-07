@@ -39,13 +39,17 @@ debug-*.md
 *.tmp
 
 # ===== 运行时数据（绝不能推送到仓库）=====
-/2BoxData/
+/eBoxData/
+/2BoxData/   # 兼容老版本数据目录
 /Env/
 **/Env/
 *.bak
-2Box.exe.bak
-2Box_updater.bat
-2Box_update_v*.exe
+eBox.exe.bak
+2Box.exe.bak          # 兼容老版本备份
+eBox_updater.bat
+2Box_updater.bat     # 兼容老版本
+eBox_update_v*.exe
+2Box_update_v*.exe   # 兼容老版本
 
 # ===== 分发产物（不应入库）=====
 update.json

@@ -112,7 +112,8 @@ namespace global
 		if (lowerPath.contains(L"microsoft")
 			|| lowerPath.contains(L"nvidia")
 			|| lowerPath.contains(L"amd")
-			|| lowerPath.contains(LR"(\2box\env\)"))
+			|| lowerPath.contains(LR"(\ebox\env\)")
+			|| lowerPath.contains(LR"(\2box\env\)"))  // 兼容老版本路径
 		{
 			return false;
 		}
@@ -176,14 +177,14 @@ namespace global
 
 	void Data::initializeRegistry()
 	{
-		// 环境虚拟注册表优先使用 2Box 加载到 HKU\2Box_Env_<index> 的共享 hive
-		// （多进程共享 + 随环境持久化）。若 hive 未加载（2Box 加载失败、权限不足、
+		// 环境虚拟注册表优先使用 eBox 加载到 HKU\eBox_Env_<index> 的共享 hive
+		// （多进程共享 + 随环境持久化）。若 hive 未加载（eBox 加载失败、权限不足、
 		// 环境异常等任何原因），回退为 RegLoadAppKeyW 按进程加载同一 hive 文件，
 		// 保证进程绝不在注册表初始化阶段被终止——这是稳定性底线。
 		m_appKey = RegKey{
 			[&]()-> HKEY
 			{
-				const std::wstring subKey = std::format(L"2Box_Env_{}", m_envIndex);
+				const std::wstring subKey = std::format(L"eBox_Env_{}", m_envIndex);
 				HKEY hKey = nullptr;
 				if (RegOpenKeyExW(HKEY_USERS, subKey.c_str(), 0, KEY_ALL_ACCESS, &hKey) == ERROR_SUCCESS)
 				{
@@ -229,7 +230,7 @@ namespace global
 
 	void Data::initializeKnownFolderPath()
 	{
-		// 注意：企业微信(以及其他 Chromium/CEF 内核应用)会把登录态/用户数据写到
+		// 注意：QYWX(以及其他 Chromium/CEF 内核应用)会把登录态/用户数据写到
 		// “我的文档\WXWork”(user-data-dir)，因此 FOLDERID_Documents 必须一并重定向，
 		// 否则登录态不会随环境持久化，且多开实例会共享同一份 Web 层数据，存在风控风险。
 		static const std::array rfidArray = {FOLDERID_LocalAppData, FOLDERID_LocalAppDataLow, FOLDERID_RoamingAppData, FOLDERID_SavedGames, FOLDERID_ProgramData, FOLDERID_Documents};
@@ -256,7 +257,7 @@ namespace global
 
 	void Data::initializeMisc()
 	{
-		m_inputSyncMsgId = RegisterWindowMessageW(L"2Box_WM_INPUT_SYNC");
+		m_inputSyncMsgId = RegisterWindowMessageW(L"eBox_WM_INPUT_SYNC");
 		if (!m_inputSyncMsgId)
 		{
 			m_inputSyncMsgId = 9527;

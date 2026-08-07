@@ -72,28 +72,28 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
-    <OutDir>$(SolutionDir)2Box\res\</OutDir>
+    <OutDir>$(SolutionDir)eBox\res\</OutDir>
     <NMakeBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir)</NMakeBuildCommandLine>
     <NMakeReBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Clean</NMakeCleanCommandLine>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
-    <OutDir>$(SolutionDir)2Box\res\</OutDir>
+    <OutDir>$(SolutionDir)eBox\res\</OutDir>
     <NMakeBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir)</NMakeBuildCommandLine>
     <NMakeReBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Clean</NMakeCleanCommandLine>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
-    <OutDir>$(SolutionDir)2Box\res\</OutDir>
+    <OutDir>$(SolutionDir)eBox\res\</OutDir>
     <NMakeBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir)</NMakeBuildCommandLine>
     <NMakeReBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Clean</NMakeCleanCommandLine>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <IntDir>$(SolutionDir)obj\$(ProjectName)\$(Platform)\$(Configuration)\</IntDir>
-    <OutDir>$(SolutionDir)2Box\res\</OutDir>
+    <OutDir>$(SolutionDir)eBox\res\</OutDir>
     <NMakeBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir)</NMakeBuildCommandLine>
     <NMakeReBuildCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Rebuild</NMakeReBuildCommandLine>
     <NMakeCleanCommandLine>msbuild $(SolutionDir)MemoryDll\MemoryDll.vcxproj /p:Configuration=$(Configuration) /p:Platform=$(Platform) /p:SolutionDir=$(SolutionDir) /t:Clean</NMakeCleanCommandLine>

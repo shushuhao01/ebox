@@ -154,8 +154,8 @@ for ($i = 0; $i -lt $count; $i++) {
 }
 foreach ($b in $allBytes) { $bw.Write($b) }
 $bw.Flush()
-[System.IO.File]::WriteAllBytes("d:\Projects\2Box-master\2Box\res\2Box.ico", $ms.ToArray())
+[System.IO.File]::WriteAllBytes("d:\Projects\2Box-master\eBox\res\eBox.ico", $ms.ToArray())
 $bw.Dispose()
 $ms.Dispose()
 
-Write-Host "ICO generated: d:\Projects\2Box-master\2Box\res\2Box.ico"
+Write-Host "ICO generated: d:\Projects\2Box-master\eBox\res\eBox.ico"

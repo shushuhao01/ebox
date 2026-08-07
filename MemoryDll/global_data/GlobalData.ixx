@@ -100,10 +100,10 @@ namespace global
 	export bool is_app_key_name(std::wstring_view fullName)
 	{
 		// 兼容两种环境虚拟注册表形态：
-		//  1. 2Box 加载到 HKU\2Box_Env_<idx> 的共享 hive
+		//  1. eBox 加载到 HKU\eBox_Env_<idx> 的共享 hive
 		//  2. 回退路径 RegLoadAppKeyW 的 \REGISTRY\A\{GUID} 私有 hive
 		// 命中即跳过，避免 hook 对虚拟注册表自身操作造成递归。
-		static constexpr std::wstring_view hkuPrefix(LR"(\REGISTRY\USER\2Box_Env_)");
+		static constexpr std::wstring_view hkuPrefix(LR"(\REGISTRY\USER\eBox_Env_)");
 		static constexpr std::wstring_view appKeyPrefix(LR"(\REGISTRY\A\{)");
 		return fullName.starts_with(hkuPrefix) || fullName.starts_with(appKeyPrefix);
 	}
