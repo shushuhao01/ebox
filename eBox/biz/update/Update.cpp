@@ -139,11 +139,14 @@ namespace biz::update
 		// ===== 极简 JSON 字段提取（仅适配 manifest 固定结构）=====
 		bool extractJsonString(std::string_view json, std::string_view key, std::string& out)
 		{
-			// 查找 "key":"value"
-			const std::string pattern = std::string("\"") + std::string(key) + "\":\"";
+			// 查找 "key":"value"（兼容冒号后空白，如 "key": "value"）
+			const std::string pattern = std::string("\"") + std::string(key) + "\":";
 			const auto pos = json.find(pattern);
 			if (pos == std::string_view::npos) return false;
-			const size_t start = pos + pattern.size();
+			size_t i = pos + pattern.size();
+			while (i < json.size() && (json[i] == ' ' || json[i] == '\t')) ++i;
+			if (i >= json.size() || json[i] != '"') return false;
+			const size_t start = i + 1;
 			const size_t end = json.find('"', start);
 			if (end == std::string_view::npos) return false;
 			out = json.substr(start, end - start);
