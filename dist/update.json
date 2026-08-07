@@ -1,15 +1,19 @@
 {
-    "latestVersion": "v2.7.1",
-    "latestVersionCode": 20701,
+    "latestVersion": "v2.8.0",
+    "latestVersionCode": 20800,
     "releaseDate": "2026/8/7",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.7.1/eBox.exe",
-    "downloadSha256": "535e7fdf8c69b73d03e42e34e7916ab6444e9f99450c7750aa45451a9d92a9c8",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.0/eBox.exe",
+    "downloadSha256": "f89320ec757ad4db20676e4d75c2f10082036d1e073b3c0ec252548104586e9f",
     "downloadSize": 2590720,
     "changelog": [
-        "自动发布 v2.7.1",
-        "测试：自动发布 workflow 全流程验证",
-        "标题栏红点提示 + 更新弹窗",
-        "每 6 小时自动复检"
+        "eBox v2.8.0 正式版发布",
+        "更新内容",
+        "新增自动升级功能：标题栏红点提示新版本，点击可查看更新日志并一键下载安装",
+        "每 6 小时自动检查一次更新，重启后可自动清理旧版本备份",
+        "优化更新弹窗：展示版本号、发布日期、安装包大小与完整更新日志",
+        "下载完成后二次确认安装，失败自动回滚恢复旧版本",
+        "修复 manifest 解析兼容性（支持标准 JSON 空白格式）",
+        "安装包：eBox.exe（约 2.5 MB）"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
