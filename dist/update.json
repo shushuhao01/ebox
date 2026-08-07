@@ -6,9 +6,10 @@
     "downloadSha256": "535e7fdf8c69b73d03e42e34e7916ab6444e9f99450c7750aa45451a9d92a9c8",
     "downloadSize": 2590720,
     "changelog": [
-        "??:???? workflow ?????",
-        "??????? + ????",
-        "? 6 ??????"
+        "自动发布 v2.7.1",
+        "测试：自动发布 workflow 全流程验证",
+        "标题栏红点提示 + 更新弹窗",
+        "每 6 小时自动复检"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
