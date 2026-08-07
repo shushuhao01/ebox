@@ -174,12 +174,12 @@ public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 2;
 	static constexpr int kVerMinor = 8;
-	static constexpr int kVerPatch = 0;
-	static constexpr int kVerCode  = 20800;  // 单调递增数字，用于版本比较
+	static constexpr int kVerPatch = 1;
+	static constexpr int kVerCode  = 20801;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v2.8.0"};
+	static constexpr std::wstring_view appVersion{L"v2.8.1"};
 	static constexpr std::wstring_view appUpdateDate{L"2026/8/7"};
 
 	// ===== 自动升级配置 =====

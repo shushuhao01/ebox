@@ -88,6 +88,9 @@ namespace biz
 		// 获取下载临时文件路径（不创建文件，仅返回路径）
 		export std::wstring getTempDownloadPath(int versionCode);
 
+		// 上次更新失败标志文件路径（存在即表示上次 bat 更新失败已回滚，供启动时提示）
+		export std::wstring getUpdateFailFlagPath();
+
 		// 生成 updater.bat 并启动；本进程应在调用后立即退出
 		// 失败返回 false（不应继续退出，由调用方决定如何处理）
 		export bool applyUpdate(const std::wstring& downloadedExePath);

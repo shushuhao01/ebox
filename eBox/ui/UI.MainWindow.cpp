@@ -42,6 +42,17 @@ namespace ui
 		initWindowPosition();
 		initTitleIcon();
 		initTray();
+		// 升级恢复：清理上次成功升级遗留的 .bak；若上次 bat 更新失败（已回滚）则提示用户
+		biz::update::cleanupBackupIfNeeded();
+		{
+			const std::wstring failFlag = biz::update::getUpdateFailFlagPath();
+			if (GetFileAttributesW(failFlag.c_str()) != INVALID_FILE_ATTRIBUTES)
+			{
+				DeleteFileW(failFlag.c_str());
+				MessageBoxW(nativeHandle(), L"上次更新未能成功完成，已自动恢复原版本，请重试更新。",
+				            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
+			}
+		}
 		reserveRenderers(2, 20);
 		DragAcceptFiles(nativeHandle(), TRUE);
 		ChangeWindowMessageFilterEx(nativeHandle(), WM_DROPFILES, MSGFLT_ALLOW, nullptr);
@@ -143,7 +154,9 @@ namespace ui
 
 	MainWindow::~MainWindow()
 	{
+		// 先停定时器并取消进行中的检查/下载协程，再 join 等待全部协程退出，避免析构阻塞
 		m_updateTimerStop.request_stop();
+		m_dlStopSource.request_stop();
 		m_updateScope.join();
 		// 引起MainWindow析构，也即导致main函数中的ui::MainWindow mainWnd析构的情况：
 		// 1、程序式的主动调用destroyWindow, 引起的app().exit()退出消息循环。
@@ -857,7 +870,7 @@ namespace ui
 
 		m_titleTextHeight = 20.f;
 		m_pTitleLayout.reset();
-		// 标题：eBox v2.8.0   更新时间：2026/8/7   [到期：yyyy-MM-dd]
+		// 标题：eBox v2.8.1   更新时间：2026/8/7   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1067,15 +1080,22 @@ namespace ui
 
 	coro::LazyTask<void> MainWindow::checkUpdateTask()
 	{
+		// 挂接取消令牌：窗口析构 request_stop 时中断进行中的网络拉取，避免 join 阻塞
+		co_await coro::set_cancellation_token(m_updateTimerStop.get_token());
 		biz::update::CheckOutcome outcome = co_await biz::update::checkUpdateAsync();
 		// 协程在 IO 线程完成：PostMessage 回 UI 线程（不依赖 scheduler，避免析构死锁）
 		auto* pOutcome = new biz::update::CheckOutcome(std::move(outcome));
-		PostMessageW(nativeHandle(), WM_UPDATE_CHECK_DONE, reinterpret_cast<WPARAM>(pOutcome), 0);
+		if (!PostMessageW(nativeHandle(), WM_UPDATE_CHECK_DONE, reinterpret_cast<WPARAM>(pOutcome), 0))
+		{
+			delete pOutcome;  // 窗口已销毁：释放堆上结果
+		}
 		co_return;
 	}
 
 	void MainWindow::onCheckUpdateDone(biz::update::CheckOutcome outcome)
 	{
+		// 记录最近一次检查结果：NoUpdate/NetworkError/SkippedThisVersion 时点击更新按钮区分提示
+		m_lastCheckResult = outcome.result;
 		if (outcome.result == biz::update::CheckResult::HasUpdate && outcome.manifest.latestVersionCode > 0)
 		{
 			m_pendingUpdate = std::move(outcome.manifest);
@@ -1093,7 +1113,22 @@ namespace ui
 	{
 		if (!m_pendingUpdate)
 		{
-			MessageBoxW(nativeHandle(), L"当前已是最新版本。", MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+			// 无待安装更新：按最近一次检查结果区分提示，避免网络失败误报"已是最新版本"
+			switch (m_lastCheckResult)
+			{
+			case biz::update::CheckResult::NetworkError:
+				MessageBoxW(nativeHandle(), L"检查更新失败，请检查网络连接后重试。",
+				            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
+				break;
+			case biz::update::CheckResult::SkippedThisVersion:
+				MessageBoxW(nativeHandle(), L"您已选择忽略此版本的更新，有新版本时会再次提示。",
+				            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+				break;
+			default:
+				MessageBoxW(nativeHandle(), L"当前已是最新版本。",
+				            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+				break;
+			}
 			return;
 		}
 		const auto& manifest = *m_pendingUpdate;
@@ -1117,6 +1152,11 @@ namespace ui
 		const std::wstring contentFull = L"发布日期：" + manifest.releaseDate + sizeBuf +
 		                                 L"\r\n\r\n更新内容：\r\n" + content;
 
+		// 是否允许"以后再说"：forceUpdate 或本地版本 <= minSkipVersionCode 时必须更新
+		const bool canSkip = !manifest.forceUpdate &&
+		                     (manifest.minSkipVersionCode <= 0 ||
+		                      MainApp::kVerCode > manifest.minSkipVersionCode);
+
 		TASKDIALOGCONFIG config{};
 		config.cbSize = sizeof(config);
 		config.hwndParent = nativeHandle();
@@ -1126,13 +1166,25 @@ namespace ui
 		config.pszMainInstruction = mainInstr.c_str();
 		config.pszContent = contentFull.c_str();
 
-		TASKDIALOG_BUTTON buttons[2];
-		buttons[0].nButtonID = IDOK;
-		buttons[0].pszButtonText = L"立即更新";
-		buttons[1].nButtonID = IDCANCEL;
-		buttons[1].pszButtonText = L"以后再说";
-		config.cButtons = 2;
-		config.pButtons = buttons;
+		if (canSkip)
+		{
+			TASKDIALOG_BUTTON buttons[2];
+			buttons[0].nButtonID = IDOK;
+			buttons[0].pszButtonText = L"立即更新";
+			buttons[1].nButtonID = IDCANCEL;
+			buttons[1].pszButtonText = L"以后再说";
+			config.cButtons = 2;
+			config.pButtons = buttons;
+		}
+		else
+		{
+			// 强制更新：只提供"立即更新"，不允许忽略
+			TASKDIALOG_BUTTON buttons[1];
+			buttons[0].nButtonID = IDOK;
+			buttons[0].pszButtonText = L"立即更新";
+			config.cButtons = 1;
+			config.pButtons = buttons;
+		}
 		config.nDefaultButton = IDOK;
 
 		int nButton = -1;
@@ -1140,21 +1192,23 @@ namespace ui
 		{
 			// TaskDialog 不可用：回退到 MessageBox
 			const int ret = MessageBoxW(nativeHandle(), (mainInstr + L"\r\n\r\n" + contentFull).c_str(),
-			                           windowTitle.c_str(), MB_YESNO | MB_ICONINFORMATION);
-			nButton = (ret == IDYES) ? IDOK : IDCANCEL;
+			                           windowTitle.c_str(),
+			                           canSkip ? (MB_YESNO | MB_ICONINFORMATION) : (MB_OK | MB_ICONINFORMATION));
+			nButton = (ret == IDYES || ret == IDOK) ? IDOK : IDCANCEL;
 		}
 
 		if (nButton == IDOK)
 		{
 			startDownloadAndApply(manifest);
 		}
-		else
+		else if (canSkip)
 		{
 			// 以后再说：记录忽略此版本，熄灭红点
 			biz::update::ignoreVersion(manifest.latestVersionCode);
 			m_hasUpdate = false;
 			RedrawWindow(nativeHandle(), nullptr, nullptr, RDW_FRAME | RDW_INVALIDATE | RDW_NOINTERNALPAINT | RDW_ERASENOW);
 		}
+		// 强制更新且未点"立即更新"（如按 Esc 关闭）：保持红点，下次点击仍提示
 	}
 
 	HRESULT CALLBACK MainWindow::downloadDlgCallback(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam, LONG_PTR lpRefData)
@@ -1185,16 +1239,21 @@ namespace ui
 			const int state = self->m_dlState.load(std::memory_order_acquire);
 			if (state != 0)
 			{
-				// 下载完成/失败：自动关闭弹窗
-				SendMessageW(hwnd, TDM_CLICK_BUTTON, IDOK, 0);
+				// 下载完成/失败/取消：自动关闭弹窗（此弹窗仅有的按钮是 IDCANCEL）
+				SendMessageW(hwnd, TDM_CLICK_BUTTON, IDCANCEL, 0);
 			}
 			break;
 		}
 		case TDN_BUTTON_CLICKED:
 			if (wParam == IDCANCEL)
 			{
-				// 用户点取消：仅关闭弹窗（后台下载不强制中断）
-				self->m_dlState.store(3);
+				// 仅当下载仍在进行中视为用户取消；完成/失败后的自动关闭（TDM_CLICK_BUTTON）
+				// 也会触发本回调，此时不能覆盖成功/失败状态
+				if (self->m_dlState.load(std::memory_order_acquire) == 0)
+				{
+					self->m_dlStopSource.request_stop();
+					self->m_dlState.store(3);
+				}
 			}
 			break;
 		default:
@@ -1214,6 +1273,8 @@ namespace ui
 		// 启动后台下载协程（IO 线程）
 		m_updateScope.spawn(([this, manifest]() -> coro::LazyTask<void>
 		{
+			// 挂接下载取消令牌：用户点取消/窗口析构时 request_stop，中断网络传输
+			co_await coro::set_cancellation_token(m_dlStopSource.get_token());
 			biz::update::DownloadOutcome outcome = co_await biz::update::downloadAndVerifyAsync(
 				manifest,
 				[this](const biz::update::DownloadProgress& p)
@@ -1221,9 +1282,19 @@ namespace ui
 					m_dlDownloaded.store(p.downloaded);
 					if (p.total > 0) m_dlTotal.store(p.total);
 				});
+			// 用户取消/传输被中断：清理可能残留的临时文件
+			if (m_dlState.load(std::memory_order_acquire) == 3 ||
+			    outcome.result == biz::update::DownloadResult::Cancelled)
+			{
+				DeleteFileW(biz::update::getTempDownloadPath(manifest.latestVersionCode).c_str());
+			}
 			m_dlOutcome = std::move(outcome);
-			m_dlState.store(outcome.result == biz::update::DownloadResult::Success ? 1 : 2,
-			                std::memory_order_release);
+			// 用户取消状态优先：不被协程后续完成覆盖
+			if (m_dlState.load(std::memory_order_acquire) != 3)
+			{
+				m_dlState.store(m_dlOutcome->result == biz::update::DownloadResult::Success ? 1 : 2,
+				                std::memory_order_release);
+			}
 			co_return;
 		})());
 

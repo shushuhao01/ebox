@@ -189,6 +189,9 @@ namespace ms
 			}
 
 			std::stop_token token = co_await coro::get_current_cancellation_token();
+			// 置 hRequest = nullptr 会经 InternetHandle 的 swap 赋值把旧句柄移交临时对象，
+			// 临时对象析构时调用 WinHttpCloseHandle 真正取消挂起的异步传输，
+			// 随后收到 HANDLE_CLOSING 回调，bSucceeded=false 时以 "operation canceled" reject
 			std::stop_callback stopCb{
 				token, [&reqContext]()
 				{

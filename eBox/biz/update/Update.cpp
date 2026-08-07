@@ -387,9 +387,12 @@ namespace biz::update
 			}
 
 			// 查忽略状态：若用户曾忽略此版本且非强制，返回 SkippedThisVersion
+			// forceUpdate 或本地版本 <= minSkipVersionCode 时不允许跳过（如修复关键 bug 的版本）
 			const DWORD ignored = readRegDword(kRegIgnoredVer, 0);
-			if (!manifest.forceUpdate &&
-			    static_cast<int>(ignored) == manifest.latestVersionCode)
+			const bool cannotSkip = manifest.forceUpdate ||
+			                        (manifest.minSkipVersionCode > 0 &&
+			                         MainApp::kVerCode <= manifest.minSkipVersionCode);
+			if (!cannotSkip && static_cast<int>(ignored) == manifest.latestVersionCode)
 			{
 				outcome.result = CheckResult::SkippedThisVersion;
 				co_return outcome;
@@ -463,11 +466,21 @@ namespace biz::update
 		}
 		catch (const std::exception& e)
 		{
-			outcome.errorMessage = utf8ToWstring(e.what());
+			// 取消（WinHttp stop_callback 关闭句柄）时明确返回 Cancelled，便于 UI 清理
+			if (token.stop_requested())
+			{
+				outcome.result = DownloadResult::Cancelled;
+				outcome.errorMessage = L"operation canceled";
+			}
+			else
+			{
+				outcome.errorMessage = utf8ToWstring(e.what());
+			}
 			co_return outcome;
 		}
 		catch (...)
 		{
+			outcome.result = token.stop_requested() ? DownloadResult::Cancelled : DownloadResult::NetworkError;
 			outcome.errorMessage = L"unknown download error";
 			co_return outcome;
 		}
@@ -555,6 +568,13 @@ namespace biz::update
 		       std::to_wstring(versionCode) + L".exe";
 	}
 
+	std::wstring getUpdateFailFlagPath()
+	{
+		wchar_t tempDir[MAX_PATH]{};
+		GetTempPathW(MAX_PATH, tempDir);
+		return std::wstring{tempDir} + L"eBox_update_failed.txt";
+	}
+
 	bool applyUpdate(const std::wstring& downloadedExePath)
 	{
 		namespace fs = std::filesystem;
@@ -562,6 +582,7 @@ namespace biz::update
 		const std::wstring exeDir{app().exeDir()};
 		const std::wstring bakPath = exePath + L".bak";
 		const std::wstring batPath = exeDir + L"\\eBox_updater.bat";
+		const std::wstring failFlagPath = getUpdateFailFlagPath();
 		const DWORD currentPid = GetCurrentProcessId();
 
 		// 校验下载文件存在
@@ -603,12 +624,14 @@ namespace biz::update
 		batContent += L"if errorlevel 1 (\r\n";
 		batContent += L"  :: restore backup on failure\r\n";
 		batContent += L"  copy /Y \"" + bakPath + L"\" \"" + exePath + L"\" >nul 2>&1\r\n";
+		batContent += L"  echo update_failed > \"" + failFlagPath + L"\"\r\n";
 		batContent += L"  start \"\" \"" + exePath + L"\"\r\n";
 		batContent += L"  goto cleanup\r\n";
 		batContent += L")\r\n";
 		batContent += L"\r\n";
 		batContent += L":: launch new version\r\n";
 		batContent += L"start \"\" \"" + exePath + L"\"\r\n";
+		batContent += L"del /f /q \"" + failFlagPath + L"\" >nul 2>&1\r\n";
 		batContent += L"\r\n";
 		batContent += L":cleanup\r\n";
 		batContent += L":: cleanup temp files\r\n";
@@ -619,6 +642,7 @@ namespace biz::update
 		batContent += L":abort\r\n";
 		batContent += L":: timeout: restore backup\r\n";
 		batContent += L"copy /Y \"" + bakPath + L"\" \"" + exePath + L"\" >nul 2>&1\r\n";
+		batContent += L"echo update_failed > \"" + failFlagPath + L"\"\r\n";
 		batContent += L"start \"\" \"" + exePath + L"\"\r\n";
 		batContent += L"del /f /q \"" + batPath + L"\" >nul 2>&1\r\n";
 		batContent += L"exit /b 1\r\n";
