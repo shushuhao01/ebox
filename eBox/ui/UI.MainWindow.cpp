@@ -857,7 +857,7 @@ namespace ui
 
 		m_titleTextHeight = 20.f;
 		m_pTitleLayout.reset();
-		// 标题：eBox v2.7.0   更新时间：2026/8/7   [到期：yyyy-MM-dd]
+		// 标题：eBox v2.8.0   更新时间：2026/8/7   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",

@@ -173,13 +173,13 @@ class MainApp
 public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 2;
-	static constexpr int kVerMinor = 7;
+	static constexpr int kVerMinor = 8;
 	static constexpr int kVerPatch = 0;
-	static constexpr int kVerCode  = 20700;  // 单调递增数字，用于版本比较
+	static constexpr int kVerCode  = 20800;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v2.7.0"};
+	static constexpr std::wstring_view appVersion{L"v2.8.0"};
 	static constexpr std::wstring_view appUpdateDate{L"2026/8/7"};
 
 	// ===== 自动升级配置 =====
@@ -188,7 +188,7 @@ public:
 	static constexpr std::wstring_view kUpdateManifestUrl{
 		L"https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json"
 	};
-	static constexpr std::wstring_view kUpdateUserAgent{L"eBox-Updater/2.7"};
+	static constexpr std::wstring_view kUpdateUserAgent{L"eBox-Updater/2.8"};
 
 	// 授权相关外链（用户提供具体地址后回填；空串时按钮给出提示）
 	static constexpr std::wstring_view kBuyLicenseUrl{L""};  // 购买激活码

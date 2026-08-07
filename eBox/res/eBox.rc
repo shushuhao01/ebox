@@ -72,8 +72,8 @@ IDI_APP_ICON            ICON                    "eBox.ico"
 //
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 2,7,0,20700
- PRODUCTVERSION 2,7,0,20700
+ FILEVERSION 2,8,0,20800
+ PRODUCTVERSION 2,8,0,20800
  FILEFLAGSMASK 0x3fL
 #ifdef _DEBUG
  FILEFLAGS 0x1L
@@ -90,12 +90,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Wei"
             VALUE "FileDescription", "eBox"
-            VALUE "FileVersion", "2.7.0"
+            VALUE "FileVersion", "2.8.0"
             VALUE "InternalName", "eBox.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 Wei.All Rights Reserved."
             VALUE "OriginalFilename", "eBox.exe"
             VALUE "ProductName", "eBox"
-            VALUE "ProductVersion", "2.7.0"
+            VALUE "ProductVersion", "2.8.0"
         END
     END
     BLOCK "VarFileInfo"
