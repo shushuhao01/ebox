@@ -1,0 +1,26 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\Scheduler-TimedQueue.ixx.obj",
+            "outputs": [
+                "D:\\Projects\\2Box-master\\common\\lib\\x64\\common.pdb",
+                "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\",
+                "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\Scheduler-TimedQueue.ixx.ifc"
+            ],
+            "provides": [
+                {
+                    "logical-name": "Scheduler:TimedQueue",
+                    "source-path": "d:\\projects\\2box-master\\common\\scheduler\\scheduler-timedqueue.ixx",
+                    "is-interface": true
+                }
+            ],
+            "requires": [
+                {
+                    "logical-name": "std"
+                }
+            ]
+        }
+    ]
+}

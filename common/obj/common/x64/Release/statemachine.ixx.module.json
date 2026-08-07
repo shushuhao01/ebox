@@ -1,0 +1,26 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\StateMachine.ixx.obj",
+            "outputs": [
+                "D:\\Projects\\2Box-master\\common\\lib\\x64\\common.pdb",
+                "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\",
+                "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\StateMachine.ixx.ifc"
+            ],
+            "provides": [
+                {
+                    "logical-name": "StateMachine",
+                    "source-path": "d:\\projects\\2box-master\\common\\state_machine\\statemachine.ixx",
+                    "is-interface": true
+                }
+            ],
+            "requires": [
+                {
+                    "logical-name": "std"
+                }
+            ]
+        }
+    ]
+}

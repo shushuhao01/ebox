@@ -1,0 +1,23 @@
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "d:\\projects\\2box-master\\common\\coroutine\\coroutine-asyncscope.ixx",
+        "ProvidedModule": "Coroutine:AsyncScope",
+        "Includes": [],
+        "ImportedModules": [
+            {
+                "Name": "std",
+                "BMI": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\microsoft\\STL\\std.ixx.ifc"
+            },
+            {
+                "Name": "Coroutine:Concept",
+                "BMI": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\Coroutine-Concept.ixx.ifc"
+            },
+            {
+                "Name": "Coroutine:PromiseBase",
+                "BMI": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\Coroutine-PromiseBase.ixx.ifc"
+            }
+        ],
+        "ImportedHeaderUnits": []
+    }
+}

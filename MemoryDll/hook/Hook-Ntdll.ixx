@@ -1,0 +1,1150 @@
+// ReSharper disable CppInconsistentNaming
+// ReSharper disable CommentTypo
+module;
+#include <ntstatus.h>
+export module Hook:Ntdll;
+
+import "sys_defs.h";
+import :Core;
+import std;
+import GlobalData;
+import Utility.SystemInfo;
+import RpcClient;
+import DynamicWin32Api;
+
+namespace hook
+{
+	enum class ChangePolicy : std::uint8_t
+	{
+		ForceChange,
+		TryToChange
+	};
+
+	template <auto trampoline, ChangePolicy Policy, typename... Args>
+	NTSTATUS NTAPI ChangeObjNameThenTrampoline(POBJECT_ATTRIBUTES ObjectAttributes, Args&&... args)
+	{
+		if (ObjectAttributes && ObjectAttributes->ObjectName && ObjectAttributes->ObjectName->Buffer && ObjectAttributes->ObjectName->Length)
+		{
+			const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+			std::wstring strNewName = std::format(L"{}{}", std::wstring_view{pOldName->Buffer, pOldName->Length / sizeof(wchar_t)}, global::Data::get().envFlagName());
+			UNICODE_STRING newObjName;
+			newObjName.Buffer = strNewName.data();
+			newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(strNewName.length() * sizeof(wchar_t));
+			ObjectAttributes->ObjectName = &newObjName;
+			const NTSTATUS ret = trampoline(std::forward<Args>(args)...);
+			// restore to old name
+			ObjectAttributes->ObjectName = pOldName;
+			// 如果需要强制改名，则直接返回刚才的结果即可
+			if constexpr (Policy == ChangePolicy::ForceChange)
+			{
+				return ret;
+			}
+			// 如果只是尝试改名
+			else
+			{
+				// 那么如果改名后接口调用失败，则使用原名再试一次
+				if (!NT_SUCCESS(ret))
+				{
+					return trampoline(std::forward<Args>(args)...);
+				}
+				return ret;
+			}
+		}
+		// 匿名对象直接调用原函数即可
+		return trampoline(std::forward<Args>(args)...);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//event
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateEvent(OUT PHANDLE EventHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, IN int EventType, IN BOOLEAN InitialState)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, EventHandle, DesiredAccess, ObjectAttributes, EventType, InitialState);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenEvent(OUT PHANDLE EventHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::TryToChange>(ObjectAttributes, EventHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//mutant
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateMutant(OUT PHANDLE MutantHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, IN BOOLEAN InitialOwner)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, MutantHandle, DesiredAccess, ObjectAttributes, InitialOwner);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenMutant(OUT PHANDLE MutantHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::TryToChange>(ObjectAttributes, MutantHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//section
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateSection(OUT PHANDLE SectionHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes,
+	                               IN PLARGE_INTEGER SectionSize OPTIONAL, IN ULONG Protect, IN ULONG Attributes, IN HANDLE FileHandle)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, SectionHandle, DesiredAccess, ObjectAttributes, SectionSize, Protect, Attributes, FileHandle);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenSection(OUT PHANDLE SectionHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::TryToChange>(ObjectAttributes, SectionHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//semaphore
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateSemaphore(OUT PHANDLE SemaphoreHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, IN LONG InitialCount, IN LONG MaximumCount)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, SemaphoreHandle, DesiredAccess, ObjectAttributes, InitialCount, MaximumCount);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenSemaphore(OUT PHANDLE SemaphoreHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::TryToChange>(ObjectAttributes, SemaphoreHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//timer
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateTimer(OUT PHANDLE TimerHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes, IN int TimerType)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, TimerHandle, DesiredAccess, ObjectAttributes, TimerType);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenTimer(OUT PHANDLE TimerHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::TryToChange>(ObjectAttributes, TimerHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//job
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateJobObject(OUT PHANDLE JobHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, JobHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenJobObject(OUT PHANDLE JobHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::TryToChange>(ObjectAttributes, JobHandle, DesiredAccess, ObjectAttributes);
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//named pipe
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateNamedPipeFile(_Out_ PHANDLE FileHandle, _In_ ULONG DesiredAccess, _In_ POBJECT_ATTRIBUTES ObjectAttributes,
+	                                     _Out_ PIO_STATUS_BLOCK IoStatusBlock, _In_ ULONG ShareAccess, _In_ ULONG CreateDisposition,
+	                                     _In_ ULONG CreateOptions, _In_ ULONG NamedPipeType, _In_ ULONG ReadMode,
+	                                     _In_ ULONG CompletionMode, _In_ ULONG MaximumInstances, _In_ ULONG InboundQuota,
+	                                     _In_ ULONG OutboundQuota, _In_opt_ PLARGE_INTEGER DefaultTimeout)
+	{
+		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, FileHandle, DesiredAccess, ObjectAttributes,
+		                                                                          IoStatusBlock, ShareAccess, CreateDisposition,
+		                                                                          CreateOptions, NamedPipeType, ReadMode,
+		                                                                          CompletionMode, MaximumInstances, InboundQuota,
+		                                                                          OutboundQuota, DefaultTimeout);
+	}
+
+	// enum OBJECT_INFORMATION_CLASS
+	// {
+	// 	ObjectBasicInformation, // q: OBJECT_BASIC_INFORMATION
+	// 	ObjectNameInformation, // q: OBJECT_NAME_INFORMATION
+	// 	ObjectTypeInformation, // q: OBJECT_TYPE_INFORMATION
+	// 	ObjectTypesInformation, // q: OBJECT_TYPES_INFORMATION
+	// 	ObjectHandleFlagInformation, // qs: OBJECT_HANDLE_FLAG_INFORMATION
+	// 	ObjectSessionInformation, // s: void // change object session // (requires SeTcbPrivilege)
+	// 	ObjectSessionObjectInformation, // s: void // change object session // (requires SeTcbPrivilege)
+	// 	ObjectSetRefTraceInformation, // since 25H2
+	// 	MaxObjectInfoClass
+	// };
+	//
+	// struct OBJECT_NAME_INFORMATION
+	// {
+
+	// 	 UNICODE_STRING Name; // The object name (when present) includes a NULL-terminator and all path separators "\" in the name.
+
+	// };
+
+	//
+	// inline win32_api::ApiProxy<utils::make_literal_name<L"ntdll">(), utils::make_literal_name<"NtQueryObject">(), NTSTATUS (NTAPI)(
+	// 	                           _In_opt_ HANDLE h,
+	// 	                           _In_ OBJECT_INFORMATION_CLASS ObjectInformationClass,
+	// 	                           _Out_writes_bytes_opt_(ObjectInformationLength) PVOID ObjectInformation,
+	// 	                           _In_ ULONG ObjectInformationLength,
+	// 	                           _Out_opt_ PULONG ReturnLength)> NtQueryObject;
+	//
+	// std::wstring get_object_name(HANDLE object)
+	// {
+	// 	std::wstring result;
+	// 	if (NtQueryObject)
+	// 	{
+	// 		std::vector<std::byte> buffer;
+	// 		ULONG ReturnLength{0};
+	// 		NtQueryObject(object, ObjectNameInformation, nullptr, 0, &ReturnLength);
+	// 		if (ReturnLength)
+	// 		{
+	// 			buffer.resize(ReturnLength);
+	// 			if (NT_SUCCESS(NtQueryObject(object, ObjectNameInformation, buffer.data(), ReturnLength, nullptr)))
+	// 			{
+	// 				OBJECT_NAME_INFORMATION& info = *reinterpret_cast<OBJECT_NAME_INFORMATION*>(buffer.data());
+	// 				result = std::wstring_view{info.Name.Buffer, info.Name.Length / sizeof(wchar_t)};
+	// 			}
+	// 		}
+	// 	}
+	// 	return result;
+	// }
+
+	// std::wstring get_file_name_by_handle(HANDLE handle)
+	// {
+	// 	std::wstring result;
+	// 	if (const DWORD size = GetFinalPathNameByHandleW(handle, nullptr, 0, 0))
+	// 	{
+	// 		result.resize(size);
+	// 		if (!GetFinalPathNameByHandleW(handle, result.data(), size, 0))
+	// 		{
+	// 			result.clear();
+	// 		}
+	// 	}
+	// 	return result;
+	// }
+
+	inline win32_api::ApiProxy<utils::make_literal_name<L"ntdll">(), utils::make_literal_name<"NtClose">(), NTSTATUS (NTAPI)(_In_ _Post_ptr_invalid_ HANDLE Handle)> NtClose;
+
+	// 通过句柄获取文件/目录的完整路径（格式与 \??\ 前缀一致，便于后续重定向判断）
+	std::wstring get_file_name_by_handle(HANDLE handle)
+	{
+		std::wstring result;
+		if (!handle)
+		{
+			return result;
+		}
+		if (const DWORD size = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED))
+		{
+			result.resize(size);
+			if (GetFinalPathNameByHandleW(handle, result.data(), size, FILE_NAME_NORMALIZED))
+			{
+				// GetFinalPathNameByHandleW 返回 \\?\ 前缀，统一成 \??\ 便于匹配
+				if (result.starts_with(L"\\\\?\\"))
+				{
+					result = std::wstring{L"\\??\\"} + result.substr(4);
+				}
+			}
+			else
+			{
+				result.clear();
+			}
+		}
+		return result;
+	}
+
+	std::wstring_view viewFileObjectName(POBJECT_ATTRIBUTES ObjectAttributes)
+	{
+		do
+		{
+			if (!ObjectAttributes)
+			{
+				break;
+			}
+			if (ObjectAttributes->RootDirectory)
+			{
+				// 需要考虑吗?
+				// std::wcout << std::format(L"====================> {}\n", get_object_name(ObjectAttributes->RootDirectory));
+				break;
+			}
+			if (!ObjectAttributes->ObjectName
+				|| !ObjectAttributes->ObjectName->Buffer
+				|| !ObjectAttributes->ObjectName->Length)
+			{
+				break;
+			}
+			return {ObjectAttributes->ObjectName->Buffer, ObjectAttributes->ObjectName->Length / sizeof(wchar_t)};
+		}
+		while (false);
+		return {};
+	}
+
+	// 环境内目标是否已有"有效"数据（存在且非空）。
+	// 避免把上次运行中断残留的 0 字节文件误判为"已初始化"，
+	// 否则切换主体企业时应用基于空文件继续 → 本地数据加载异常。
+	bool redirect_target_has_data(std::wstring_view redirectPath)
+	{
+		namespace fs = std::filesystem;
+		try
+		{
+			if (redirectPath.starts_with(L"\\??\\"))
+			{
+				redirectPath = redirectPath.substr(4);
+			}
+			std::error_code ec;
+			const auto size = fs::file_size(std::wstring{redirectPath}, ec);
+			return !ec && size > 0;
+		}
+		catch (...)
+		{
+		}
+		return false;
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes,
+	                            OUT PIO_STATUS_BLOCK IoStatusBlock, IN PLARGE_INTEGER AllocationSize OPTIONAL, IN ULONG FileAttributes,
+	                            IN ULONG ShareAccess, IN ULONG CreateDisposition, IN ULONG CreateOptions,
+	                            IN PVOID EaBuffer OPTIONAL, IN ULONG EaLength)
+	{
+		const std::wstring_view filePath = viewFileObjectName(ObjectAttributes);
+		//管道;
+		if (filePath.starts_with(L"\\??\\pipe\\"))
+		{
+			/* \??\pipe\ */
+			std::wstring strNewName = std::format(L"{}{}", filePath, global::Data::get().envFlagName());
+			const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+			UNICODE_STRING newObjName;
+			newObjName.Buffer = strNewName.data();
+			newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(strNewName.length() * sizeof(wchar_t));
+			ObjectAttributes->ObjectName = &newObjName;
+			NTSTATUS ret = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+			                          IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+			                          CreateDisposition, CreateOptions, EaBuffer, EaLength);
+			ObjectAttributes->ObjectName = pOldName;
+			if (!NT_SUCCESS(ret))
+			{
+				ret = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+				                 IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+				                 CreateDisposition, CreateOptions, EaBuffer, EaLength);
+			}
+			return ret;
+		}
+		auto processRedirect = [&]()-> std::optional<NTSTATUS>
+		{
+			std::optional<NTSTATUS> defaultRet = std::nullopt;
+			const bool bIsDir = CreateOptions & FILE_DIRECTORY_FILE;
+			if (!global::Data::get().isInKnownFolderPath(filePath))
+			{
+				return defaultRet;
+			}
+			std::optional<std::wstring> redirectPath = global::Data::get().getRedirectPath(filePath);
+			if (!redirectPath)
+			{
+				return defaultRet;
+			}
+			// 目录不预创建：环境内目录已存在时优先枚举环境内（保证目录枚举与文件打开一致），
+			// 环境内不存在时由下方回退到真实路径枚举（文件访问仍走按需拷贝补齐数据）。
+			// 若这里预创建空目录，FILE_OPEN 会命中空目录导致应用误判"无数据"。
+			if (!bIsDir)
+			{
+				if (!global::ensure_dir_exists(redirectPath.value(), false))
+				{
+					return defaultRet;
+				}
+			}
+			// FILE_CREATE（总是新建）但环境内目标缺失或为空、源机存在同名数据文件时，
+			// 先继承源机数据再以 FILE_OPEN 打开。避免 Chromium/CEF 等应用在首次进入
+			// 新主体企业目录时"创建"出空文件（或复用上次中断残留的空文件），
+			// 造成数据缺失与"本地数据加载异常"。
+			if (CreateDisposition == FILE_CREATE && !bIsDir && !redirect_target_has_data(redirectPath.value()))
+			{
+				// 试探源路径（FILE_OPEN 不创建）
+				HANDLE tempSrcHandle{nullptr};
+				IO_STATUS_BLOCK srcStatusBlock{};
+				const NTSTATUS srcRet = trampoline(&tempSrcHandle, DesiredAccess, ObjectAttributes,
+				                                   &srcStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+				                                   FILE_OPEN, CreateOptions, EaBuffer, EaLength);
+				if (NT_SUCCESS(srcRet))
+				{
+					NtClose(tempSrcHandle);
+					rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+					const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+					UNICODE_STRING newObjName;
+					newObjName.Buffer = redirectPath.value().data();
+					newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(redirectPath.value().length() * sizeof(wchar_t));
+					ObjectAttributes->ObjectName = &newObjName;
+					NTSTATUS ret2 = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+					                           IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+					                           FILE_OPEN, CreateOptions, EaBuffer, EaLength);
+					ObjectAttributes->ObjectName = pOldName;
+					if (NT_SUCCESS(ret2))
+					{
+						return ret2;
+					}
+					// 拷贝/打开失败：退回下方 FILE_CREATE 正常流程（创建空文件）
+				}
+			}
+			const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+			UNICODE_STRING newObjName;
+			newObjName.Buffer = redirectPath.value().data();
+			newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(redirectPath.value().length() * sizeof(wchar_t));
+			HANDLE tempDstHandle{};
+			ObjectAttributes->ObjectName = &newObjName;
+			NTSTATUS ret = trampoline(&tempDstHandle, DesiredAccess, ObjectAttributes,
+			                          IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+			                          CreateDisposition, CreateOptions, EaBuffer, EaLength);
+			ObjectAttributes->ObjectName = pOldName;
+			if (NT_SUCCESS(ret) || CreateDisposition == FILE_CREATE)
+			{
+				*FileHandle = tempDstHandle;
+				return ret;
+			}
+			// 目录：环境内不存在（首次枚举/打开）→ 回退真实路径。
+			// 枚举真实路径可看到源机完整目录列表；应用随后访问其中的文件时，
+			// 由下方按需拷贝链路把环境内数据补齐，保证两者最终一致。
+			if (bIsDir)
+			{
+				defaultRet = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+				                        IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+				                        CreateDisposition, CreateOptions, EaBuffer, EaLength);
+				return defaultRet;
+			}
+			// 不是找不到文件的错误也直接返回
+			if (ret != STATUS_OBJECT_NAME_NOT_FOUND)
+			{
+				return ret;
+			}
+			// 找不到文件， 试试源路径，但是用FILE_OPEN（不允许创建文件）是否可以成功
+			HANDLE tempSrcHandle{nullptr};
+			IO_STATUS_BLOCK srcStatusBlock{};
+			const NTSTATUS srcRet = trampoline(&tempSrcHandle, DesiredAccess, ObjectAttributes,
+			                                   &srcStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+			                                   FILE_OPEN, CreateOptions, EaBuffer, EaLength);
+			// 用源路径尝试都失败了，直接返回
+			if (!NT_SUCCESS(srcRet))
+			{
+				return ret;
+			}
+			NtClose(tempSrcHandle);
+
+			// 到这里，重定向的文件不存在，但原始文件成功，请求2box去copy源文件过来
+			// 为什么不直接在这里创建文件并copy?
+			// 因为要考虑多进程架构的软件可能同时都要访问同一个文件，在这里做并发限制比较困难，而且NtCreateFile还被hook了，用不了高阶接口。干脆用2box做
+			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+
+			// 最终再次尝试重定向位置
+			ObjectAttributes->ObjectName = &newObjName;
+			ret = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+			                 IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+			                 CreateDisposition, CreateOptions, EaBuffer, EaLength);
+			ObjectAttributes->ObjectName = pOldName;
+			return ret;
+		};
+
+		// 符合条件的特定路径重定向
+		if (const std::optional<NTSTATUS> result = processRedirect())
+		{
+			return result.value();
+		}
+		return trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+		                  IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+		                  CreateDisposition, CreateOptions, EaBuffer, EaLength);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtOpenFile(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess,
+	                          IN POBJECT_ATTRIBUTES ObjectAttributes, OUT PIO_STATUS_BLOCK IoStatusBlock,
+	                          IN ULONG ShareAccess, IN ULONG OpenOptions)
+	{
+		const std::wstring_view filePath = viewFileObjectName(ObjectAttributes);
+		auto processRedirect = [&]()-> std::optional<NTSTATUS>
+		{
+			std::optional<NTSTATUS> defaultRet = std::nullopt;
+			const bool bIsDir = OpenOptions & FILE_DIRECTORY_FILE;
+			if (!global::Data::get().isInKnownFolderPath(filePath))
+			{
+				return defaultRet;
+			}
+			std::optional<std::wstring> redirectPath = global::Data::get().getRedirectPath(filePath);
+			if (!redirectPath)
+			{
+				return defaultRet;
+			}
+			if (!bIsDir)
+			{
+				if (!global::ensure_dir_exists(redirectPath.value(), false))
+				{
+					return defaultRet;
+				}
+			}
+			const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+			UNICODE_STRING newObjName;
+			newObjName.Buffer = redirectPath.value().data();
+			newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(redirectPath.value().length() * sizeof(wchar_t));
+			HANDLE tempDstHandle{};
+			ObjectAttributes->ObjectName = &newObjName;
+			NTSTATUS ret = trampoline(&tempDstHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+			ObjectAttributes->ObjectName = pOldName;
+			if (NT_SUCCESS(ret))
+			{
+				*FileHandle = tempDstHandle;
+				return ret;
+			}
+			// 目录：环境内不存在（首次枚举/打开）→ 回退真实路径（文件访问由按需拷贝补齐）
+			if (bIsDir)
+			{
+				defaultRet = trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+				return defaultRet;
+			}
+			// 不是找不到文件的错误也直接返回
+			if (ret != STATUS_OBJECT_NAME_NOT_FOUND)
+			{
+				return ret;
+			}
+			// 源路径是否可以成功
+			HANDLE tempSrcHandle{nullptr};
+			ret = trampoline(&tempSrcHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+			// 用源路径尝试都失败了，直接返回
+			if (!NT_SUCCESS(ret))
+			{
+				return ret;
+			}
+			NtClose(tempSrcHandle);
+
+			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+
+			// 最终再次尝试重定向位置
+			ObjectAttributes->ObjectName = &newObjName;
+			ret = trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+			ObjectAttributes->ObjectName = pOldName;
+			return ret;
+		};
+
+		// 符合条件的特定路径重定向
+		if (const std::optional<NTSTATUS> result = processRedirect())
+		{
+			return result.value();
+		}
+		return trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+	}
+
+	// NtQueryAttributesFile 在win10后貌似不走 ntdll的NtCreateFile， 也hook一下
+	template <auto trampoline>
+	std::optional<NTSTATUS> MyQueryAttributesFile(_In_ POBJECT_ATTRIBUTES ObjectAttributes, _Out_ void* FileInformation)
+	{
+		const std::wstring_view filePath = viewFileObjectName(ObjectAttributes);
+		if (!global::Data::get().isInKnownFolderPath(filePath))
+		{
+			return std::nullopt;
+		}
+		std::optional<std::wstring> redirectPath = global::Data::get().getRedirectPath(filePath);
+		if (!redirectPath)
+		{
+			return std::nullopt;
+		}
+		if (!global::ensure_dir_exists(redirectPath.value(), false))
+		{
+			return std::nullopt;
+		}
+		const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+		UNICODE_STRING newObjName;
+		newObjName.Buffer = redirectPath.value().data();
+		newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(redirectPath.value().length() * sizeof(wchar_t));
+		ObjectAttributes->ObjectName = &newObjName;
+		NTSTATUS ret = trampoline(ObjectAttributes, FileInformation);
+		ObjectAttributes->ObjectName = pOldName;
+		if (NT_SUCCESS(ret))
+		{
+			return ret;
+		}
+
+		// 不是找不到文件的错误也直接返回
+		if (ret != STATUS_OBJECT_NAME_NOT_FOUND)
+		{
+			return ret;
+		}
+		// 源路径是否可以成功
+		ret = trampoline(ObjectAttributes, FileInformation);
+		// 用源路径尝试都失败了，直接返回
+		if (!NT_SUCCESS(ret))
+		{
+			return ret;
+		}
+
+		rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+
+		// 最终再次尝试重定向位置
+		ObjectAttributes->ObjectName = &newObjName;
+		ret = trampoline(ObjectAttributes, FileInformation);
+		ObjectAttributes->ObjectName = pOldName;
+		return ret;
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtQueryAttributesFile(_In_ POBJECT_ATTRIBUTES ObjectAttributes, _Out_ void* FileInformation)
+	{
+		if (const std::optional<NTSTATUS> result = MyQueryAttributesFile<trampoline>(ObjectAttributes, FileInformation))
+		{
+			return result.value();
+		}
+		return trampoline(ObjectAttributes, FileInformation);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtQueryFullAttributesFile(_In_ POBJECT_ATTRIBUTES ObjectAttributes, _Out_ void* FileInformation)
+	{
+		if (const std::optional<NTSTATUS> result = MyQueryAttributesFile<trampoline>(ObjectAttributes, FileInformation))
+		{
+			return result.value();
+		}
+		return trampoline(ObjectAttributes, FileInformation);
+	}
+
+	enum FILE_INFORMATION_CLASS
+	{
+		FileRenameInformation = 10, // s: FILE_RENAME_INFORMATION (requires DELETE) // 10
+		// FileDispositionInformation = 13, // s: FILE_DISPOSITION_INFORMATION (requires DELETE)
+		// FileShortNameInformation = 40, // s: FILE_NAME_INFORMATION (requires DELETE) // 40
+		// FileDispositionInformationEx = 64, // s: FILE_DISPOSITION_INFO_EX (requires DELETE) // since REDSTONE
+		FileRenameInformationEx = 65, // s: FILE_RENAME_INFORMATION_EX (requires DELETE) // since REDSTONE2 (Win10 1607+)
+	};
+
+	struct FILE_RENAME_INFORMATION
+	{
+		BOOLEAN ReplaceIfExists;
+		HANDLE RootDirectory;
+		ULONG FileNameLength;
+		WCHAR FileName[1];
+	};
+
+	struct FILE_RENAME_INFORMATION_EX
+	{
+		BOOLEAN ReplaceIfExists;
+		HANDLE RootDirectory;
+		ULONG FileNameLength;
+		ULONG Flags;
+		WCHAR FileName[1];
+	};
+
+	// 重定向"重命名目标路径"。temp+rename 原子写入在 Win10/11 上 NtCreateFile 拦不到
+	// rename 这一步，必须在这里把目标路径也改到环境内，否则文件会被移出环境。
+	template <auto trampoline>
+	NTSTATUS NTAPI NtSetInformationFile(_In_ HANDLE FileHandle, _Out_ PIO_STATUS_BLOCK IoStatusBlock,
+	                                    _In_reads_bytes_(Length) PVOID FileInformation, _In_ ULONG Length, _In_ FILE_INFORMATION_CLASS FileInformationClass)
+	{
+		if ((FileInformationClass == FileRenameInformation || FileInformationClass == FileRenameInformationEx) && FileInformation && Length)
+		{
+			auto processRedirect = [&]()-> std::optional<NTSTATUS>
+			{
+				FILE_RENAME_INFORMATION& fileInfo = *static_cast<FILE_RENAME_INFORMATION*>(FileInformation);
+				if (!fileInfo.FileNameLength)
+				{
+					return std::nullopt;
+				}
+				// Ex 结构体多一个 Flags 字段，FileName 偏移不同，必须按结构体取路径
+				const WCHAR* pFileName = FileInformationClass == FileRenameInformationEx
+					? reinterpret_cast<const FILE_RENAME_INFORMATION_EX*>(FileInformation)->FileName
+					: fileInfo.FileName;
+				std::wstring filePath{pFileName, fileInfo.FileNameLength / sizeof(wchar_t)};
+				// Chromium/CEF 原子写经常用 RootDirectory(目录句柄)+相对文件名的方式 rename
+				// （如把 Local State~RF*.TMP 换成 Local State）。此前直接跳过导致 rename 目标
+				// 落在原生目录、文件被移出环境。这里解析目录句柄得到完整路径再参与重定向判断。
+				if (fileInfo.RootDirectory)
+				{
+					std::wstring rootDirPath = get_file_name_by_handle(fileInfo.RootDirectory);
+					if (rootDirPath.empty())
+					{
+						return std::nullopt;
+					}
+					if (filePath.starts_with(L'\\'))
+					{
+						filePath = rootDirPath + filePath;
+					}
+					else
+					{
+						filePath = rootDirPath + L"\\" + filePath;
+					}
+				}
+				const std::wstring_view filePathView{filePath};
+				if (!global::Data::get().isInKnownFolderPath(filePathView))
+				{
+					return std::nullopt;
+				}
+				std::optional<std::wstring> redirectPath = global::Data::get().getRedirectPath(filePath);
+				if (!redirectPath)
+				{
+					return std::nullopt;
+				}
+				if (!global::ensure_dir_exists(redirectPath.value(), false))
+				{
+					return std::nullopt;
+				}
+				const ULONG newFileNameLength = static_cast<ULONG>(redirectPath.value().length() * sizeof(wchar_t));
+				const size_t fileNameOffset = FileInformationClass == FileRenameInformationEx
+					? offsetof(FILE_RENAME_INFORMATION_EX, FileName)
+					: offsetof(FILE_RENAME_INFORMATION, FileName);
+				std::vector<std::byte> newFileInfoBuffer(fileNameOffset + newFileNameLength);
+				if (FileInformationClass == FileRenameInformationEx)
+				{
+					const auto& src = *reinterpret_cast<const FILE_RENAME_INFORMATION_EX*>(FileInformation);
+					auto& dst = *reinterpret_cast<FILE_RENAME_INFORMATION_EX*>(newFileInfoBuffer.data());
+					dst.ReplaceIfExists = src.ReplaceIfExists;
+					dst.RootDirectory = nullptr; // 目标已改为绝对路径，必须清空 RootDirectory
+					dst.FileNameLength = newFileNameLength;
+					dst.Flags = src.Flags;
+				}
+				else
+				{
+					const auto& src = *reinterpret_cast<const FILE_RENAME_INFORMATION*>(FileInformation);
+					auto& dst = *reinterpret_cast<FILE_RENAME_INFORMATION*>(newFileInfoBuffer.data());
+					dst.ReplaceIfExists = src.ReplaceIfExists;
+					dst.RootDirectory = nullptr; // 目标已改为绝对路径，必须清空 RootDirectory
+					dst.FileNameLength = newFileNameLength;
+				}
+				memcpy(newFileInfoBuffer.data() + fileNameOffset, redirectPath.value().data(), newFileNameLength);
+				return trampoline(FileHandle, IoStatusBlock, newFileInfoBuffer.data(), static_cast<ULONG>(newFileInfoBuffer.size()), FileInformationClass);
+			};
+			if (const std::optional<NTSTATUS> result = processRedirect())
+			{
+				return result.value();
+			}
+			return trampoline(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
+		}
+		return trampoline(FileHandle, IoStatusBlock, FileInformation, Length, FileInformationClass);
+	}
+
+	// 貌似没什么调用会走 NtDeleteFile ? 
+	// template <auto trampoline>
+	// NTSTATUS NTAPI NtDeleteFile(_In_ POBJECT_ATTRIBUTES ObjectAttributes)
+	// {
+	// 	auto processRedirect = [&]()-> std::optional<NTSTATUS>
+	// 	{
+	// 		const std::wstring_view filePath = viewFileObjectName(ObjectAttributes);
+	// 		if (!global::Data::get().isInKnownFolderPath(filePath))
+	// 		{
+	// 			return std::nullopt;
+	// 		}
+	// 		std::optional<std::wstring> redirectPath = global::Data::get().getRedirectPath(filePath);
+	// 		if (!redirectPath)
+	// 		{
+	// 			return std::nullopt;
+	// 		}
+	// 		const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+	// 		UNICODE_STRING newObjName;
+	// 		newObjName.Buffer = redirectPath.value().data();
+	// 		newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(redirectPath.value().length() * sizeof(wchar_t));
+	// 		ObjectAttributes->ObjectName = &newObjName;
+	// 		NTSTATUS ret = trampoline(ObjectAttributes);
+	// 		ObjectAttributes->ObjectName = pOldName;
+	// 		return ret;
+	// 	};
+	// 	if (const std::optional<NTSTATUS> result = processRedirect())
+	// 	{
+	// 		return result.value();
+	// 	}
+	// 	return trampoline(ObjectAttributes);
+	// }
+
+	// 原子替换（ReplaceFileW → NtReplaceFile）：Chromium/CEF 写 Local State 等文件时
+	// 除了 temp+rename 也常用 ReplaceFileW 原子替换。目标路径同样必须重定向进环境，
+	// 否则文件会落在原生目录（表现为关闭进程后环境内 Local State 消失、原生出现新文件）。
+	// 注意：替换文件(ReplacedObjectAttributes)与目标文件(ObjectAttributes)两个路径都要重定向。
+	template <auto trampoline>
+	NTSTATUS NTAPI NtReplaceFile(_Out_ PHANDLE FileHandle, _In_ ACCESS_MASK DesiredAccess,
+	                             _In_ POBJECT_ATTRIBUTES ObjectAttributes, _In_ POBJECT_ATTRIBUTES ReplacedObjectAttributes,
+	                             _In_ ULONG CreateOptions, _In_ ULONG CreateDisposition,
+	                             _In_ ULONG OpenReparsePoint, _In_opt_ PVOID SecurityQos)
+	{
+		// 依次对两个文件路径做重定向，任一成功都值得尝试
+		auto tryRedirectOne = [&](POBJECT_ATTRIBUTES oa, std::wstring& newNameOut, PUNICODE_STRING& oldNameOut) -> bool
+		{
+			if (!oa)
+			{
+				return false;
+			}
+			const std::wstring_view filePath = viewFileObjectName(oa);
+			if (filePath.empty())
+			{
+				return false;
+			}
+			if (!global::Data::get().isInKnownFolderPath(filePath))
+			{
+				return false;
+			}
+			std::optional<std::wstring> redirectPath = global::Data::get().getRedirectPath(filePath);
+			if (!redirectPath)
+			{
+				return false;
+			}
+			// ReplaceFileW 的目标通常是已存在的文件，重定向位置先确保目录存在
+			if (!global::ensure_dir_exists(redirectPath.value(), false))
+			{
+				return false;
+			}
+			newNameOut = std::move(redirectPath.value());
+			oldNameOut = oa->ObjectName;
+			return true;
+		};
+
+		std::wstring objNewName, replacedNewName;
+		PUNICODE_STRING objOldName = nullptr, replacedOldName = nullptr;
+		UNICODE_STRING newObjName, newReplacedName;
+		bool bObjRedirected = tryRedirectOne(ObjectAttributes, objNewName, objOldName);
+		bool bReplacedRedirected = tryRedirectOne(ReplacedObjectAttributes, replacedNewName, replacedOldName);
+		if (!bObjRedirected && !bReplacedRedirected)
+		{
+			return trampoline(FileHandle, DesiredAccess, ObjectAttributes, ReplacedObjectAttributes,
+			                  CreateOptions, CreateDisposition, OpenReparsePoint, SecurityQos);
+		}
+
+		auto applyRedirect = [](POBJECT_ATTRIBUTES oa, const std::wstring& newName, PUNICODE_STRING oldName, UNICODE_STRING& out) -> POBJECT_ATTRIBUTES
+		{
+			if (!oldName || !oa)
+			{
+				return oa;
+			}
+			out.Buffer = const_cast<wchar_t*>(newName.data());
+			out.Length = out.MaximumLength = static_cast<USHORT>(newName.length() * sizeof(wchar_t));
+			oa->ObjectName = &out;
+			return oa;
+		};
+		applyRedirect(ObjectAttributes, objNewName, objOldName, newObjName);
+		applyRedirect(ReplacedObjectAttributes, replacedNewName, replacedOldName, newReplacedName);
+
+		const NTSTATUS ret = trampoline(FileHandle, DesiredAccess, ObjectAttributes, ReplacedObjectAttributes,
+		                                CreateOptions, CreateDisposition, OpenReparsePoint, SecurityQos);
+		// 恢复原始路径（detour 调用方可能复用该 OBJECT_ATTRIBUTES）
+		if (objOldName)
+		{
+			ObjectAttributes->ObjectName = objOldName;
+		}
+		if (replacedOldName)
+		{
+			ReplacedObjectAttributes->ObjectName = replacedOldName;
+		}
+		return ret;
+	}
+
+	std::unordered_set<std::uint64_t> GetAllProcessInOtherEnv()
+	{
+		std::unordered_set<std::uint64_t> allProc;
+		try
+		{
+			const rpc::ClientDefault c;
+			std::uint64_t pids[rpc::MAX_PID_COUNT]{};
+			std::uint32_t count = rpc::MAX_PID_COUNT;
+			c.getAllProcessIdExclude(global::Data::get().envFlag(), pids, &count);
+			allProc.reserve(count);
+			for (std::uint32_t i = 0; i < count; ++i)
+			{
+				allProc.insert(pids[i]);
+			}
+		}
+		catch (...)
+		{
+		}
+		return allProc;
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtQuerySystemInformation(IN SYSTEM_INFORMATION_CLASS SystemInformationClass, IN OUT PVOID SystemInformation, IN ULONG SystemInformationLength, OUT PULONG ReturnLength OPTIONAL)
+	{
+		const NTSTATUS ret = trampoline(SystemInformationClass, SystemInformation, SystemInformationLength, ReturnLength);
+		if (!NT_SUCCESS(ret) || !SystemInformation)
+		{
+			return ret;
+		}
+
+		if (SystemInformationClass == SystemProcessInformation)
+		{
+			const std::unordered_set<std::uint64_t> allProcInOtherEnv = GetAllProcessInOtherEnv();
+			PSYSTEM_PROCESS_INFORMATION pIndex = static_cast<PSYSTEM_PROCESS_INFORMATION>(SystemInformation);
+			PSYSTEM_PROCESS_INFORMATION pShow = pIndex;
+
+			do
+			{
+				if (pIndex->UniqueProcessId && allProcInOtherEnv.contains(reinterpret_cast<ULONG_PTR>(pIndex->UniqueProcessId)))
+				{
+					if (pIndex->NextEntryOffset)
+					{
+						pShow->NextEntryOffset += pIndex->NextEntryOffset;
+					}
+					else
+					{
+						pShow->NextEntryOffset = 0;
+					}
+				}
+				else
+				{
+					pShow = pIndex;
+				}
+
+				if (pIndex->NextEntryOffset)
+				{
+					pIndex = reinterpret_cast<PSYSTEM_PROCESS_INFORMATION>(reinterpret_cast<char*>(pIndex) + pIndex->NextEntryOffset);
+				}
+				else
+				{
+					pIndex = nullptr;
+				}
+			}
+			while (pIndex);
+		}
+		return ret;
+	}
+
+	//////////////////////////////////////////////////////////////////////////
+	//Reg key
+	typedef enum _KEY_INFORMATION_CLASS
+	{
+		KeyBasicInformation,
+		KeyNodeInformation,
+		KeyFullInformation,
+		KeyNameInformation,
+		KeyCachedInformation,
+		KeyFlagsInformation,
+		KeyVirtualizationInformation,
+		KeyHandleTagsInformation,
+		KeyTrustInformation,
+		KeyLayerInformation,
+		MaxKeyInfoClass
+	} KEY_INFORMATION_CLASS;
+
+	typedef struct _KEY_NAME_INFORMATION
+	{
+		ULONG NameLength;
+		WCHAR Name[1];
+	} KEY_NAME_INFORMATION, *PKEY_NAME_INFORMATION;
+
+	typedef enum _KEY_VALUE_INFORMATION_CLASS
+	{
+		KeyValueBasicInformation,
+		KeyValueFullInformation,
+		KeyValuePartialInformation,
+		KeyValueFullInformationAlign64,
+		KeyValuePartialInformationAlign64,
+		KeyValueLayerInformation,
+		MaxKeyValueInfoClass
+	} KEY_VALUE_INFORMATION_CLASS;
+
+	inline win32_api::ApiProxy<utils::make_literal_name<L"ntdll">(), utils::make_literal_name<"NtQueryKey">(), NTSTATUS (NTAPI)(_In_ HANDLE KeyHandle,
+	                                                                                                                            _In_ KEY_INFORMATION_CLASS KeyInformationClass,
+	                                                                                                                            _Out_writes_bytes_opt_(Length) PVOID KeyInformation,
+	                                                                                                                            _In_ ULONG Length,
+	                                                                                                                            _Out_ PULONG ResultLength)> NtQueryKey;
+
+	std::vector<std::byte> GetKeyNameInformation(HANDLE KeyHandle)
+	{
+		std::vector<std::byte> buffer;
+		if (!KeyHandle)
+		{
+			return buffer;
+		}
+		ULONG size = 0;
+		NtQueryKey(KeyHandle, KeyNameInformation, nullptr, 0, &size);
+		if (size == 0)
+		{
+			return buffer;
+		}
+		buffer.resize(size);
+		if (!NT_SUCCESS(NtQueryKey(KeyHandle, KeyNameInformation, buffer.data(), size, &size)))
+		{
+			buffer.clear();
+			return buffer;
+		}
+		return buffer;
+	}
+
+	std::wstring GetKeyName(HANDLE KeyHandle)
+	{
+		std::wstring fullName;
+		std::vector<std::byte> buffer = GetKeyNameInformation(KeyHandle);
+		if (buffer.empty())
+		{
+			return fullName;
+		}
+		const KEY_NAME_INFORMATION* ni = reinterpret_cast<KEY_NAME_INFORMATION*>(buffer.data());
+		fullName = std::wstring_view{ni->Name, ni->NameLength / sizeof(wchar_t)};
+		return fullName;
+	}
+
+	std::expected<HKEY, LSTATUS> RegCreateKeyExW(_In_ HKEY hKey, _In_opt_ LPCWSTR lpSubKey)
+	{
+		HKEY hResKey{nullptr};
+		LSTATUS status = ::RegCreateKeyExW(hKey, lpSubKey,
+		                                   0, nullptr, 0,
+		                                   KEY_ALL_ACCESS, nullptr, &hResKey, nullptr);
+		if (status == ERROR_SUCCESS)
+		{
+			return std::expected<HKEY, LSTATUS>{hResKey};
+		}
+		return std::unexpected{status};
+	}
+
+	std::expected<HKEY, LSTATUS> RegOpenKeyExW(_In_ HKEY hKey, _In_opt_ LPCWSTR lpSubKey)
+	{
+		HKEY hResKey{nullptr};
+		LSTATUS status = ::RegOpenKeyExW(hKey, lpSubKey, 0, KEY_ALL_ACCESS, &hResKey);
+		if (status == ERROR_SUCCESS)
+		{
+			return std::expected<HKEY, LSTATUS>{hResKey};
+		}
+		return std::unexpected{status};
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtSetValueKey(_In_ HANDLE KeyHandle, _In_ PUNICODE_STRING ValueName, _In_opt_ ULONG TitleIndex,
+	                             _In_ ULONG Type, _In_reads_bytes_opt_(DataSize) PVOID Data, _In_ ULONG DataSize)
+	{
+		// TODO:
+		// 暂时先允许写入真实注册表
+		// 测试发现一些写入如果不写入真实注册表程序会变的很卡，不知道为什么。也许一些系统操作必须写入，其对应的查询又貌似不走NtQueryValueKey
+		// 暂时不研究过滤了，写入也不影响啥，又不是安全软件。
+		const NTSTATUS retStatus = trampoline(KeyHandle, ValueName, TitleIndex, Type, Data, DataSize);
+		if (!NT_SUCCESS(retStatus))
+		{
+			return retStatus;
+		}
+		// 额外往app env key写入，以供后续优先查询，这样每个环境中都有一份自己的虚拟注册表了
+		const std::wstring keyName = GetKeyName(KeyHandle);
+		if (keyName.size() && !global::is_app_key_name(keyName))
+		{
+			const std::expected<HKEY, LSTATUS> result =
+				RegCreateKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
+				.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
+				{
+					const NTSTATUS status = trampoline(hKey, ValueName, TitleIndex, Type, Data, DataSize);
+					RegCloseKey(hKey);
+					if (!NT_SUCCESS(status))
+					{
+						return std::unexpected{status};
+					}
+					return std::expected<HKEY, LSTATUS>{HKEY{}};
+				});
+			// if (result)
+			// {
+			// 	return STATUS_SUCCESS;
+			// }
+		}
+		return retStatus;
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtQueryValueKey(_In_ HANDLE KeyHandle,
+	                               _In_ PUNICODE_STRING ValueName,
+	                               _In_ KEY_VALUE_INFORMATION_CLASS KeyValueInformationClass,
+	                               _Out_writes_bytes_opt_(Length) PVOID KeyValueInformation,
+	                               _In_ ULONG Length,
+	                               _Out_ PULONG ResultLength)
+	{
+		// 优先从app env key查询，查询失败才从真实注册表查
+		const std::wstring keyName = GetKeyName(KeyHandle);
+		if (keyName.size() && !global::is_app_key_name(keyName))
+		{
+			const std::expected<HKEY, LSTATUS> result =
+				RegOpenKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
+				.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
+				{
+					const NTSTATUS status = trampoline(hKey, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+					RegCloseKey(hKey);
+					if (!NT_SUCCESS(status))
+					{
+						return std::unexpected{status};
+					}
+					return std::expected<HKEY, LSTATUS>{HKEY{}};
+				});
+			if (result)
+			{
+				return STATUS_SUCCESS;
+			}
+			// 缓冲区不够不认为是失败，也直接返回。
+			if (result.error() == STATUS_BUFFER_TOO_SMALL || result.error() == STATUS_BUFFER_OVERFLOW)
+			{
+				return result.error();
+			}
+		}
+		return trampoline(KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+	}
+
+	template <auto trampoline>
+	NTSTATUS NTAPI NtQueryMultipleValueKey(_In_ HANDLE KeyHandle,
+	                                       _Inout_updates_(EntryCount) PKEY_VALUE_ENTRY ValueEntries,
+	                                       _In_ ULONG EntryCount,
+	                                       _Out_writes_bytes_(*BufferLength) PVOID ValueBuffer,
+	                                       _Inout_ PULONG BufferLength,
+	                                       _Out_opt_ PULONG RequiredBufferLength)
+	{
+		// 优先从app env key查询，查询失败才从真实注册表查
+		const std::wstring keyName = GetKeyName(KeyHandle);
+		if (keyName.size() && !global::is_app_key_name(keyName))
+		{
+			const std::expected<HKEY, LSTATUS> result =
+				RegOpenKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
+				.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
+				{
+					const NTSTATUS status = trampoline(hKey, ValueEntries, EntryCount, ValueBuffer, BufferLength, RequiredBufferLength);
+					RegCloseKey(hKey);
+					if (!NT_SUCCESS(status))
+					{
+						return std::unexpected{status};
+					}
+					return std::expected<HKEY, LSTATUS>{HKEY{}};
+				});
+			if (result)
+			{
+				return STATUS_SUCCESS;
+			}
+			// 缓冲区不够不认为是失败，也直接返回。
+			if (result.error() == STATUS_BUFFER_TOO_SMALL || result.error() == STATUS_BUFFER_OVERFLOW)
+			{
+				return result.error();
+			}
+		}
+		return trampoline(KeyHandle, ValueEntries, EntryCount, ValueBuffer, BufferLength, RequiredBufferLength);
+	}
+
+	void hook_ntdll()
+	{
+		constexpr auto NTDLL_LIB_NAME = utils::make_literal_name<L"ntdll.dll">();
+		sys_info::SysDllMapHelper ntdllMapped = sys_info::get_ntdll_mapped();
+		void* ntdllMappedAddress = ntdllMapped.memAddress();
+
+#define CREATE_HOOK_BY_NAME(name) \
+		create_hook_by_func_type<NTDLL_LIB_NAME, utils::make_literal_name<#name>(), decltype(name<nullptr>)>().setHookFromGetter([&](auto trampolineConst) \
+		{ \
+			return HookInfo{&name<trampolineConst.value>, ntdllMappedAddress}; \
+		})
+
+		CREATE_HOOK_BY_NAME(NtCreateEvent);
+		CREATE_HOOK_BY_NAME(NtOpenEvent);
+		CREATE_HOOK_BY_NAME(NtCreateMutant);
+		CREATE_HOOK_BY_NAME(NtOpenMutant);
+		CREATE_HOOK_BY_NAME(NtCreateSection);
+		CREATE_HOOK_BY_NAME(NtOpenSection);
+		CREATE_HOOK_BY_NAME(NtCreateSemaphore);
+		CREATE_HOOK_BY_NAME(NtOpenSemaphore);
+		CREATE_HOOK_BY_NAME(NtCreateTimer);
+		CREATE_HOOK_BY_NAME(NtOpenTimer);
+		CREATE_HOOK_BY_NAME(NtCreateJobObject);
+		CREATE_HOOK_BY_NAME(NtOpenJobObject);
+		CREATE_HOOK_BY_NAME(NtCreateNamedPipeFile);
+		CREATE_HOOK_BY_NAME(NtCreateFile);
+		CREATE_HOOK_BY_NAME(NtOpenFile);
+		CREATE_HOOK_BY_NAME(NtQueryAttributesFile);
+		CREATE_HOOK_BY_NAME(NtQueryFullAttributesFile);
+		// 文件重命名(原子写入的 temp+rename)在 Win10/11 上同样需要重定向，
+		// 否则 Chromium/CEF 的 Local State 等文件会被 rename 移出环境到原生目录，
+		// 导致每次启动环境都像全新设备(需要验证码)。所有 Windows 版本一律 hook。
+		CREATE_HOOK_BY_NAME(NtSetInformationFile);
+		// 原子替换(ReplaceFileW → NtReplaceFile)：此 hook 与 WXWork 实测不兼容——
+		// 恢复后 WXWork 启动即秒退（此前 A/B 验证已确认，本次恢复后再次复现秒退）。
+		// 根因：ReplaceFileW 要求 replacement 与 replaced 同卷，且成功后删除 replacement；
+		// 沙箱重定向下两者路径被改到环境内，跨卷/路径语义变化导致内核返回错误，
+		// WXWork 把替换失败视为数据异常 → 启动秒退。
+		// 结论：保持禁用。CEF 写 Local State 的主通道是 temp+rename（NtSetInformationFile
+		// 已重定向），不依赖 NtReplaceFile；禁用后环境内文件不会被移出、不会落在原生目录。
+		// CREATE_HOOK_BY_NAME(NtReplaceFile);
+		// CREATE_HOOK_BY_NAME(NtDeleteFile);
+		CREATE_HOOK_BY_NAME(NtQuerySystemInformation);
+
+		// 简单做一个虚拟注册表：将所有的写入操作都copy一份到自己的环境中，查询优先查询虚拟环境中的，找不到的话再从真实注册表查
+		CREATE_HOOK_BY_NAME(NtSetValueKey);
+		CREATE_HOOK_BY_NAME(NtQueryValueKey);
+		CREATE_HOOK_BY_NAME(NtQueryMultipleValueKey);
+	}
+}

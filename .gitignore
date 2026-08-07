@@ -1,0 +1,73 @@
+# ===== 构建产物 =====
+/obj/
+/bin/
+/lib/
+**/embed_dll/
+*.pdb
+*.idb
+*.user
+*.aps
+*.ipch
+*.iobj
+*.ipdb
+*.tlog
+*.recipe
+*.asm
+common.lib
+common.pdb
+
+# ===== IDE / 编辑器 =====
+/.vs/
+/.idea/
+.vscode/
+*.suo
+*.user
+*.opensdf
+*.sdf
+*.VC.db
+*.VC.opendb
+
+# ===== 临时调试文件 =====
+/.dbg/
+/_icon_tmp/
+/debug-*.md
+debug-*.md
+*.csv
+*.pml
+*.env
+*.log
+*.tmp
+
+# ===== 运行时数据（绝不能推送到仓库）=====
+/2BoxData/
+/Env/
+**/Env/
+*.bak
+2Box.exe.bak
+2Box_updater.bat
+2Box_update_v*.exe
+
+# ===== 分发产物（不应入库）=====
+update.json
+releases/
+
+# ===== 密钥文件 =====
+*.key
+*.pem
+*.pfx
+KeyGen.private
+# License.cpp 真实私钥备份（含完整私钥字节，禁止推送）
+*.private.bak
+License.cpp.private.bak
+
+# ===== KeyGen 激活码生成工具（调用私钥生成激活码，禁止推送到公开仓库）=====
+# License.cpp 中 #ifdef LICENSE_GENERATOR 段的私钥已替换为占位符 0xCC
+# KeyGen 工具编译前需从本地 License.cpp.private.bak 还原真实私钥
+tools/KeyGen/
+
+# ===== 操作系统文件 =====
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store

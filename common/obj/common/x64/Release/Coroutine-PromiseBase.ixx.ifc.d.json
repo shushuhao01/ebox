@@ -1,0 +1,15 @@
+{
+    "Version": "1.2",
+    "Data": {
+        "Source": "d:\\projects\\2box-master\\common\\coroutine\\coroutine-promisebase.ixx",
+        "ProvidedModule": "Coroutine:PromiseBase",
+        "Includes": [],
+        "ImportedModules": [
+            {
+                "Name": "std",
+                "BMI": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\microsoft\\STL\\std.ixx.ifc"
+            }
+        ],
+        "ImportedHeaderUnits": []
+    }
+}

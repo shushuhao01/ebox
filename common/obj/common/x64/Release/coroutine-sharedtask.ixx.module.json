@@ -1,0 +1,32 @@
+{
+    "version": 1,
+    "revision": 0,
+    "rules": [
+        {
+            "primary-output": "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\Coroutine-SharedTask.ixx.obj",
+            "outputs": [
+                "D:\\Projects\\2Box-master\\common\\lib\\x64\\common.pdb",
+                "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\",
+                "D:\\Projects\\2Box-master\\common\\obj\\common\\x64\\Release\\Coroutine-SharedTask.ixx.ifc"
+            ],
+            "provides": [
+                {
+                    "logical-name": "Coroutine:SharedTask",
+                    "source-path": "d:\\projects\\2box-master\\common\\coroutine\\coroutine-sharedtask.ixx",
+                    "is-interface": true
+                }
+            ],
+            "requires": [
+                {
+                    "logical-name": "Coroutine:PromiseBase"
+                },
+                {
+                    "logical-name": "Coroutine:LazyTask"
+                },
+                {
+                    "logical-name": "std"
+                }
+            ]
+        }
+    ]
+}
