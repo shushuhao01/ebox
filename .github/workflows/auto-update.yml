@@ -24,8 +24,15 @@ jobs:
       - name: Download release exe
         run: |
           mkdir -p release_assets
-          gh release download "${{ github.event.release.tag_name }}" \
-            --pattern "*.exe" --dir release_assets
+          # 容忍"先发布后传 exe"的操作：最多等 60 秒直到出现 .exe 资产
+          for i in $(seq 1 20); do
+            gh release download "${{ github.event.release.tag_name }}" \
+              --pattern "*.exe" --dir release_assets && break
+            echo "assets not ready, retry $i/20..."
+            sleep 3
+          done
+          ls -la release_assets
+          [ -n "$(ls release_assets/*.exe 2>/dev/null)" ] || { echo "::error::no exe asset found"; exit 1; }
         env:
           GH_TOKEN: ${{ github.token }}
 
