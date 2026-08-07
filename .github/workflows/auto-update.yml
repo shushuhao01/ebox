@@ -37,8 +37,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
 
       - name: Save release body
-        run: gh api "repos/${{ github.repository }}/releases/tags/${{ github.event.release.tag_name }}" \
-            --jq .body > release_body.txt
+        run: gh api "repos/${{ github.repository }}/releases/tags/${{ github.event.release.tag_name }}" --jq .body > release_body.txt
         env:
           GH_TOKEN: ${{ github.token }}
 
