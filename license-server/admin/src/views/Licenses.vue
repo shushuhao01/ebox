@@ -751,6 +751,37 @@ onMounted(() => {
   margin-bottom: 10px;
 }
 
+/* 快捷时长标签美化：未选中白底+浅边框+深色文字（不再是灰色），选中主色高亮 */
+.chip-wrap :deep(.el-check-tag) {
+  height: 28px;
+  padding: 0 14px;
+  border: 1px solid var(--el-border-color);
+  border-radius: 14px;
+  background: #fff;
+  color: var(--text-main);
+  font-size: 13px;
+  font-weight: normal;
+  line-height: 26px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  user-select: none;
+}
+.chip-wrap :deep(.el-check-tag:hover) {
+  border-color: var(--el-color-primary);
+  color: var(--el-color-primary);
+  background: var(--el-color-primary-light-9);
+}
+.chip-wrap :deep(.el-check-tag.is-checked) {
+  background: var(--el-color-primary);
+  border-color: var(--el-color-primary);
+  color: #fff;
+  font-weight: 500;
+}
+.chip-wrap :deep(.el-check-tag.is-checked:hover) {
+  color: #fff;
+  background: var(--el-color-primary);
+}
+
 .custom-duration {
   display: flex;
   align-items: center;
