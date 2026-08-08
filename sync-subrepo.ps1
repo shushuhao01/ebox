@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 # eBox 主仓库 -> 授权平台子仓库同步脚本
 # ------------------------------------------------------------
 # 用法（在仓库根目录执行）：
@@ -21,9 +21,15 @@ param(
     [string]$TmpBranch = "subrepo-sync"
 )
 
-$ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $Root
+
+# 辅助：安全删除本地临时分支（不存在时不报错）
+function Remove-SyncBranch {
+    param([string]$Branch)
+    git rev-parse --verify "refs/heads/$Branch" 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) { git branch -D $Branch | Out-Null }
+}
 
 # ---------- 1. 检查主仓库未提交改动 ----------
 Write-Host "==> 1/3 检查 license-server/ 是否有未提交改动" -ForegroundColor Cyan
@@ -37,7 +43,7 @@ if ($uncommitted) {
 
 # ---------- 2. subtree split ----------
 Write-Host "==> 2/3 git subtree split 生成独立历史分支" -ForegroundColor Cyan
-git branch -D $TmpBranch 2>$null | Out-Null
+Remove-SyncBranch $TmpBranch
 git subtree split --prefix=$Prefix -b $TmpBranch
 if ($LASTEXITCODE -ne 0) { throw "subtree split 失败" }
 
@@ -47,7 +53,7 @@ try {
     git push $SubrepoUrl "${TmpBranch}:${SubrepoBranch}" --force
     if ($LASTEXITCODE -ne 0) { throw "推送失败" }
 } finally {
-    git branch -D $TmpBranch 2>$null | Out-Null
+    Remove-SyncBranch $TmpBranch
 }
 
 Write-Host ""
