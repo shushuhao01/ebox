@@ -1,5 +1,6 @@
 # ===== 构建产物 =====
 /obj/
+**/obj/
 /bin/
 /lib/
 **/embed_dll/
