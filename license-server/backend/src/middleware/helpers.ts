@@ -26,7 +26,15 @@ declare global {
 }
 
 export function signToken(payload: AuthPayload): string {
-  const expiresIn = env.jwtExpires.match(/^\d+$/) ? Number(env.jwtExpires) : env.jwtExpires;
+  // expiresIn 容错：纯数字当秒数；数字+单位(ms/s/m/h/d/w/y)原样用；非法/空值回退默认 7 天
+  // 防止 .env 中 JWT_EXPIRES 配置异常导致登录/续期接口 500
+  const rawExpires = (env.jwtExpires || '7d').trim();
+  let expiresIn: string | number = rawExpires;
+  if (/^\d+$/.test(rawExpires)) {
+    expiresIn = Number(rawExpires);
+  } else if (!/^\d+(ms|s|m|h|d|w|y)$/.test(rawExpires)) {
+    expiresIn = '7d';
+  }
   return jwt.sign(payload, env.jwtSecret, { expiresIn } as jwt.SignOptions);
 }
 
