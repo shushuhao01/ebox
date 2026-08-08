@@ -1,17 +1,15 @@
 {
-    "latestVersion": "v2.8.2",
-    "latestVersionCode": 20802,
+    "latestVersion": "v2.8.3",
+    "latestVersionCode": 20803,
     "releaseDate": "2026/8/8",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.2/eBox.exe",
-    "downloadSha256": "e491575f9fe4bc43dce063af03d9151883e99dec962543bc49537a3582e3c9a6",
-    "downloadSize": 2658816,
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.3/eBox.exe",
+    "downloadSha256": "acd37d53f253ae7d8fe2675e1ad6351b08050b93178f8ad0ff85e7077b6ab230",
+    "downloadSize": 2660352,
     "changelog": [
-        "eBox v2.8.2",
-        "授权更灵活：激活后即使暂时断网，也能继续使用到授权到期，不再受固定宽限天数限制",
-        "授权状态显示优化：在线授权、离线授权一目了然，状态更准确，不再出现误导性提示",
-        "激活即同步：激活授权后授权信息立即上报，激活记录、使用时间、绑定设备等数据更及时准确",
-        "数据上报更完整：心跳、操作日志等信息完整展示，授权平台数据与客户端保持一致",
-        "管理后台优化：最近心跳流水显示对应激活码，批量发码等操作记录显示更清晰"
+        "eBox v2.8.3",
+        "授权策略实时同步：授权平台设置的心跳频率、在线激活策略即时下发，无需手动调整",
+        "系统设置更完善：操作日志记录更完整，批量操作目标一目了然",
+        "稳定性优化：修复若干数据同步细节，授权信息更准确"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false

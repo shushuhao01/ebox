@@ -109,6 +109,8 @@ export interface ActivateResult {
   revoked?: boolean;
   expired?: boolean;
   exceeded?: boolean; // 绑定码已有其他设备在线
+  heartbeatIntervalHours: number; // 心跳间隔（小时），客户端以此同步并写入本地注册表
+  forceOnlineActivate: boolean;   // 是否强制在线激活，客户端以此同步并写入本地注册表
 }
 
 /** 授权真实到期时间（与客户端 expireTime 一致）：换机码=绝对到期；时长制=首次激活+时长；永久=MAX */
@@ -147,6 +149,8 @@ export async function clientActivate(
       unbindMax: parsed.unbindMax,
       serverTime,
       graceUntil: expireAt,
+      heartbeatIntervalHours: 6,
+      forceOnlineActivate: false,
     };
   }
 
@@ -210,6 +214,9 @@ export async function clientActivate(
 
   // 时长制：到期 = 客户首次激活时间 + 有效时长（key.usedAt 为首次激活，重复激活不重置；与客户端一致）
   const expireAt = keyExpireAt(key, serverTime);
+  // 授权策略随激活响应下发，客户端同步到本地注册表后生效
+  const heartbeatIntervalHours = Number(await getConfigValue('heartbeat_interval_hours')) || 6;
+  const forceOnlineActivate = (await getConfigValue('force_online_activate')) === '1';
 
   return {
     online: true,
@@ -220,6 +227,8 @@ export async function clientActivate(
     unbindMax: key.unbindMax,
     serverTime,
     graceUntil: expireAt,
+    heartbeatIntervalHours,
+    forceOnlineActivate,
   };
 }
 
@@ -234,6 +243,8 @@ function unregisteredActivate(key: LicenseKey): ActivateResult {
     unbindMax: key.unbindMax,
     serverTime: nowSec(),
     graceUntil: expireAt,
+    heartbeatIntervalHours: 6,
+    forceOnlineActivate: false,
   };
 }
 
@@ -246,6 +257,8 @@ export interface HeartbeatResult {
   graceUntil: number; // 服务端时间 + 宽限天数
   serverTime: number;
   notice?: string;
+  heartbeatIntervalHours?: number; // 授权策略：心跳间隔（小时），客户端同步到本地注册表
+  forceOnlineActivate?: boolean;   // 授权策略：是否强制在线激活，客户端同步到本地注册表
 }
 
 export async function clientHeartbeat(
@@ -299,8 +312,11 @@ export async function clientHeartbeat(
   );
 
   const notice = await getConfigValue('notice');
+  // 授权策略随心跳下发：客户端同步到本地注册表（在线码；未登记离线码用本地默认）
+  const heartbeatIntervalHours = Number(await getConfigValue('heartbeat_interval_hours')) || 6;
+  const forceOnlineActivate = (await getConfigValue('force_online_activate')) === '1';
   // graceUntil = 授权真实到期时间：激活后即使长时间离线，也能用完整个授权期限
-  return { status: 'ok', online: true, graceUntil: keyExpireAt(key, serverTime), serverTime, notice: notice || undefined };
+  return { status: 'ok', online: true, graceUntil: keyExpireAt(key, serverTime), serverTime, notice: notice || undefined, heartbeatIntervalHours, forceOnlineActivate };
 }
 
 // ---------------------------------------------------------------------------

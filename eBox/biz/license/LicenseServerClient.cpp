@@ -801,6 +801,21 @@ namespace biz
 			result.exceeded = data->boolValue("exceeded");
 			result.serverTime = data->numberValue("serverTime");
 			result.graceUntil = data->numberValue("graceUntil");
+			// 授权策略随激活响应下发：同步写入本地注册表，下一次心跳/激活即生效
+			if (const Json* hb = data->find("heartbeatIntervalHours"); hb && hb->type == Json::Type::Number)
+			{
+				const std::int64_t hours = static_cast<std::int64_t>(hb->num);
+				if (hours >= 1 && hours <= 24)
+				{
+					result.heartbeatIntervalHours = static_cast<int>(hours);
+					regWriteDword(kRegHeartbeatHours, static_cast<DWORD>(hours));
+				}
+			}
+			if (const Json* fo = data->find("forceOnlineActivate"); fo && fo->type == Json::Type::Bool)
+			{
+				result.forceOnlineActivate = fo->b;
+				regWriteDword(kRegForceOnline, fo->b ? 1 : 0);
+			}
 			return result;
 		}
 
@@ -829,6 +844,21 @@ namespace biz
 			result.status = utf8ToWide(data->stringValue("status"));
 			result.graceUntil = data->numberValue("graceUntil");
 			result.notice = utf8ToWide(data->stringValue("notice"));
+			// 授权策略随心跳下发：同步写入本地注册表，下一次心跳循环即生效
+			if (const Json* hb = data->find("heartbeatIntervalHours"); hb && hb->type == Json::Type::Number)
+			{
+				const std::int64_t hours = static_cast<std::int64_t>(hb->num);
+				if (hours >= 1 && hours <= 24)
+				{
+					result.heartbeatIntervalHours = static_cast<int>(hours);
+					regWriteDword(kRegHeartbeatHours, static_cast<DWORD>(hours));
+				}
+			}
+			if (const Json* fo = data->find("forceOnlineActivate"); fo && fo->type == Json::Type::Bool)
+			{
+				result.forceOnlineActivate = fo->b;
+				regWriteDword(kRegForceOnline, fo->b ? 1 : 0);
+			}
 			return result;
 		}
 

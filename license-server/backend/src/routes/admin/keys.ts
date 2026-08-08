@@ -269,10 +269,11 @@ router.post('/keys/batch-revoke', async (req, res) => {
         failCount++;
       }
     }
+    const revokedKeys = await keyRepo().findBy({ id: In(value.ids) });
     await writeOperationLog(
       req.auth!.userId,
       '批量作废激活码',
-      null,
+      revokedKeys.length > 0 ? `${revokedKeys[0].code} 等${revokedKeys.length}个` : `${value.ids.length}个激活码`,
       `成功=${okCount} 失败=${failCount}${value.reason ? ` 原因：${value.reason}` : ''}`,
       clientIp(req)
     );
@@ -303,7 +304,7 @@ router.post('/keys/batch-delete', async (req, res) => {
       k.status = 5;
       await keyRepo().save(k);
     }
-    await writeOperationLog(req.auth!.userId, '批量删除激活码', null, `删除=${keys.length} 个已作废激活码`, clientIp(req));
+    await writeOperationLog(req.auth!.userId, '批量删除激活码', keys.length > 0 ? `${keys[0].code} 等${keys.length}个` : `${value.ids.length}个激活码`, `删除=${keys.length} 个已作废激活码`, clientIp(req));
     ok(res, { deleted: keys.length });
   } catch (e) {
     if (e instanceof ApiError) return fail(res, e.message, e.code);
@@ -329,7 +330,7 @@ router.post('/keys/batch-restore', async (req, res) => {
     for (const k of keys) {
       await restoreDeletedKey(k.id);
     }
-    await writeOperationLog(req.auth!.userId, '回收站恢复激活码', null, `恢复=${keys.length} 个（已删除 → 作废）`, clientIp(req));
+    await writeOperationLog(req.auth!.userId, '回收站恢复激活码', keys.length > 0 ? `${keys[0].code} 等${keys.length}个` : `${value.ids.length}个激活码`, `恢复=${keys.length} 个（已删除 → 作废）`, clientIp(req));
     ok(res, { restored: keys.length });
   } catch (e) {
     if (e instanceof ApiError) return fail(res, e.message, e.code);

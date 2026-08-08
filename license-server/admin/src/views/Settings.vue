@@ -21,14 +21,6 @@
             <el-divider />
 
             <div class="form-item">
-              <div class="form-label">离线宽限天数</div>
-              <el-input-number v-model="policy.offline_grace_days" :min="1" :max="30" />
-              <span class="hint">设备离线超过该天数后，将判定为需要重新验证</span>
-            </div>
-
-            <el-divider />
-
-            <div class="form-item">
               <div class="form-label">强制在线激活</div>
               <el-switch
                 v-model="forceOnline"
@@ -136,7 +128,6 @@ async function savePolicy() {
   try {
     await updateConfig({
       heartbeat_interval_hours: String(policy.heartbeat_interval_hours),
-      offline_grace_days: String(policy.offline_grace_days),
       force_online_activate: forceOnline.value ? '1' : '0',
       notice: policy.notice,
       online_threshold_minutes: String(policy.online_threshold_minutes),

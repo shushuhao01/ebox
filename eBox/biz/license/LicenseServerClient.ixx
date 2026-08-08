@@ -37,6 +37,8 @@ export namespace biz
 			std::wstring msg;
 			std::int64_t serverTime{0};
 			std::int64_t graceUntil{0};  // 授权真实到期（服务端下发）：离线可用到该时刻
+			int heartbeatIntervalHours{6}; // 服务端授权策略：心跳间隔（小时），同步写入本地注册表
+			bool forceOnlineActivate{false}; // 服务端授权策略：是否强制在线激活，同步写入本地注册表
 		};
 		export ActivateResult activate(const std::wstring& code, const std::wstring& machineFp,
 		                               const std::wstring& appVersion, const std::wstring& os);
@@ -49,6 +51,8 @@ export namespace biz
 			std::wstring status;   // ok / revoked / expired / kicked
 			std::int64_t graceUntil{0};  // 授权真实到期（离线可用到该时刻）
 			std::wstring notice;
+			int heartbeatIntervalHours{6}; // 服务端授权策略：心跳间隔（小时），同步写入本地注册表
+			bool forceOnlineActivate{false}; // 服务端授权策略：是否强制在线激活，同步写入本地注册表
 		};
 		export HeartbeatResult heartbeat(const std::wstring& code, const std::wstring& machineFp,
 		                                 const std::wstring& appVersion);

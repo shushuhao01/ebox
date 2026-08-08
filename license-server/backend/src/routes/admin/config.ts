@@ -24,7 +24,7 @@ router.put('/', async (req, res) => {
   for (const [k, v] of Object.entries(value)) {
     await setConfigValue(k, String(v));
   }
-  await writeOperationLog(req.auth!.userId, '修改系统设置', null, JSON.stringify(value), clientIp(req));
+  await writeOperationLog(req.auth!.userId, '修改系统设置', '系统设置', JSON.stringify(value), clientIp(req));
   ok(res, await getConfigAll());
 });
 
