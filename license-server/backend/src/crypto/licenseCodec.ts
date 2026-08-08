@@ -101,8 +101,10 @@ export function decodeAndVerify(code: string): ParsedLicense | null {
   if (payload[0] !== MAGIC[0] || payload[1] !== MAGIC[1]) return null;
   if (payload[2] !== VERSION_MAJOR || payload[3] > VERSION_MINOR_ONLINE) return null;
 
-  // 验签（SHA-256 + raw r||s，与 BCryptVerifySignature 一致）
-  const hash = crypto.createHash('sha256').update(payload).digest();
+  // 验签：crypto.verify('sha256', payload) 内部先对 payload 做一次 SHA-256，是标准 ECDSA 路径，
+  // 与客户端 BCryptVerifySignature 完全兼容。
+  // 注意：不能用 crypto.verify(null, hash)——null 模式会把传入的 32 字节摘要当作"消息"再次哈希，
+  // 导致只对自己二次哈希签名自洽、无法验证标准签名（历史线上问题根因）。
   const publicKey = crypto.createPublicKey({
     key: {
       kty: 'EC',
@@ -114,7 +116,7 @@ export function decodeAndVerify(code: string): ParsedLicense | null {
   });
   let ok = false;
   try {
-    ok = crypto.verify(null, hash, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature);
+    ok = crypto.verify('sha256', payload, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature);
   } catch {
     ok = false;
   }
@@ -163,13 +165,14 @@ function getPrivateKey(): crypto.KeyObject | null {
   return privateKeyCache;
 }
 
-// 签名 18 字节载荷，返回 64 字节 raw r||s（与 BCryptSignHash 输出一致）
+// 签名 18 字节载荷，返回 64 字节 raw r||s（标准 ECDSA P-256，与客户端 BCryptSignHash 兼容）。
+// 注意：不能用 crypto.sign(null, sha256(payload))——null 模式会对传入摘要再次哈希，
+// 生成 e=sha256(sha256(payload)) 的签名，客户端验签将失败（历史线上问题根因）。
 function signPayload(payload: Buffer): Buffer | null {
   const key = getPrivateKey();
   if (!key) return null;
-  const hash = crypto.createHash('sha256').update(payload).digest();
   try {
-    return crypto.sign(null, hash, { key, dsaEncoding: 'ieee-p1363' });
+    return crypto.sign('sha256', payload, { key, dsaEncoding: 'ieee-p1363' });
   } catch {
     return null;
   }
