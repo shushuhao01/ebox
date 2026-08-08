@@ -57,6 +57,29 @@
             <el-divider />
 
             <div class="form-item">
+              <div class="form-label">
+                操作日志自动清理 <span class="hint">过期后自动删除，避免日志堆积占用磁盘</span>
+              </div>
+              <div class="clean-row">
+                <span class="clean-label">保留</span>
+                <el-input-number v-model="policy.log_retention_days" :min="1" :max="365" style="width: 120px" />
+                <span class="clean-label">天</span>
+                <span class="clean-label">每日</span>
+                <el-time-picker
+                  v-model="policy.log_clean_time"
+                  format="HH:mm"
+                  value-format="HH:mm"
+                  placeholder="清理时间"
+                  style="width: 120px"
+                />
+                <span class="clean-label">自动清理过期日志</span>
+                <el-button :icon="Delete" :loading="cleaning" @click="handleCleanLogs">立即清理</el-button>
+              </div>
+            </div>
+
+            <el-divider />
+
+            <div class="form-item">
               <el-button type="primary" :icon="Check" :loading="saving" @click="savePolicy">保存设置</el-button>
               <el-button :icon="RefreshLeft" @click="loadPolicy">重置</el-button>
             </div>
@@ -89,9 +112,9 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage, type FormInstance, type FormRules } from 'element-plus'
-import { Check, RefreshLeft, Lock } from '@element-plus/icons-vue'
-import { getConfig, updateConfig, type SystemConfig } from '@/api/config'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { Check, RefreshLeft, Lock, Delete } from '@element-plus/icons-vue'
+import { getConfig, updateConfig, cleanLogs, type SystemConfig } from '@/api/config'
 import { changePassword } from '@/api/users'
 import { useUserStore } from '@/stores/user'
 
@@ -104,10 +127,13 @@ const policy = reactive<SystemConfig>({
   force_online_activate: '0',
   notice: '',
   online_threshold_minutes: '30',
+  log_retention_days: '1',
+  log_clean_time: '03:00',
 })
 
 const forceOnline = ref(false)
 const saving = ref(false)
+const cleaning = ref(false)
 
 async function loadPolicy() {
   try {
@@ -117,6 +143,8 @@ async function loadPolicy() {
     policy.force_online_activate = data.force_online_activate ?? '0'
     policy.notice = data.notice ?? ''
     policy.online_threshold_minutes = data.online_threshold_minutes ?? '30'
+    policy.log_retention_days = data.log_retention_days ?? '1'
+    policy.log_clean_time = data.log_clean_time ?? '03:00'
     forceOnline.value = policy.force_online_activate === '1'
   } catch {
     // 拦截器已提示
@@ -131,6 +159,8 @@ async function savePolicy() {
       force_online_activate: forceOnline.value ? '1' : '0',
       notice: policy.notice,
       online_threshold_minutes: String(policy.online_threshold_minutes),
+      log_retention_days: String(policy.log_retention_days),
+      log_clean_time: policy.log_clean_time,
     })
     ElMessage.success('系统设置已保存')
     await loadPolicy()
@@ -138,6 +168,29 @@ async function savePolicy() {
     // 拦截器已提示
   } finally {
     saving.value = false
+  }
+}
+
+// ============ 操作日志立即清理 ============
+async function handleCleanLogs() {
+  const days = Number(policy.log_retention_days) || 1
+  try {
+    await ElMessageBox.confirm(`将删除超过 ${days} 天的所有操作日志，确定立即清理吗？`, '清理过期日志', {
+      type: 'warning',
+      confirmButtonText: '立即清理',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return // 用户取消
+  }
+  cleaning.value = true
+  try {
+    const res = await cleanLogs()
+    ElMessage.success(`已清理 ${res.deleted} 条过期操作日志`)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    cleaning.value = false
   }
 }
 
@@ -219,6 +272,18 @@ onMounted(loadPolicy)
     font-weight: 400;
     color: var(--text-secondary);
     margin-left: 10px;
+  }
+
+  .clean-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+
+    .clean-label {
+      font-size: 13px;
+      color: var(--text-main);
+    }
   }
 }
 </style>

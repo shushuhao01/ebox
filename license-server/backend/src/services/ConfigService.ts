@@ -7,6 +7,9 @@ const DEFAULTS: Record<string, string> = {
   force_online_activate: '0',
   notice: '',
   online_threshold_minutes: '30',
+  // 操作日志自动清理：保留天数（默认 1 天=24 小时），每日清理时间 HH:mm
+  log_retention_days: '1',
+  log_clean_time: '03:00',
 };
 
 const repo = () => AppDataSource.getRepository(SystemConfig);

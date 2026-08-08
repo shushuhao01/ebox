@@ -352,4 +352,10 @@
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">
   </ImportGroup>
+  <!-- 构建产物：额外复制一份带版本号的 exe（如 eBox-v2.8.3.exe），版本号取自 exe 自身版本资源，无需额外维护 -->
+  <ItemDefinitionGroup>
+    <PostBuildEvent>
+      <Command>powershell -NoProfile -ExecutionPolicy Bypass -Command "$v=(Get-Item &quot;$(TargetPath)&quot;).VersionInfo.FileVersion; if($v){Copy-Item &quot;$(TargetPath)&quot; &quot;$(OutDir)eBox-$v.exe&quot; -Force}"</Command>
+    </PostBuildEvent>
+  </ItemDefinitionGroup>
 </Project>

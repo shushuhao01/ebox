@@ -25,6 +25,8 @@ import adminLogRoutes from './routes/admin/logs';
 import adminBatchRoutes from './routes/admin/batches';
 import adminUserRoutes from './routes/admin/users';
 import { markExpiredKeys } from './services/KeyService';
+import { getConfigValue } from './services/ConfigService';
+import { cleanExpiredLogs } from './services/LogService';
 
 const app = express();
 const PORT = env.port;
@@ -120,6 +122,26 @@ async function main() {
         if (n > 0) log.info(`定时清理：${n} 个换机码已过期`);
       } catch (e) {
         log.error('定时清理失败', e);
+      }
+    });
+
+    // 定时任务：操作日志自动清理（保留天数 + 每日清理时间可配置，避免日志爆盘）。
+    // 每分钟触发一次轻量检查，仅当当前时间匹配配置的 log_clean_time 时才执行删除。
+    cron.schedule('* * * * *', async () => {
+      try {
+        const [cleanTime, retentionDays] = await Promise.all([
+          getConfigValue('log_clean_time'),
+          getConfigValue('log_retention_days'),
+        ]);
+        const now = new Date();
+        const hh = String(now.getHours()).padStart(2, '0');
+        const mm = String(now.getMinutes()).padStart(2, '0');
+        if (`${hh}:${mm}` !== cleanTime) return;
+        const days = Math.max(1, Number(retentionDays) || 1);
+        const n = await cleanExpiredLogs(days);
+        if (n > 0) log.info(`日志清理：删除 ${n} 条超过 ${days} 天的操作日志`);
+      } catch (e) {
+        log.error('日志清理失败', e);
       }
     });
 
