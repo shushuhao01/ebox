@@ -7,7 +7,8 @@
 #   可选环境变量：APP_DIR / DOMAIN / NPM_REGISTRY
 #
 # 流程：环境检查 → 配置检查 → 域名/证书/Nginx 检查 → 备份配置
-#      → git 拉取 → 依赖安装 → 前后端构建 → PM2 启停 → 健康验证
+#      → git 拉取 → 数据库表检查/自动初始化 → 前后端构建
+#      → PM2 启停 → 健康验证
 #
 # PM2 逻辑：
 #   - 进程 abc222.cn-backend 已存在  → pm2 restart abc222.cn-backend
@@ -65,7 +66,7 @@ echo "============================================================"
 # ============================================================
 # 步骤 0：环境检查
 # ============================================================
-step "0/9 环境检查"
+step "0/10 环境检查"
 for cmd in node npm git pm2 curl openssl; do
     command -v "$cmd" >/dev/null 2>&1 || fail "缺少命令: $cmd，请先安装（宝塔软件商店 -> Node.js / pm2 / git）"
 done
@@ -85,7 +86,7 @@ ok "构建内存: 物理内存 ${TOTAL_MEM}MB 的 60% -> Node 堆上限 ${HEAP_M
 # ============================================================
 # 步骤 1：代码目录检查
 # ============================================================
-step "1/9 代码目录检查"
+step "1/10 代码目录检查"
 [ -d "$APP_DIR" ] || fail "应用目录不存在: $APP_DIR（请先在宝塔建站并 clone 代码）"
 [ -d "$APP_DIR/backend" ] || fail "未找到 $APP_DIR/backend"
 [ -d "$APP_DIR/admin" ]   || fail "未找到 $APP_DIR/admin"
@@ -96,7 +97,7 @@ ok "目录结构正常"
 # ============================================================
 # 步骤 2：配置文件检查（.env）
 # ============================================================
-step "2/9 配置文件检查 (.env)"
+step "2/10 配置文件检查 (.env)"
 ENV_FILE="$APP_DIR/backend/.env"
 if [ ! -f "$ENV_FILE" ]; then
     if [ -f "$APP_DIR/backend/.env.example" ]; then
@@ -116,7 +117,7 @@ ok ".env 关键配置已就绪"
 # ============================================================
 # 步骤 3：域名解析 / SSL 证书 / Nginx 检查
 # ============================================================
-step "3/9 域名 / 证书 / Nginx 检查"
+step "3/10 域名 / 证书 / Nginx 检查"
 
 # 3.1 域名解析
 DOMAIN_IP=$(getent hosts "$DOMAIN" | awk '{print $1}' | head -n1)
@@ -179,13 +180,13 @@ fi
 # ============================================================
 # 步骤 4：备份 .env（防止 pull 被 gitignore 规则影响/丢失）
 # ============================================================
-step "4/9 备份配置文件"
+step "4/10 备份配置文件"
 cp "$ENV_FILE" "$APP_DIR/backend/.env.update-bak" && ok "已备份 .env -> backend/.env.update-bak"
 
 # ============================================================
 # 步骤 5：git 拉取最新代码
 # ============================================================
-step "5/9 拉取最新代码"
+step "5/10 拉取最新代码"
 if ! git diff --quiet; then
     warn "检测到本地未提交修改，先 stash 保存再拉取"
     git stash push -m "auto-stash before update $(date '+%F %T')" >/dev/null || fail "git stash 失败"
@@ -202,9 +203,65 @@ git log --oneline -3
 [ -n "${STASHED:-}" ] && { git stash pop >/dev/null 2>&1 || warn "stash 恢复失败，改动在 git stash list 中"; }
 
 # ============================================================
-# 步骤 6：后端依赖 + 构建
+# 步骤 6：数据库表检查与自动初始化
+# 防止建表缺失导致登录/激活报 "Table doesn't exist"（首次部署常见问题）
 # ============================================================
-step "6/9 后端依赖与构建"
+step "6/10 数据库初始化检查"
+
+DB_HOST=$(grep -E '^DB_HOST=' "$ENV_FILE" | head -n1 | sed 's/^DB_HOST=//' | tr -d '"' | tr -d "'")
+DB_PORT=$(grep -E '^DB_PORT=' "$ENV_FILE" | head -n1 | sed 's/^DB_PORT=//' | tr -d '"' | tr -d "'")
+DB_USER=$(grep -E '^DB_USER=' "$ENV_FILE" | head -n1 | sed 's/^DB_USER=//' | tr -d '"' | tr -d "'")
+DB_PASSWORD=$(grep -E '^DB_PASSWORD=' "$ENV_FILE" | head -n1 | sed 's/^DB_PASSWORD=//' | tr -d '"' | tr -d "'")
+DB_DATABASE=$(grep -E '^DB_DATABASE=' "$ENV_FILE" | head -n1 | sed 's/^DB_DATABASE=//' | tr -d '"' | tr -d "'")
+DB_HOST="${DB_HOST:-127.0.0.1}"; DB_PORT="${DB_PORT:-3306}"
+DB_USER="${DB_USER:-license}"; DB_DATABASE="${DB_DATABASE:-license_server}"
+
+if ! command -v mysql >/dev/null 2>&1; then
+    warn "未找到 mysql 命令，跳过数据库表检查（请确认宝塔 MySQL 已安装，并手动导入 database/schema.sql）"
+else
+    TABLE_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+        -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE';" 2>/tmp/ebox-db.log)
+    if [ -z "$TABLE_COUNT" ]; then
+        warn "数据库 $DB_DATABASE 连接失败（@ $DB_HOST:$DB_PORT）："
+        tail -n 5 /tmp/ebox-db.log
+        warn "请确认：库已创建 / DB_PASSWORD 正确 / DB_USER 对该库有权限"
+    elif [ "$TABLE_COUNT" -lt 8 ]; then
+        warn "数据库 $DB_DATABASE 表数量不足（$TABLE_COUNT 张），自动导入 database/schema.sql ..."
+        # 去掉 schema.sql 开头的 CREATE DATABASE / USE / 注释行，导入到 .env 指定的库
+        sed -e '/^CREATE DATABASE /d' -e '/^USE `/d' -e '/^-- /d' "$APP_DIR/database/schema.sql" \
+            | MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+            || fail "导入 database/schema.sql 失败（见上方 mysql 输出），可手动执行上述 sed 导入命令" /tmp/ebox-db.log
+        TABLE_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+            -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE';")
+        ok "schema.sql 导入完成，当前表数量：$TABLE_COUNT"
+    else
+        ok "数据库 $DB_DATABASE 表结构正常（$TABLE_COUNT 张表）"
+    fi
+
+    # 管理员确保存在（默认 admin/admin123，可用 .env 的 ADMIN_USERNAME / ADMIN_PASSWORD 覆盖）
+    ADMIN_USER=$(grep -E '^ADMIN_USERNAME=' "$ENV_FILE" | head -n1 | sed 's/^ADMIN_USERNAME=//' | tr -d '"' | tr -d "'")
+    ADMIN_USER="${ADMIN_USER:-admin}"
+    ADMIN_PASS=$(grep -E '^ADMIN_PASSWORD=' "$ENV_FILE" | head -n1 | sed 's/^ADMIN_PASSWORD=//' | tr -d '"' | tr -d "'")
+    ADMIN_PASS="${ADMIN_PASS:-admin123}"
+    ADMIN_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+        -N -e "SELECT COUNT(*) FROM users WHERE username='$ADMIN_USER';" 2>/dev/null)
+    if [ "$ADMIN_COUNT" = "0" ]; then
+        info "数据库无管理员 $ADMIN_USER，自动创建（密码: $ADMIN_PASS，请尽快在面板修改）..."
+        if (cd "$APP_DIR/backend" && npm run init:admin -- --username "$ADMIN_USER" --password "$ADMIN_PASS") > /tmp/ebox-admin.log 2>&1; then
+            ok "管理员 $ADMIN_USER 创建成功"
+        else
+            tail -n 15 /tmp/ebox-admin.log
+            warn "管理员创建失败，可手动执行：cd backend && npm run init:admin -- --username admin --password xxxx"
+        fi
+    else
+        ok "管理员 $ADMIN_USER 已存在"
+    fi
+fi
+
+# ============================================================
+# 步骤 7：后端依赖 + 构建
+# ============================================================
+step "7/10 后端依赖与构建"
 cd "$APP_DIR/backend" || fail "无法进入 backend"
 run "安装后端依赖" npm install --registry="$NPM_REGISTRY" || fail "后端依赖安装失败" /tmp/ebox-step.log
 run "构建后端" npm run build || fail "后端构建失败（tsc 编译报错，见上方输出）" /tmp/ebox-step.log
@@ -212,9 +269,9 @@ run "构建后端" npm run build || fail "后端构建失败（tsc 编译报错�
 ok "后端构建完成: dist/app.js"
 
 # ============================================================
-# 步骤 7：前端依赖 + 构建
+# 步骤 8：前端依赖 + 构建
 # ============================================================
-step "7/9 前端依赖与构建"
+step "8/10 前端依赖与构建"
 cd "$APP_DIR/admin" || fail "无法进入 admin"
 run "安装前端依赖" npm install --registry="$NPM_REGISTRY" || fail "前端依赖安装失败" /tmp/ebox-step.log
 run "构建前端" npm run build || fail "前端构建失败（vite 编译报错，见上方输出）" /tmp/ebox-step.log
@@ -222,9 +279,9 @@ run "构建前端" npm run build || fail "前端构建失败（vite 编译报错
 ok "前端构建完成: admin/dist"
 
 # ============================================================
-# 步骤 8：PM2 启停（有进程重启 / 无进程启动）
+# 步骤 9：PM2 启停（有进程重启 / 无进程启动）
 # ============================================================
-step "8/9 PM2 服务启停"
+step "9/10 PM2 服务启停"
 cd "$APP_DIR/backend" || fail "无法进入 backend"
 
 PM2_ID=$(pm2 id "$PM2_NAME" 2>/dev/null | tr -d '[] ')
@@ -252,9 +309,9 @@ fi
 ok "后端端口 $BACKEND_PORT 已就绪"
 
 # ============================================================
-# 步骤 9：健康验证
+# 步骤 10：健康验证
 # ============================================================
-step "9/9 健康验证"
+step "10/10 健康验证"
 echo "--- PM2 状态 ---"
 pm2 list | grep -E "name|$PM2_NAME" || pm2 list
 echo ""
