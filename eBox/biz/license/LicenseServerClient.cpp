@@ -715,6 +715,24 @@ namespace biz
 			return kDefaultServerUrl;
 		}
 
+		// 实时在线状态（内存）：最近一次激活/心跳是否连通服务器。
+		// 区别于持久化的 WasOnline（仅表示"曾在线"），供 UI 区分"在线授权"与"离线宽限"
+		std::atomic<bool>& onlineFlag()
+		{
+			static std::atomic<bool> flag{false};
+			return flag;
+		}
+
+		void markOnline(bool online)
+		{
+			onlineFlag().store(online);
+		}
+
+		bool onlineNow()
+		{
+			return onlineFlag().load();
+		}
+
 		int heartbeatIntervalHours()
 		{
 			const DWORD v = regReadDword(kRegHeartbeatHours, 6);

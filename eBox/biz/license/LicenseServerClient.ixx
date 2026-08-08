@@ -72,6 +72,11 @@ export namespace biz
 		export bool wasOnlineBefore();
 		export void recordOnline();                                  // 激活成功后标记已纳入在线管理
 
+		// 实时在线状态（内存）：最近一次激活/心跳是否连通服务器，
+		// 供授权信息界面区分"在线授权"与"离线宽限"，避免连上服务器却显示离线宽限
+		export void markOnline(bool online);
+		export bool onlineNow();
+
 		// 服务端系统公告（最新一条）：心跳获取后持久化（注册表 Notice），供 UI 公告栏展示；
 		// 传入空串表示清除（服务端已撤下公告）。纯离线码不经过心跳，不受影响。
 		export void storeNotice(const std::wstring& notice);
