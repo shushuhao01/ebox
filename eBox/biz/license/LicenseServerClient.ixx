@@ -36,6 +36,7 @@ export namespace biz
 			bool exceeded{false};  // 绑定码已绑定其他设备
 			std::wstring msg;
 			std::int64_t serverTime{0};
+			std::int64_t graceUntil{0};  // 授权真实到期（服务端下发）：离线可用到该时刻
 		};
 		export ActivateResult activate(const std::wstring& code, const std::wstring& machineFp,
 		                               const std::wstring& appVersion, const std::wstring& os);
@@ -46,7 +47,7 @@ export namespace biz
 			bool ok{false};        // 请求成功且业务成功
 			bool online{false};
 			std::wstring status;   // ok / revoked / expired / kicked
-			std::int64_t graceUntil{0};  // 服务端时间 + 宽限天数
+			std::int64_t graceUntil{0};  // 授权真实到期（离线可用到该时刻）
 			std::wstring notice;
 		};
 		export HeartbeatResult heartbeat(const std::wstring& code, const std::wstring& machineFp,

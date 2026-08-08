@@ -800,6 +800,7 @@ namespace biz
 			result.expired = data->boolValue("expired");
 			result.exceeded = data->boolValue("exceeded");
 			result.serverTime = data->numberValue("serverTime");
+			result.graceUntil = data->numberValue("graceUntil");
 			return result;
 		}
 

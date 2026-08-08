@@ -105,9 +105,23 @@ export interface ActivateResult {
   bound: boolean;
   unbindMax: number;
   serverTime: number;
+  graceUntil: number; // 离线可用到该时刻（=授权真实到期），激活后即使离线也能用完整个授权期限
   revoked?: boolean;
   expired?: boolean;
   exceeded?: boolean; // 绑定码已有其他设备在线
+}
+
+/** 授权真实到期时间（与客户端 expireTime 一致）：换机码=绝对到期；时长制=首次激活+时长；永久=MAX */
+function keyExpireAt(key: LicenseKey, now: number): number {
+  if (key.type === 2) return Number(key.expireAt || 0);
+  if (key.durationSec === '0') return Number.MAX_SAFE_INTEGER;
+  return (key.usedAt ? Math.floor(key.usedAt.getTime() / 1000) : now) + Number(key.durationSec || 0);
+}
+
+/** 未登记有效码的到期时间（纯离线码，按载荷计算） */
+function parsedExpireAt(parsed: NonNullable<ReturnType<typeof decodeAndVerify>>, now: number): number {
+  if (parsed.isDurationFormat) return parsed.durationSec > 0 ? now + parsed.durationSec : Number.MAX_SAFE_INTEGER;
+  return parsed.expire;
 }
 
 export async function clientActivate(
@@ -123,11 +137,7 @@ export async function clientActivate(
 
   if (!key) {
     // 未登记但签名有效：离线码宽容放行
-    const expireAt = parsed.isDurationFormat
-      ? parsed.durationSec > 0
-        ? serverTime + parsed.durationSec
-        : Number.MAX_SAFE_INTEGER
-      : parsed.expire;
+    const expireAt = parsedExpireAt(parsed, serverTime);
     return {
       online: false,
       expireType: parsed.isDurationFormat ? (parsed.durationSec === 0 ? 'permanent' : 'duration') : 'absolute',
@@ -136,6 +146,7 @@ export async function clientActivate(
       bound: parsed.bound,
       unbindMax: parsed.unbindMax,
       serverTime,
+      graceUntil: expireAt,
     };
   }
 
@@ -198,12 +209,7 @@ export async function clientActivate(
   );
 
   // 时长制：到期 = 客户首次激活时间 + 有效时长（key.usedAt 为首次激活，重复激活不重置；与客户端一致）
-  const expireAt =
-    key.type === 2
-      ? Number(key.expireAt || 0)
-      : key.durationSec === '0'
-        ? Number.MAX_SAFE_INTEGER
-        : (key.usedAt ? Math.floor(key.usedAt.getTime() / 1000) : serverTime) + Number(key.durationSec || 0);
+  const expireAt = keyExpireAt(key, serverTime);
 
   return {
     online: true,
@@ -213,23 +219,21 @@ export async function clientActivate(
     bound: key.bound === 1,
     unbindMax: key.unbindMax,
     serverTime,
+    graceUntil: expireAt,
   };
 }
 
 function unregisteredActivate(key: LicenseKey): ActivateResult {
+  const expireAt = keyExpireAt(key, nowSec());
   return {
     online: false,
     expireType: key.type === 2 ? 'absolute' : key.durationSec === '0' ? 'permanent' : 'duration' as const,
-    expireAt:
-      key.type === 2
-        ? Number(key.expireAt || 0)
-        : key.durationSec === '0'
-          ? Number.MAX_SAFE_INTEGER
-          : nowSec() + Number(key.durationSec || 0),
+    expireAt,
     durationSec: Number(key.durationSec || 0),
     bound: key.bound === 1,
     unbindMax: key.unbindMax,
     serverTime: nowSec(),
+    graceUntil: expireAt,
   };
 }
 
@@ -253,10 +257,10 @@ export async function clientHeartbeat(
   if (!parsed) throw new ApiError('激活码无效', 1001);
   const key = await findByCode(code);
   const serverTime = nowSec();
-  const graceDays = parseInt(await getConfigValue('offline_grace_days'), 10) || 7;
 
   if (!key) {
-    return { status: 'ok', online: false, graceUntil: serverTime + graceDays * 86400, serverTime };
+    // 未登记码（纯离线码）：服务器不托管，graceUntil 按载荷到期时间下发
+    return { status: 'ok', online: false, graceUntil: parsedExpireAt(parsed, serverTime), serverTime };
   }
 
   if (key.status === 2 || key.status === 4 || key.status === 5) {
@@ -295,7 +299,8 @@ export async function clientHeartbeat(
   );
 
   const notice = await getConfigValue('notice');
-  return { status: 'ok', online: true, graceUntil: serverTime + graceDays * 86400, serverTime, notice: notice || undefined };
+  // graceUntil = 授权真实到期时间：激活后即使长时间离线，也能用完整个授权期限
+  return { status: 'ok', online: true, graceUntil: keyExpireAt(key, serverTime), serverTime, notice: notice || undefined };
 }
 
 // ---------------------------------------------------------------------------

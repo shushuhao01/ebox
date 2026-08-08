@@ -1343,9 +1343,9 @@ namespace ui
 						}
 						else if (row == 1)
 						{
-							// 在线状态：锁定→红，在线/宽限→绿，纯离线→灰
+							// 在线状态：锁定/作废/到期→红，在线→绿，纯离线→灰
 							const std::wstring st = biz::license::onlineStatusText();
-							SetTextColor(hdc, st.find(L"锁定") != std::wstring::npos || st.find(L"作废") != std::wstring::npos
+							SetTextColor(hdc, st.find(L"锁定") != std::wstring::npos || st.find(L"作废") != std::wstring::npos || st.find(L"到期") != std::wstring::npos
 								            ? CLEAN_DANGER
 								            : (st.find(L"离线") != std::wstring::npos ? CLEAN_TEXT_SUB : RGB(0x16, 0xa3, 0x4a)));
 						}
