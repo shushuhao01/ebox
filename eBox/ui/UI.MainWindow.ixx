@@ -123,6 +123,7 @@ namespace ui
 		coro::AsyncScope m_updateScope;
 		std::optional<biz::update::UpdateManifest> m_pendingUpdate;  // 有更新时存 manifest
 		bool m_hasUpdate{false};          // 红点是否亮起
+		int m_licenseRemindDays{0};       // 距离到期剩余天数（1~7 时"授权"按钮亮红点提醒；0/负=不提醒）
 		std::stop_source m_updateTimerStop;  // 6小时周期复检的取消令牌
 		std::stop_source m_dlStopSource;     // 下载协程的取消令牌（关窗/点取消时 request_stop）
 		biz::update::CheckResult m_lastCheckResult{biz::update::CheckResult::NoUpdate};  // 最近一次检查结果（用于区分提示）

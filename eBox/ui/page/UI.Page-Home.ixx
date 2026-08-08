@@ -172,6 +172,7 @@ namespace ui
 		}
 
 		LeftSidebar* getLeftSidebar() const { return m_leftSidebar.get(); }
+		RightContent* getRightContent() const { return m_rightContent.get(); }
 
 	private:
 		WindowBase* m_ownerWnd{nullptr};

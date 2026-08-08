@@ -107,6 +107,58 @@ namespace ui
 		// 使用事项卡片滚动条
 		m_tipsScrollBar = std::make_unique<ScrollBar>(this);
 		m_tipsScrollBar->setThumbPosChangeNotify([this] { update(); });
+
+		// 启动时读取已持久化的服务端系统公告（最新一条），无公告则显示本地使用提示
+		refreshNotice();
+	}
+
+	void RightContent::refreshNotice()
+	{
+		std::wstring notice = biz::licenseserver::currentNotice();
+		if (notice == m_noticeText)
+		{
+			return;
+		}
+		m_noticeText = std::move(notice);
+		rebuildBannerLayout();
+		update();
+	}
+
+	void RightContent::rebuildBannerLayout()
+	{
+		m_bannerLayout.reset();
+		if (m_noticeText.empty())
+		{
+			return;
+		}
+		const float availWidth = (m_bannerRect.right - m_bannerRect.left) - BANNER_BTN_WIDTH * 2.f - 22.f - 10.f;
+		if (availWidth <= 0.f)
+		{
+			return; // 尚未布局（首次构造时），等 onResize 再重建
+		}
+		const float layoutHeight = BANNER_EXPANDED_HEIGHT - 4.f;
+		UniqueComPtr<IDWriteTextLayout> layout;
+		HRESULT hr = app().dWriteFactory()->CreateTextLayout(
+			m_noticeText.c_str(),
+			static_cast<UINT32>(m_noticeText.size()),
+			app().textFormat().pTipsFormat,
+			availWidth, layoutHeight, &layout);
+		if (FAILED(hr))
+		{
+			return;
+		}
+		// 单行不换行，超出宽度用省略号截断
+		layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		IDWriteInlineObject* ellipsis = nullptr;
+		if (SUCCEEDED(app().dWriteFactory()->CreateEllipsisTrimmingSign(
+			             layout.get(), &ellipsis)))
+		{
+			DWRITE_TRIMMING trimming{};
+			trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
+			layout->SetTrimming(&trimming, ellipsis);
+			ellipsis->Release();
+		}
+		m_bannerLayout = std::move(layout);
 	}
 
 	void RightContent::onResize(float width, float height)
@@ -116,6 +168,7 @@ namespace ui
 		const float bannerTop = PADDING + FEATURES_AREA_HEIGHT + MARGIN;
 		const float bannerHeight = m_bannerVisible ? (m_bannerCollapsed ? BANNER_COLLAPSED_HEIGHT : BANNER_EXPANDED_HEIGHT) : 0.f;
 		m_bannerRect = D2D1::RectF(PADDING, bannerTop, width - PADDING, bannerTop + bannerHeight);
+		rebuildBannerLayout();  // 宽度变化时按新宽度重建公告文本布局（省略号截断）
 		if (m_bannerVisible)
 		{
 			const float btnY = bannerTop + (bannerHeight - BANNER_BTN_HEIGHT) * 0.5f;
@@ -176,12 +229,23 @@ namespace ui
 			const float textTop = m_bannerRect.top + (bannerHeight - 18.f) * 0.5f;
 			if (!m_bannerCollapsed)
 			{
-				renderTarget->DrawTextW(BANNER_TEXT.data(),
-				                        static_cast<UINT32>(BANNER_TEXT.size()),
-				                        app().textFormat().pTipsFormat,
-				                        D2D1::RectF(m_bannerRect.left + 10.f, textTop,
-				                                    m_bannerRect.right - BANNER_BTN_WIDTH * 2 - 22.f, textTop + 18.f),
-				                        solidBrush);
+				const float textWidth = m_bannerRect.right - m_bannerRect.left - BANNER_BTN_WIDTH * 2 - 32.f;
+				if (!m_noticeText.empty() && m_bannerLayout)
+				{
+					// 服务端系统公告（最新一条）：单行省略号截断布局
+					renderTarget->DrawTextLayout(D2D1::Point2F(m_bannerRect.left + 10.f, textTop),
+					                             m_bannerLayout, solidBrush);
+				}
+				else
+				{
+					// 无服务端公告：回退本地使用提示
+					renderTarget->DrawTextW(BANNER_TEXT.data(),
+					                        static_cast<UINT32>(BANNER_TEXT.size()),
+					                        app().textFormat().pTipsFormat,
+					                        D2D1::RectF(m_bannerRect.left + 10.f, textTop,
+					                                    m_bannerRect.left + 10.f + textWidth, textTop + 18.f),
+					                        solidBrush);
+				}
 			}
 			else
 			{

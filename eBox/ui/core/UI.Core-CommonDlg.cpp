@@ -742,6 +742,7 @@ namespace ui
 			HFONT hFontBody{nullptr};
 			HFONT hFontSmall{nullptr};
 			HFONT hFontHint{nullptr};
+			HBRUSH hHintBg{nullptr};    // 提示行不透明底刷：切换提示词时先清底再画新文字（互斥，防旧文字残留重叠）
 			bool errorMode{false};      // false=灰色提示词 true=红色错误提示（互斥显示）
 			bool done{false};
 			bool activated{false};
@@ -837,6 +838,8 @@ namespace ui
 				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3005)),
 				                               hInst, nullptr);
 				SendMessageW(data->hError, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontHint), TRUE);
+				// 提示行用不透明底刷：切换灰色提示词/红色错误提示时先清底，保证只显示当前提示词
+				data->hHintBg = CreateSolidBrush(RGB(0xf7, 0xfa, 0xfe));
 
 				// 按钮行：购买激活码（左）· 激 活 · 取 消（右）
 				data->hBuy = CreateWindowExW(0, L"BUTTON", L"购买激活码",
@@ -915,7 +918,11 @@ namespace ui
 				SetBkMode(hdc, TRANSPARENT);
 				if (hWnd == data->hError)
 				{
+					// 提示行：不透明底（先清底再画新文字，互斥显示，防止旧提示词残留重叠）
+					SetBkMode(hdc, OPAQUE);
+					SetBkColor(hdc, RGB(0xf7, 0xfa, 0xfe));
 					SetTextColor(hdc, data->errorMode ? CLEAN_DANGER : CLEAN_TEXT_SUB);
+					return reinterpret_cast<LRESULT>(data->hHintBg);
 				}
 				else if (hWnd == data->hSub)
 				{
@@ -988,7 +995,9 @@ namespace ui
 					}
 					else
 					{
-						activate_dlg_show_error(*data, L"激活码无效，请重新输入");
+						// 优先展示具体失败原因（作废/过期/已绑定其他机器/强制在线等）
+						const std::wstring reason = biz::license::lastActivateError();
+						activate_dlg_show_error(*data, reason.empty() ? L"激活码无效，请重新输入" : reason);
 						SetFocus(data->hEdit);
 						SendMessageW(data->hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
 					}
@@ -1022,6 +1031,10 @@ namespace ui
 				if (data->hFontHint)
 				{
 					DeleteObject(data->hFontHint);
+				}
+				if (data->hHintBg)
+				{
+					DeleteObject(data->hHintBg);
 				}
 				data->done = true;
 				return 0;
@@ -1264,23 +1277,24 @@ namespace ui
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
-				// 白色信息卡片（5 行信息）
+				// 白色信息卡片（6 行信息）
 				{
 					RECT rcCard{24, 92, INFO_DLG_WIDTH - 24, 260};
 					draw_round_rect(hdc, rcCard, 10, RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
 					// 行分隔线
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xf0, 0xf4, 0xf8));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					for (int row = 1; row < 5; ++row)
+					for (int row = 1; row < 6; ++row)
 					{
-						const int y = rcCard.top + 6 + row * 33;
+						const int y = rcCard.top + 6 + row * 27;
 						MoveToEx(hdc, rcCard.left + 16, y, nullptr);
 						LineTo(hdc, rcCard.right - 16, y);
 					}
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 
-					const wchar_t* labels[5] = {L"激活状态", L"到期时间", L"当前版本", L"本机指纹", L"解绑次数"};
+					const wchar_t* labels[6] = {L"激活状态", L"在线状态", L"到期时间", L"当前版本", L"本机指纹", L"解绑次数"};
+					const std::wstring onlineText = data->activated ? biz::license::onlineStatusText() : L"（未激活）";
 					std::wstring unbindText;
 					if (data->isBound)
 					{
@@ -1297,41 +1311,62 @@ namespace ui
 					{
 						unbindText = L"非绑定码，无需解绑";
 					}
-					const std::wstring values[5] =
+					// 到期时间：距到期 <=7 天时附加红色"剩余 X 天"提醒（红点点击进入即见，不重复弹窗）
+					const int remainDays = data->activated ? biz::license::remainingDays() : -1;
+					std::wstring expireCell = data->activated && !data->expireText.empty() ? data->expireText : L"（未激活）";
+					if (remainDays >= 1 && remainDays <= 7)
+					{
+						expireCell += std::format(L"（剩余 {} 天）", remainDays);
+					}
+					const std::wstring values[6] =
 					{
 						data->activated ? L"已激活" : L"未激活",
-						data->activated && !data->expireText.empty() ? data->expireText : L"（未激活）",
+						onlineText,
+						expireCell,
 						data->version,
 						data->fp,
 						unbindText,
 					};
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontSmall));
 					SetBkMode(hdc, TRANSPARENT);
-					for (int row = 0; row < 5; ++row)
+					for (int row = 0; row < 6; ++row)
 					{
-						const int rowTop = rcCard.top + 6 + row * 33;
+						const int rowTop = rcCard.top + 6 + row * 27;
 						// 标签（浅灰）
 						SetTextColor(hdc, CLEAN_TEXT_SUB);
-						RECT rcLabel{rcCard.left + 18, rowTop, rcCard.left + 140, rowTop + 26};
+						RECT rcLabel{rcCard.left + 18, rowTop, rcCard.left + 140, rowTop + 24};
 						DrawTextW(hdc, labels[row], -1, &rcLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-						// 值（深色；激活状态/解绑次数特殊着色）
+						// 值（深色；激活状态/在线状态/解绑次数特殊着色）
 						if (row == 0)
 						{
 							SetTextColor(hdc, data->activated ? RGB(0x16, 0xa3, 0x4a) : CLEAN_DANGER);
 						}
-						else if (row == 4 && data->isBound && data->unbindMax >= 0 &&
+						else if (row == 1)
+						{
+							// 在线状态：锁定→红，在线/宽限→绿，纯离线→灰
+							const std::wstring st = biz::license::onlineStatusText();
+							SetTextColor(hdc, st.find(L"锁定") != std::wstring::npos || st.find(L"作废") != std::wstring::npos
+								            ? CLEAN_DANGER
+								            : (st.find(L"离线") != std::wstring::npos ? CLEAN_TEXT_SUB : RGB(0x16, 0xa3, 0x4a)));
+						}
+						else if (row == 5 && data->isBound && data->unbindMax >= 0 &&
 						         data->unbindCount >= data->unbindMax)
 						{
 							// 解绑次数已用尽 → 红色警示
+							SetTextColor(hdc, CLEAN_DANGER);
+						}
+						else if (row == 2 && remainDays >= 1 && remainDays <= 7)
+						{
+							// 到期临近（<=7 天）→ 红色警示
 							SetTextColor(hdc, CLEAN_DANGER);
 						}
 						else
 						{
 							SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
 						}
-						RECT rcValue{rcCard.left + 140, rowTop, rcCard.right - 18, rowTop + 26};
+						RECT rcValue{rcCard.left + 140, rowTop, rcCard.right - 18, rowTop + 24};
 						// 解绑次数行：行内有解绑按钮，值文本结尾避开按钮
-						if (row == 4 && data->isBound)
+						if (row == 5 && data->isBound)
 						{
 							rcValue.right = 388;
 						}
@@ -1417,12 +1452,38 @@ namespace ui
 					{
 						return 0;
 					}
-					const biz::license::UnbindResult r = biz::license::unbind();
-					switch (r)
+					const biz::license::UnbindOutcome outcome = biz::license::unbindForSwitch();
+					switch (outcome.result)
 					{
 					case biz::license::UnbindResult::Success:
+						if (!outcome.newCode.empty())
+						{
+							// 服务端换机：换机码继承剩余时长，复制到剪贴板供新电脑激活
+							if (OpenClipboard(hwnd))
+							{
+								EmptyClipboard();
+								const std::size_t bytes = (outcome.newCode.size() + 1) * sizeof(wchar_t);
+								if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes))
+								{
+									if (wchar_t* p = static_cast<wchar_t*>(GlobalLock(hMem)))
+									{
+										memcpy(p, outcome.newCode.c_str(), bytes);
+										GlobalUnlock(hMem);
+										SetClipboardData(CF_UNICODETEXT, hMem);
+									}
+								}
+								CloseClipboard();
+							}
+							const std::wstring msg = L"解绑成功！已生成换机激活码并复制到剪贴板：\n\n" +
+								outcome.newCode +
+								L"\n\n请在新电脑上粘贴此激活码完成激活（剩余时长将自动继承）。\n本机将退出授权，应用即将关闭。";
+							MessageBoxW(hwnd, msg.c_str(), L"解绑本机 · 换机成功", MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+						}
+						else
+						{
+							MessageBoxW(hwnd, L"解绑成功！本机已退出授权，应用即将关闭。", L"解绑本机", MB_OK | MB_ICONINFORMATION);
+						}
 						data->result = LicenseInfoResult::Unbound;
-						MessageBoxW(hwnd, L"解绑成功！本机已退出授权，应用即将关闭。", L"解绑本机", MB_OK | MB_ICONINFORMATION);
 						DestroyWindow(hwnd);
 						return 0;
 					case biz::license::UnbindResult::OtherInstancesRunning:

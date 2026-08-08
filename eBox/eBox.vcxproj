@@ -60,6 +60,8 @@
     <ClCompile Include="biz\launcher\Launcher.ixx" />
     <ClCompile Include="biz\license\License.cpp" />
     <ClCompile Include="biz\license\License.ixx" />
+    <ClCompile Include="biz\license\LicenseServerClient.cpp" />
+    <ClCompile Include="biz\license\LicenseServerClient.ixx" />
     <ClCompile Include="biz\update\Update.cpp" />
     <ClCompile Include="biz\update\Update.ixx" />
     <ClCompile Include="biz\rpc\RpcServer.cpp" />

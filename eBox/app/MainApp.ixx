@@ -190,9 +190,9 @@ public:
 	};
 	static constexpr std::wstring_view kUpdateUserAgent{L"eBox-Updater/2.8"};
 
-	// 授权相关外链（用户提供具体地址后回填；空串时按钮给出提示）
-	static constexpr std::wstring_view kBuyLicenseUrl{L""};  // 购买激活码
-	static constexpr std::wstring_view kServiceUrl{L""};     // WX 客服
+	// 授权相关外链（激活弹窗 / 授权信息弹窗的"购买激活码""联系客服"按钮点击跳转）
+	static constexpr std::wstring_view kBuyLicenseUrl{L"https://noepay.cn/"};            // 购买激活码
+	static constexpr std::wstring_view kServiceUrl{L"https://work.weixin.qq.com/kfid/kfce45838d309351f53"};  // WX 客服
 
 public:
 	HINSTANCE moduleInstance() const noexcept { return m_hInstance; }

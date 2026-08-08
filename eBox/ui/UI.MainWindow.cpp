@@ -34,6 +34,8 @@ namespace ui
 	static constexpr UINT TRAY_MESSAGE = WM_USER + 9527;
 	// 升级检查协程完成回调（跨线程：IO 线程 → UI 线程）
 	static constexpr UINT WM_UPDATE_CHECK_DONE = WM_USER + 9528;
+	// 心跳线程收到服务端系统公告 → 刷新公告栏（与 biz.License 的 WM_APP_LICENSENOTICE 一致）
+	static constexpr UINT WM_APP_LICENSENOTICE = WM_USER + 9529;
 
 	MainWindow::MainWindow() : WindowBase({MainApp::appName})
 	{
@@ -131,9 +133,15 @@ namespace ui
 			show(app().cmdShow());
 			if (!ui::license_activation_dialog(this))
 			{
-				// 用户取消或始终未激活：静默退出，不弹任何错误提示
-				app().exit();
-				return;
+				// 用户取消或始终未激活：彻底退出，避免后台残留进程。
+				// 说明：仅调用 app().exit() 时，事件循环依赖 WM_QUIT 被正确取出才退出，
+				// 取消路径实测存在进程残留（再次点击会提示"已运行"却找不到窗口）。
+				// 因此先清理托盘图标，再直接结束进程，确保二次启动可正常弹出激活框。
+				if (nativeHandle())
+				{
+					destroyTray();
+				}
+				ExitProcess(0);
 			}
 			// 激活成功：刷新标题显示到期时间
 			reinitWindow();
@@ -408,6 +416,15 @@ namespace ui
 			                        D2D1::RectF(0.f, (height - 12.f) * 0.5f, width, (height - 12.f) * 0.5f + 12.f),
 			                        solidBrush);
 			tipsFmt->SetTextAlignment(oldAlign);
+			// 到期提醒红点：剩余 1~7 天时右上角亮红点（点击"授权"查看详情，不重复弹窗提醒）
+			if (m_licenseRemindDays >= 1 && m_licenseRemindDays <= 7)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0.929f, 0.1176f, 0.1176f, 1.f));  // #ED1E1E
+				const float dotR = std::min(width, height) * 0.13f;
+				renderTarget->FillEllipse(
+					D2D1::Ellipse(D2D1::Point2F(width - dotR - 2.f, dotR + 2.f), dotR, dotR),
+					solidBrush);
+			}
 		}
 		else
 		{
@@ -426,6 +443,18 @@ namespace ui
 			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
 			DrawTextW(hdc, L"授权", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			// 到期提醒红点：剩余 1~7 天时右上角亮红点
+			if (m_licenseRemindDays >= 1 && m_licenseRemindDays <= 7)
+			{
+				const LONG dotR = std::max<LONG>(3, static_cast<LONG>((rc.right - rc.left) * 0.07f));
+				HBRUSH hRed = CreateSolidBrush(RGB(0xED, 0x1E, 0x1E));
+				HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(hdc, hRed));
+				HPEN hOldPn = static_cast<HPEN>(SelectObject(hdc, GetStockObject(NULL_PEN)));
+				Ellipse(hdc, rc.right - dotR * 2 - 1, rc.top + 1, rc.right - 1, rc.top + dotR * 2 + 1);
+				SelectObject(hdc, hOldBr);
+				SelectObject(hdc, hOldPn);
+				DeleteObject(hRed);
+			}
 		SelectObject(hdc, hOld);
 		ReleaseDC(nativeHandle(), hdc);
 	}
@@ -850,6 +879,14 @@ namespace ui
 			std::unique_ptr<biz::update::CheckOutcome> pOutcome(reinterpret_cast<biz::update::CheckOutcome*>(wParam));
 			onCheckUpdateDone(std::move(*pOutcome));
 		}
+		else if (message == WM_APP_LICENSENOTICE)
+		{
+			// 心跳线程收到服务端系统公告：刷新主界面公告栏（显示最新一条）
+			if (isPage<HomePage>())
+			{
+				getPage<HomePage>().getRightContent()->refreshNotice();
+			}
+		}
 	}
 
 	void MainWindow::initWindow()
@@ -870,6 +907,8 @@ namespace ui
 
 		m_titleTextHeight = 20.f;
 		m_pTitleLayout.reset();
+		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
+		m_licenseRemindDays = biz::license::remainingDays();
 		// 标题：eBox v2.8.1   更新时间：2026/8/7   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()

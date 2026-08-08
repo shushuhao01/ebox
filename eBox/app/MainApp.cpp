@@ -11,6 +11,7 @@ import "sys_defs.hpp";
 import UI.MainWindow;
 import EssentialData;
 import Biz.Core;
+import biz.License;
 
 namespace
 {
@@ -37,6 +38,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 		ui::g_main_wnd = &mainWnd;
 
 		mainWnd.show(app.cmdShow());
+
+		// 联网授权：启动后台心跳线程（作废/过期/强制下线即时生效）。
+		// 纯离线激活码不受影响（服务器未登记，心跳返回 offline 后自动停止）。
+		biz::license::startHeartbeatLoop();
 
 		app.runMessageLoop();
 	}
