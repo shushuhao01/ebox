@@ -58,7 +58,7 @@
 
             <div class="form-item">
               <div class="form-label">
-                操作日志自动清理 <span class="hint">过期后自动删除，避免日志堆积占用磁盘</span>
+                日志自动清理 <span class="hint">操作日志与心跳日志超过保留天数后自动删除，避免日志堆积占用磁盘</span>
               </div>
               <div class="clean-row">
                 <span class="clean-label">保留</span>
@@ -186,7 +186,7 @@ async function handleCleanLogs() {
   cleaning.value = true
   try {
     const res = await cleanLogs()
-    ElMessage.success(`已清理 ${res.deleted} 条过期操作日志`)
+    ElMessage.success(`已清理 ${res.operationLogs} 条操作日志、${res.heartbeats} 条心跳日志`)
   } catch {
     // 拦截器已提示
   } finally {

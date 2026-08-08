@@ -2,7 +2,7 @@ import { Router } from 'express';
 import Joi from 'joi';
 import { ok, fail, clientIp } from '../../middleware/helpers';
 import { getConfigAll, getConfigValue, setConfigValue } from '../../services/ConfigService';
-import { writeOperationLog, cleanExpiredLogs } from '../../services/LogService';
+import { writeOperationLog, cleanExpiredData } from '../../services/LogService';
 
 const router = Router();
 
@@ -31,18 +31,18 @@ router.put('/', async (req, res) => {
   ok(res, await getConfigAll());
 });
 
-// 立即清理过期操作日志（按配置的保留天数）
+// 立即清理过期日志（操作日志 + 心跳日志，按配置的保留天数）
 router.post('/clean-logs', async (req, res) => {
   const days = Math.max(1, Number(await getConfigValue('log_retention_days')) || 1);
-  const n = await cleanExpiredLogs(days);
+  const r = await cleanExpiredData(days);
   await writeOperationLog(
     req.auth!.userId,
     '清理过期日志',
     '操作日志',
-    `删除 ${n} 条超过 ${days} 天的操作日志`,
+    `删除 ${r.operationLogs} 条操作日志、${r.heartbeats} 条心跳日志（超过 ${days} 天）`,
     clientIp(req)
   );
-  ok(res, { deleted: n });
+  ok(res, r);
 });
 
 export default router;

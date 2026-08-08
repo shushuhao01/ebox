@@ -22,7 +22,7 @@ export function updateConfig(data: Partial<SystemConfig>) {
   return put<SystemConfig>('/config', data)
 }
 
-/** 立即清理过期操作日志 */
+/** 立即清理过期日志（操作日志 + 心跳日志） */
 export function cleanLogs() {
-  return post<{ deleted: number }>('/config/clean-logs')
+  return post<{ operationLogs: number; heartbeats: number }>('/config/clean-logs')
 }

@@ -1,15 +1,14 @@
 {
-    "latestVersion": "v2.8.3",
-    "latestVersionCode": 20803,
+    "latestVersion": "v2.8.4",
+    "latestVersionCode": 20804,
     "releaseDate": "2026/8/8",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.3/eBox.exe",
-    "downloadSha256": "acd37d53f253ae7d8fe2675e1ad6351b08050b93178f8ad0ff85e7077b6ab230",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.4/eBox.exe",
+    "downloadSha256": "e0c729932c6cb7e60c299c57e5447109a446eafa47dffed5714c9320407882df",
     "downloadSize": 2660352,
     "changelog": [
-        "eBox v2.8.3",
-        "授权策略实时同步：授权平台设置的心跳频率、在线激活策略即时下发，无需手动调整",
-        "系统设置更完善：操作日志记录更完整，批量操作目标一目了然",
-        "稳定性优化：修复若干数据同步细节，授权信息更准确"
+        "eBox v2.8.4",
+        "系统更轻盈：操作记录与心跳数据定期自动清理，保留时长可在授权平台自定义，长期运行依旧流畅",
+        "运行更稳定：优化数据同步与日志管理细节，整体体验更顺畅"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
