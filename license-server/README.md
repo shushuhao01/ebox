@@ -154,10 +154,10 @@ eBox 客户端 (WinHTTP) ──https──► <your-domain>:443 (Nginx)
 
 ```bash
 cd /www/wwwroot/license-server
-bash deploy/update.sh
+bash update.sh    # 脚本已置于仓库根目录
 ```
 
-`update.sh` 会依次完成：环境检查（Node≥22）→ `.env` 配置检查 → 域名解析/SSL 证书/Nginx 配置自检 → 备份配置 → 拉取最新代码 → 重建前后端 → **PM2 启停** → 健康验证。任意步骤失败都会输出错误定位 + 日志尾部详情。
+`update.sh` 会依次完成：环境检查（Node≥22）→ `.env` 配置检查 → 域名解析/SSL 证书/Nginx 配置自检 → 备份配置 → 拉取最新代码 → 重建前后端 → **PM2 启停** → 健康验证。任意步骤失败都会输出错误定位 + 日志尾部详情，并保留配置备份；成功后自动清理备份。构建内存按物理内存 60% 自动分配（保底 1GB、上限 4GB）。
 
 PM2 逻辑：进程 `<your-domain>-backend` 已存在则 `pm2 restart`；服务器重启后进程不存在则自动 `pm2 start ecosystem.config.js`。
 

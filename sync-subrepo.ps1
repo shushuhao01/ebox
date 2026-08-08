@@ -1,4 +1,4 @@
-﻿# ============================================================
+# ============================================================
 # eBox 主仓库 -> 授权平台子仓库同步脚本
 # ------------------------------------------------------------
 # 用法（在仓库根目录执行）：
@@ -58,4 +58,4 @@ try {
 
 Write-Host ""
 Write-Host "✅ 同步完成：主仓库 license-server/ -> $SubrepoUrl ($SubrepoBranch)" -ForegroundColor Green
-Write-Host "   服务器更新：cd /www/wwwroot/license-server && git pull && bash deploy/update.sh" -ForegroundColor DarkGray
+Write-Host "   服务器更新：cd /www/wwwroot/license-server && bash update.sh" -ForegroundColor DarkGray

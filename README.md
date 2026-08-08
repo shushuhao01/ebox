@@ -298,7 +298,7 @@ eBox-cli.exe "C:\Program Files\My App\app.exe" --input "file name with spaces.tx
    ```powershell
    powershell -ExecutionPolicy Bypass -File .\sync-subrepo.ps1
    ```
-3. 服务器更新：`cd /www/wwwroot/license-server && git pull && bash deploy/update.sh`
+3. 服务器更新：`cd /www/wwwroot/license-server && bash update.sh`（脚本自动拉代码+构建+重启）
 
 > 同步基于 `git subtree split` + 强推，子仓库始终等于主仓库 `license-server/` 最新内容。
 
