@@ -273,6 +273,8 @@ eBox-cli.exe "C:\Program Files\My App\app.exe" --input "file name with spaces.tx
 > 位于 [license-server/](license-server/)，是 eBox 客户端的在线授权服务端：**激活码签发 / 设备绑定 / 心跳监控 / 换机 / 作废 / 公告发布 / 回收站**。
 >
 > 独立文档：[license-server/README.md](license-server/README.md)（含本地开发与宝塔部署）｜[docs/宝塔部署.md](docs/宝塔部署.md)
+>
+> 提示：本文档与部署文档中的 `<your-domain>` 为占位符，请替换为你的真实部署域名。
 
 ### 组成
 
@@ -284,7 +286,7 @@ eBox-cli.exe "C:\Program Files\My App\app.exe" --input "file name with spaces.tx
 
 ### 客户端对接
 
-- 客户端默认连接 **`https://abc222.cn`**（Nginx 反代后端 3008）；换域名/本地联调可用注册表 `HKCU\Software\2Box\ServerUrl` 覆盖，免重新编译。
+- 客户端默认连接 **`https://<your-domain>`**（Nginx 反代后端 3008）；换域名/本地联调可用注册表 `HKCU\Software\2Box\ServerUrl` 覆盖，免重新编译。
 - 面板生成的**在线托管码**（格式版本 9）走 `/api/v1/activate` 激活并由服务端托管（心跳/作废/换机/离线宽限管控）；KeyGen 生成的**离线码**不受服务端管控，双轨互不干扰。
 
 ### 子仓库与同步

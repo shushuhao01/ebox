@@ -1,5 +1,7 @@
 # eBox 授权服务平台（license-server）
 
+> 文中 `<your-domain>` 为占位符，请替换为你的真实部署域名（如 `abc.example.cn`）。
+
 > eBox 客户端的在线授权管理后台：**激活码签发 / 设备绑定 / 心跳监控 / 换机 / 作废 / 公告发布 / 回收站** 全链路服务端实现。
 >
 > 包含两部分：`backend`（Node.js + TypeScript + TypeORM API 服务）与 `admin`（Vue3 + Element Plus 管理面板）。
@@ -74,7 +76,7 @@ license-server/
 │   ├── deploy.sh            #   首次部署（依赖/构建/.env/建库/PM2）
 │   ├── update.sh            #   增量更新（重新构建 + 重启）
 │   ├── backup.sh            #   数据库备份（保留最近 30 份）
-│   └── nginx/abc222.cn.conf #   Nginx 站点配置（443 → 3008 反代）
+│   └── nginx/<your-domain>.conf #   Nginx 站点配置（443 → 3008 反代）
 └── README.md
 ```
 
@@ -121,8 +123,8 @@ npm run init:admin -- --username admin --password admin123
 **部署拓扑**：
 
 ```
-eBox 客户端 (WinHTTP) ──https──► abc222.cn:443 (Nginx)
-管理面板 (浏览器)      ──https──► abc222.cn:443 (Nginx 静态 + /api 反代)
+eBox 客户端 (WinHTTP) ──https──► <your-domain>:443 (Nginx)
+管理面板 (浏览器)      ──https──► <your-domain>:443 (Nginx 静态 + /api 反代)
                                       │
                                       ▼
                              127.0.0.1:3008 (Node/Express/PM2)
@@ -133,7 +135,7 @@ eBox 客户端 (WinHTTP) ──https──► abc222.cn:443 (Nginx)
 
 **快速部署（宝塔）**：
 
-1. **建站**：宝塔「网站 → 添加站点」→ 域名 `abc222.cn`、根目录 `/www/wwwroot/license-server`。
+1. **建站**：宝塔「网站 → 添加站点」→ 域名 `<your-domain>`、根目录 `/www/wwwroot/license-server`。
 2. **Node.js**：宝塔安装「Node.js 版本管理器」，启用版本 **>= 22**；终端执行 `npm install -g pm2`。
 3. **MySQL**：安装 MySQL 8；创建库 `license_server`、账号 `license`。
 4. **拉代码**（本仓库直接 clone 到站点根目录）：
@@ -145,8 +147,8 @@ eBox 客户端 (WinHTTP) ──https──► abc222.cn:443 (Nginx)
    ```
 5. **首次部署**：`bash deploy/deploy.sh`
 6. **改配置**：编辑 `backend/.env`，把 `DB_PASSWORD`、`JWT_SECRET` 改成真实值；`LICENSE_PRIVATE_KEY_D` **保留默认出厂密钥**（与客户端公钥配套）。
-7. **Nginx + SSL**：宝塔「网站 → abc222.cn → 配置文件」替换为 `deploy/nginx/abc222.cn.conf` 内容；申请 Let's Encrypt 证书并重载 Nginx。
-8. **验证**：`curl -k https://abc222.cn/health`，浏览器打开 `https://abc222.cn` 登录管理面板。
+7. **Nginx + SSL**：宝塔「网站 → <your-domain> → 配置文件」替换为 `deploy/nginx/<your-domain>.conf` 内容；申请 Let's Encrypt 证书并重载 Nginx。
+8. **验证**：`curl -k https://<your-domain>/health`，浏览器打开 `https://<your-domain>` 登录管理面板。
 
 **日常更新**（服务器上一条命令完成，无需手动 git pull）：
 
@@ -157,7 +159,7 @@ bash deploy/update.sh
 
 `update.sh` 会依次完成：环境检查（Node≥22）→ `.env` 配置检查 → 域名解析/SSL 证书/Nginx 配置自检 → 备份配置 → 拉取最新代码 → 重建前后端 → **PM2 启停** → 健康验证。任意步骤失败都会输出错误定位 + 日志尾部详情。
 
-PM2 逻辑：进程 `abc222.cn-backend` 已存在则 `pm2 restart`；服务器重启后进程不存在则自动 `pm2 start ecosystem.config.js`。
+PM2 逻辑：进程 `<your-domain>-backend` 已存在则 `pm2 restart`；服务器重启后进程不存在则自动 `pm2 start ecosystem.config.js`。
 
 **备份/恢复**：
 
@@ -189,7 +191,7 @@ gunzip -c backups/license_server_时间戳.sql.gz | mysql -ulicense -p你的密�
 
 ## 客户端对接
 
-- eBox 客户端默认连接 **`https://abc222.cn`**（编译期内置），部署完成即可直接激活。
+- eBox 客户端默认连接 **`https://<your-domain>`**（编译期内置），部署完成即可直接激活。
 - 换域名 / 本地联调，用注册表覆盖，免重新编译：
   ```powershell
   reg add "HKCU\Software\2Box" /v ServerUrl /t REG_SZ /d "https://新域名" /f
