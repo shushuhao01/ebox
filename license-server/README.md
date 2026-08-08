@@ -148,13 +148,16 @@ eBox 客户端 (WinHTTP) ──https──► abc222.cn:443 (Nginx)
 7. **Nginx + SSL**：宝塔「网站 → abc222.cn → 配置文件」替换为 `deploy/nginx/abc222.cn.conf` 内容；申请 Let's Encrypt 证书并重载 Nginx。
 8. **验证**：`curl -k https://abc222.cn/health`，浏览器打开 `https://abc222.cn` 登录管理面板。
 
-**日常更新**（代码更新后，服务器上执行）：
+**日常更新**（服务器上一条命令完成，无需手动 git pull）：
 
 ```bash
 cd /www/wwwroot/license-server
-git pull
-bash deploy/update.sh     # 重装依赖(无变化跳过) → 重建前后端 → 重启 PM2
+bash deploy/update.sh
 ```
+
+`update.sh` 会依次完成：环境检查（Node≥22）→ `.env` 配置检查 → 域名解析/SSL 证书/Nginx 配置自检 → 备份配置 → 拉取最新代码 → 重建前后端 → **PM2 启停** → 健康验证。任意步骤失败都会输出错误定位 + 日志尾部详情。
+
+PM2 逻辑：进程 `abc222.cn-backend` 已存在则 `pm2 restart`；服务器重启后进程不存在则自动 `pm2 start ecosystem.config.js`。
 
 **备份/恢复**：
 
