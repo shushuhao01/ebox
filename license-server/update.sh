@@ -3,7 +3,7 @@
 # eBox 授权服务平台 - 更新部署脚本（宝塔/Linux，在服务器上执行）
 # ------------------------------------------------------------
 # 用法：
-#   bash deploy/update.sh
+#   bash update.sh        （脚本已置于仓库根目录）
 #   可选环境变量：APP_DIR / DOMAIN / NPM_REGISTRY
 #
 # 流程：环境检查 → 配置检查 → 域名/证书/Nginx 检查 → 备份配置
@@ -73,14 +73,14 @@ NODE_MAJOR="$(node -v | sed 's/v\([0-9]*\).*/\1/')"
 [ "$NODE_MAJOR" -ge 22 ] || fail "需要 Node >= 22（当前 $(node -v)），请用宝塔 Node 版本管理器切换到 22.x"
 ok "Node $(node -v) / npm $(npm -v)"
 
-# 构建内存优化（参考低配服务器处理）
+# 构建内存限制：按物理内存的 60% 分配给 Node 堆（v8 --max-old-space-size）
+# 保底 1024MB、上限 4096MB：太小容易 OOM 构建失败，太大挤占系统内存导致卡死
 TOTAL_MEM=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}' || echo 4096)
-if [ "${TOTAL_MEM:-4096}" -lt 3000 ]; then
-    export NODE_OPTIONS="--max-old-space-size=1536"
-    warn "检测到低内存环境（${TOTAL_MEM}MB），已限制构建内存 1.5GB"
-else
-    export NODE_OPTIONS="--max-old-space-size=3072"
-fi
+HEAP_MB=$(( TOTAL_MEM * 60 / 100 ))
+if [ "$HEAP_MB" -lt 1024 ]; then HEAP_MB=1024; fi
+if [ "$HEAP_MB" -gt 4096 ]; then HEAP_MB=4096; fi
+export NODE_OPTIONS="--max-old-space-size=$HEAP_MB"
+ok "构建内存: 物理内存 ${TOTAL_MEM}MB 的 60% -> Node 堆上限 ${HEAP_MB}MB"
 
 # ============================================================
 # 步骤 1：代码目录检查
@@ -269,6 +269,10 @@ else
     warn "https://$DOMAIN/health 不可达（可能是证书/DNS/Nginx 未就绪，可先忽略本地验证）"
 fi
 
+# 更新成功：自动清理旧配置备份（若中途失败 fail 退出则不会执行到此处，备份保留以便排查）
+rm -f "$APP_DIR/backend/.env.update-bak"
+ok "已自动清理配置备份 backend/.env.update-bak"
+
 echo ""
 echo "============================================================"
 echo -e "${GREEN}🎉 更新完成！${NC}"
@@ -277,5 +281,4 @@ echo " 管理面板: https://$DOMAIN"
 echo " 客户端:   默认连接 https://$DOMAIN（在线托管码可正常激活）"
 echo " 查看日志: pm2 logs $PM2_NAME"
 echo " 重启服务: pm2 restart $PM2_NAME"
-echo " 备份文件: $APP_DIR/backend/.env.update-bak（确认无误后可删除）"
 echo "============================================================"
