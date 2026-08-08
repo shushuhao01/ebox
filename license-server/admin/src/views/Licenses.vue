@@ -24,9 +24,10 @@
         start-placeholder="开始日期"
         end-placeholder="结束日期"
         value-format="YYYY-MM-DD"
-        style="width: 240px"
+        style="width: 200px"
         @change="handleSearch"
       />
+      <el-button :icon="Refresh" @click="handleSearch">刷新</el-button>
       <el-button :icon="RefreshLeft" @click="handleReset">重置</el-button>
 
       <div class="toolbar-right">
@@ -293,7 +294,7 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance } from 'element-plus'
 import {
-  Search, RefreshLeft, Plus, Download, CopyDocument, CircleClose, Delete,
+  Search, Refresh, RefreshLeft, Plus, Download, CopyDocument, CircleClose, Delete,
 } from '@element-plus/icons-vue'
 import dayjs from 'dayjs'
 import {
