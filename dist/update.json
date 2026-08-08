@@ -1,18 +1,16 @@
 {
-    "latestVersion": "v2.8.1",
-    "latestVersionCode": 20801,
-    "releaseDate": "2026/8/7",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.1/eBox.exe",
-    "downloadSha256": "a0015474624da2dacebdc015c55876a671e0d0e88a3b53d48d2fd1dd19dd2aa3",
-    "downloadSize": 2596864,
+    "latestVersion": "v2.8.2",
+    "latestVersionCode": 20802,
+    "releaseDate": "2026/8/8",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.2/eBox.exe",
+    "downloadSha256": "e491575f9fe4bc43dce063af03d9151883e99dec962543bc49537a3582e3c9a6",
+    "downloadSize": 2658816,
     "changelog": [
-        "修复：网络检查失败时不再误报“已是最新版本”，区分提示",
-        "修复：forceUpdate 强制更新 / 关键修复版本不再允许“以后再说”跳过",
-        "修复：下载更新中关闭窗口不再卡住进程（可中断取消）",
-        "修复：升级成功后自动清理备份文件 .bak",
-        "修复：取消下载立即中断并清理临时文件",
-        "修复：更新失败自动回滚，下次启动提示“上次更新失败”",
-        "体验：更新流程更稳定可靠"
+        "授权更灵活：激活后即使暂时断网，也能继续使用到授权到期，不再受固定宽限天数限制",
+        "授权状态显示优化：在线授权、离线授权一目了然，状态更准确，不再出现误导性提示",
+        "激活即同步：激活授权后授权信息立即上报，激活记录、使用时间、绑定设备等数据更及时准确",
+        "数据上报更完整：心跳、操作日志等信息完整展示，授权平台数据与客户端保持一致",
+        "管理后台优化：最近心跳流水显示对应激活码，批量发码等操作记录显示更清晰"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
