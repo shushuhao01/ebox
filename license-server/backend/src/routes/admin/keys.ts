@@ -37,10 +37,12 @@ router.post('/keys/generate', async (req, res) => {
     const durationText = value.durationSec === 0 ? '永久' : `${Math.floor(value.durationSec / 86400)}天`;
     const unbindText = !value.bound ? '-' : value.unbindMax < 0 ? '不限' : value.unbindMax === 0 ? '禁止' : `每月${value.unbindMax}次`;
     const batchText = value.batchName || (batchId ? `批次#${batchId}` : '');
+    // 目标优先显示批次名；无批次时显示首个激活码，保证操作日志"目标"列始终有内容
+    const target = batchText || (codes.length > 0 ? `${codes[0]} 等${codes.length}个` : null);
     await writeOperationLog(
       req.auth!.userId,
       '生成激活码',
-      batchText || null,
+      target,
       `数量=${value.count} 时长=${durationText} 绑定=${value.bound ? '绑定' : '通用'} 解绑上限=${unbindText}${value.customerId ? ` 客户ID=${value.customerId}` : ''}`,
       clientIp(req)
     );

@@ -104,11 +104,3 @@ export async function distribution() {
   const unbindCount = await AppDataSource.getRepository(UnbindLog).count();
   return { durationMap, statusMap, unbindCount };
 }
-
-export async function daily(limit = 10) {
-  return hbRepo().find({
-    order: { createdAt: 'DESC' },
-    take: limit,
-    relations: ['keyId'],
-  });
-}

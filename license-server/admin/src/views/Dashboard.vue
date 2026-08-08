@@ -48,6 +48,12 @@
             <el-table-column label="时间" width="150">
               <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
             </el-table-column>
+            <el-table-column label="激活码" min-width="220">
+              <template #default="{ row }">
+                <span v-if="codeMap[row.keyId]" class="code-font">{{ codeMap[row.keyId] }}</span>
+                <span v-else class="text-secondary">#{{ row.keyId }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="动作" width="80" align="center">
               <template #default="{ row }">
                 <el-tag :type="HB_ACTION[row.action]?.type || 'info'" size="small">
@@ -78,12 +84,14 @@ import {
   type Overview, type Trend, type Distribution,
 } from '@/api/stats'
 import type { Heartbeat } from '@/api/logs'
+import { getKeyCodeMap } from '@/api/keys'
 import { formatTime, formatIp, formatHbDetail, HB_ACTION } from '@/utils/format'
 import { initChart, disposeChart, PALETTE, AXIS_TEXT } from '@/utils/echarts'
 
 const overview = ref<Overview>({ total: 0, used: 0, revoked: 0, switched: 0, onlineDevices: 0, todayActivate: 0 })
 const chartLoading = ref(false)
 const recentHbs = ref<Heartbeat[]>([])
+const codeMap = ref<Record<string, string>>({})
 
 const statCards = computed(() => [
   { label: '码总数', value: overview.value.total, icon: 'Key', color: '#3A7AFE', bg: 'rgba(58,122,254,0.12)' },
@@ -215,7 +223,10 @@ async function loadAll() {
       renderStatus(dist.value)
       renderDuration(dist.value)
     }
-    if (hbs.status === 'fulfilled') recentHbs.value = hbs.value
+    if (hbs.status === 'fulfilled') {
+      recentHbs.value = hbs.value
+      codeMap.value = await getKeyCodeMap(hbs.value.map((h) => h.keyId))
+    }
     const failed = [ov, trend, dist, hbs].filter((r) => r.status === 'rejected').length
     if (failed) ElMessage.warning(`部分统计数据加载失败（${failed} 项）`)
   } finally {
