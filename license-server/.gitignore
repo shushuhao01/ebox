@@ -1,0 +1,24 @@
+# ===== 依赖 =====
+node_modules/
+
+# ===== 构建产物（服务器上由 deploy 脚本重新构建，不入库）=====
+backend/dist/
+admin/dist/
+*.tsbuildinfo
+
+# ===== 环境配置（含私钥/数据库密码，禁止提交）=====
+backend/.env
+backend/.env.local
+**/.env
+**/.env.local
+!.env.example
+!**/.env.example
+
+# ===== 运行时数据 =====
+backend/logs/
+deploy/backups/
+*.log
+
+# ===== 操作系统文件 =====
+Thumbs.db
+.DS_Store

@@ -1,0 +1,173 @@
+// ============ 主题变量 ============
+:root {
+  --primary-color: #3a7afe;
+  --success-color: #22c55e;
+  --warning-color: #f59e0b;
+  --danger-color: #ef4444;
+  --page-bg: #f3f6fb;
+  --text-main: #1f2937;
+  --text-secondary: #6b7280;
+  --card-radius: 8px;
+  --card-shadow: 0 1px 3px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04);
+  --sidebar-width: 220px;
+  --sidebar-collapsed-width: 64px;
+
+  // Element Plus 主色覆盖
+  --el-color-primary: #3a7afe;
+  --el-color-primary-light-3: #6b99fe;
+  --el-color-primary-light-5: #93b5fe;
+  --el-color-primary-light-7: #bcd2fe;
+  --el-color-primary-light-8: #d0e0ff;
+  --el-color-primary-light-9: #e5efff;
+  --el-color-primary-dark-2: #2e62cb;
+  --el-color-success: #22c55e;
+  --el-color-warning: #f59e0b;
+  --el-color-danger: #ef4444;
+  --el-border-radius-base: 6px;
+  --el-font-family: 'Helvetica Neue', Helvetica, 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', Arial, sans-serif;
+}
+
+// ============ 全局重置 ============
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--el-font-family);
+  font-size: 14px;
+  color: var(--text-main);
+  background: var(--page-bg);
+  -webkit-font-smoothing: antialiased;
+}
+
+// ============ 滚动条 ============
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #c9d4e6;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #aebdd6;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+// ============ 通用页面容器 ============
+.page-container {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  background: #fff;
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: 16px;
+}
+
+.toolbar-card {
+  background: #fff;
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: 14px 16px;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+
+  .el-button + .el-button {
+    margin-left: 0;
+  }
+}
+
+.table-card {
+  background: #fff;
+  border-radius: var(--card-radius);
+  box-shadow: var(--card-shadow);
+  padding: 16px;
+}
+
+.pagination-wrap {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
+// ============ 激活码等宽字体 ============
+.code-font {
+  font-family: 'Consolas', 'Menlo', 'Courier New', monospace;
+  font-size: 13px;
+  word-break: break-all;
+}
+
+// ============ 状态灯 ============
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+
+  &.online {
+    background: var(--success-color);
+    box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+  }
+  &.offline {
+    background: #9ca3af;
+  }
+  &.kicked {
+    background: var(--danger-color);
+    box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18);
+  }
+  &.unbound {
+    background: #d1d5db;
+  }
+}
+
+// ============ 客户头像 ============
+.customer-avatar {
+  width: 44px;
+  height: 44px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: #fff;
+  flex-shrink: 0;
+}
+
+// ============ 页面标题 ============
+.page-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-main);
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+// 表格内 hover 高亮（Element Plus 自带）与斑马纹
+.el-table {
+  --el-table-header-bg-color: #f7f9fc;
+  --el-table-header-text-color: #4b5563;
+  font-size: 13px;
+}

@@ -18,6 +18,7 @@ eBox 通过 **PE 内存加载 + API Hook + 路径重定向** 的方式，让每�
 - [构建指南](#构建指南)
 - [使用说明](#使用说明)
 - [eBox-cli 命令行工具](#ebox-cli-命令行工具)
+- [授权服务平台（license-server）](#授权服务平台license-server)
 - [授权激活机制](#授权激活机制)
 - [自动升级机制](#自动升级机制)
 - [数据存储与隐私](#数据存储与隐私)
@@ -118,6 +119,8 @@ eBox 通过 **PE 内存加载 + API Hook + 路径重定向** 的方式，让每�
 ├── BuildIDL/                   # IDL 构建工具
 ├── DevTools/eBox-cli/          # 命令行工具
 ├── tools/KeyGen/               # 激活码生成工具（含私钥，仅内部使用，已 gitignore）
+├── license-server/             # 授权服务平台（后端 API + 管理面板，独立镜像至 eBox-online 子仓库）
+├── sync-subrepo.ps1            # 授权平台同步到子仓库的脚本（git subtree）
 ├── dist/                       # 分发产物（update.json 模板等）
 ├── docs/                       # 文档
 ├── eBox.sln                    # Visual Studio 解决方案
@@ -262,6 +265,40 @@ eBox-cli.exe "C:\Program Files\My App\app.exe" --input "file name with spaces.tx
 
 #### Windows API 错误代码
 - **`正数`** - Windows API 调用失败时返回的系统错误码，具体含义请参考 [Microsoft 官方文档](https://learn.microsoft.com/en-us/windows/win32/debug/system-error-codes)
+
+---
+
+## 授权服务平台（license-server）
+
+> 位于 [license-server/](license-server/)，是 eBox 客户端的在线授权服务端：**激活码签发 / 设备绑定 / 心跳监控 / 换机 / 作废 / 公告发布 / 回收站**。
+>
+> 独立文档：[license-server/README.md](license-server/README.md)（含本地开发与宝塔部署）｜[docs/宝塔部署.md](docs/宝塔部署.md)
+
+### 组成
+
+| 端 | 技术 | 说明 |
+|---|---|---|
+| `license-server/backend` | Node 22+ / TypeScript / Express / TypeORM / MySQL 8 | 客户端接口（`/api/v1/*`）+ 管理接口（`/api/admin/*`） |
+| `license-server/admin` | Vue 3 / Element Plus / Vite | 管理面板：激活码、批次、设备、心跳、日志、公告、回收站 |
+| `license-server/deploy` | bash / PM2 / Nginx | 宝塔一键部署：`deploy.sh`（首次）/ `update.sh`（更新）/ `backup.sh`（备份） |
+
+### 客户端对接
+
+- 客户端默认连接 **`https://abc222.cn`**（Nginx 反代后端 3008）；换域名/本地联调可用注册表 `HKCU\Software\2Box\ServerUrl` 覆盖，免重新编译。
+- 面板生成的**在线托管码**（格式版本 9）走 `/api/v1/activate` 激活并由服务端托管（心跳/作废/换机/离线宽限管控）；KeyGen 生成的**离线码**不受服务端管控，双轨互不干扰。
+
+### 子仓库与同步
+
+授权平台代码独立镜像到子仓库 **[shushuhao01/eBox-online](https://github.com/shushuhao01/eBox-online)**，供宝塔服务器 `git clone` 独立部署：
+
+1. 主仓库提交（license-server 随主仓库正常提交）。
+2. 根目录执行同步脚本，把最新 `license-server/` 覆盖式同步到子仓库：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\sync-subrepo.ps1
+   ```
+3. 服务器更新：`cd /www/wwwroot/license-server && git pull && bash deploy/update.sh`
+
+> 同步基于 `git subtree split` + 强推，子仓库始终等于主仓库 `license-server/` 最新内容。
 
 ---
 
