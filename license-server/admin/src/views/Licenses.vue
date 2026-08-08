@@ -145,16 +145,24 @@
             <el-check-tag
               v-for="d in durationChips"
               :key="d.label"
-              :checked="genForm.durationSec === d.sec"
+              :checked="!customMode && genForm.durationSec === d.sec"
               @change="selectDuration(d.sec)"
             >
               {{ d.label }}
             </el-check-tag>
           </div>
           <div class="custom-duration">
-            <el-input-number v-model="customDays" :min="1" :max="36500" :step="30" style="width: 130px" />
-            <span class="text-secondary">天（自定义）</span>
-            <el-button size="small" type="primary" plain @click="applyCustomDays">应用</el-button>
+            <el-checkbox v-model="customMode" @change="onCustomModeChange">自定义</el-checkbox>
+            <el-input-number
+              v-model="customDays"
+              :min="1"
+              :max="36500"
+              :step="30"
+              :disabled="!customMode"
+              style="width: 130px"
+              @change="onCustomDaysChange"
+            />
+            <span class="text-secondary">天（输入即生效）</span>
           </div>
         </el-form-item>
         <el-form-item label="绑定模式" required>
@@ -478,6 +486,7 @@ const genForm = reactive({
 })
 
 const customDays = ref(30)
+const customMode = ref(false) // true=自定义时长（与快捷时长互斥）
 const genResult = reactive<{ codes: string[]; batchId: string | null }>({ codes: [], batchId: null })
 
 const customers = ref<Customer[]>([])
@@ -502,11 +511,19 @@ async function loadBatches() {
 }
 
 function selectDuration(sec: number) {
+  // 选择快捷时长：退出自定义模式
+  customMode.value = false
   genForm.durationSec = sec
 }
 
-function applyCustomDays() {
-  genForm.durationSec = customDays.value * 86400
+function onCustomDaysChange() {
+  // 自定义时长：输入即生效，无需再点"应用"
+  if (customMode.value) genForm.durationSec = customDays.value * 86400
+}
+
+function onCustomModeChange() {
+  // 勾选"自定义"：立即按当前输入生效，并解除快捷选中
+  if (customMode.value) genForm.durationSec = customDays.value * 86400
 }
 
 function resetGenerateForm() {
@@ -517,6 +534,7 @@ function resetGenerateForm() {
   genForm.batchId = null
   genForm.remark = ''
   customDays.value = 30
+  customMode.value = false
 }
 
 function openGenerate() {
