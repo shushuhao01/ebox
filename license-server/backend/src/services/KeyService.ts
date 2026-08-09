@@ -50,34 +50,41 @@ export async function generateKeys(p: GenerateParams): Promise<{ codes: string[]
     batchId = batch.id;
   }
   const codes: string[] = [];
+  // 批量插入：一次 INSERT 全部行，避免逐条 save 在大批量（如 500 个）时多次数据库往返导致请求超时
+  const rows: Partial<LicenseKey>[] = [];
   for (let i = 0; i < p.count; i++) {
     const code = buildLicenseCode(p.durationSec, p.bound, p.unbindMax, true);
     if (!code) throw new ApiError('生成失败：私钥未配置', 500);
-    await keyRepo().save(
-      keyRepo().create({
-        code,
-        codeFp: codeFingerprint(code),
-        type: 1,
-        durationSec: String(p.durationSec),
-        expireAt: null,
-        bound: p.bound ? 1 : 0,
-        unbindMax: p.bound ? p.unbindMax : 0,
-        status: 0,
-        batchId,
-        customerId: p.customerId || null,
-        remark: p.remark || null,
-        createdBy: p.createdBy,
-      })
-    );
-    if (p.customerId) {
-      const row = await keyRepo().findOneBy({ code });
-      if (row) {
-        await AppDataSource.getRepository(KeyCustomer).save(
-          AppDataSource.getRepository(KeyCustomer).create({ keyId: row.id, customerId: p.customerId })
-        );
-      }
-    }
+    rows.push({
+      code,
+      codeFp: codeFingerprint(code),
+      type: 1,
+      durationSec: String(p.durationSec),
+      expireAt: null,
+      bound: p.bound ? 1 : 0,
+      unbindMax: p.bound ? p.unbindMax : 0,
+      status: 0,
+      batchId,
+      customerId: p.customerId || null,
+      remark: p.remark || null,
+      createdBy: p.createdBy,
+      createdAt: new Date(),
+    });
     codes.push(code);
+  }
+  const insert = await keyRepo()
+    .createQueryBuilder()
+    .insert()
+    .values(rows as never[])
+    .execute();
+  if (p.customerId) {
+    // 客户关联同样批量插入（MySQL 单条多值 INSERT 的 identifiers 与 values 顺序一致）
+    const kcRows = insert.identifiers.map((ident, idx) => ({ keyId: ident.id, customerId: p.customerId }));
+    await AppDataSource.getRepository(KeyCustomer)
+      .createQueryBuilder()
+      .insert()
+      .values(kcRows as never[])
+      .execute();
   }
   return { codes, batchId };
 }

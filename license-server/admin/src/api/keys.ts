@@ -58,9 +58,9 @@ export interface KeyListParams {
   search?: string
 }
 
-/** 批量生成激活码 */
+/** 批量生成激活码（大批量时后端耗时较长，单独放宽超时到 120 秒） */
 export function generateKeys(data: GenerateParams) {
-  return post<{ codes: string[]; batchId: string | null; count: number }>('/keys/generate', data)
+  return post<{ codes: string[]; batchId: string | null; count: number }>('/keys/generate', data, { timeout: 120000 })
 }
 
 /** 激活码分页列表 */
