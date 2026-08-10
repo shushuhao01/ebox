@@ -1,14 +1,15 @@
 {
-    "latestVersion": "v2.8.4",
-    "latestVersionCode": 20804,
-    "releaseDate": "2026/8/8",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.4/eBox.exe",
-    "downloadSha256": "e0c729932c6cb7e60c299c57e5447109a446eafa47dffed5714c9320407882df",
+    "latestVersion": "v2.8.5",
+    "latestVersionCode": 20805,
+    "releaseDate": "2026/8/10",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.5/eBox.exe",
+    "downloadSha256": "5B70608A4DD84CCCED699558AB8431F36BB9D378588D8D7E0F1971FDEF474580",
     "downloadSize": 2660352,
     "changelog": [
-        "eBox v2.8.4",
-        "系统更轻盈：操作记录与心跳数据定期自动清理，保留时长可在授权平台自定义，长期运行依旧流畅",
-        "运行更稳定：优化数据同步与日志管理细节，整体体验更顺畅"
+        "eBox v2.8.5",
+        "操作更顺手：环境卡片支持按住拖动排序，想放哪里放哪里，排列顺序自动保存",
+        "体验更直观：拖动时卡片高亮提示，一眼看出正在调整哪个环境",
+        "细节优化：更新与授权相关提示更清晰"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
