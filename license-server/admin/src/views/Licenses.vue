@@ -314,10 +314,12 @@ const filters = reactive<{
   search: string
   status: number | string
   type: number | string
+  duration: number | string
 }>({
   search: '',
   status: '',
   type: '',
+  duration: '',
 })
 const dateRange = ref<[string, string] | null>(null)
 
@@ -355,6 +357,7 @@ function handleReset() {
   filters.search = ''
   filters.status = ''
   filters.type = ''
+  filters.duration = ''
   dateRange.value = null
   handleSearch()
 }

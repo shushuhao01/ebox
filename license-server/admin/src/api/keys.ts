@@ -53,6 +53,7 @@ export interface KeyListParams {
   bound?: number | string
   batchId?: string
   customerId?: string
+  duration?: number | string
   start?: string
   end?: string
   search?: string

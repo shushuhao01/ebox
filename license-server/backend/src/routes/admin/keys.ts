@@ -73,6 +73,9 @@ router.get('/keys', async (req, res) => {
   if (batchId && batchId !== 'all') qb.andWhere('k.batch_id = :bid', { bid: batchId });
   const customerId = String(req.query.customerId || '');
   if (customerId && customerId !== 'all') qb.andWhere('k.customer_id = :cid', { cid: customerId });
+  // 时长筛选：duration 为秒数（0=永久），精确匹配 duration_sec
+  const duration = String(req.query.duration || '');
+  if (duration !== '' && duration !== 'all') qb.andWhere('k.duration_sec = :d', { d: duration });
   const start = String(req.query.start || '');
   const end = String(req.query.end || '');
   if (start && end) qb.andWhere('k.created_at >= :start AND k.created_at <= :end', { start, end: `${end} 23:59:59` });
@@ -168,6 +171,9 @@ router.get('/keys/export', async (req, res) => {
   if (batchId && batchId !== 'all') qb.andWhere('k.batch_id = :bid', { bid: batchId });
   const customerId = String(req.query.customerId || '');
   if (customerId && customerId !== 'all') qb.andWhere('k.customer_id = :cid', { cid: customerId });
+  // 时长筛选：duration 为秒数（0=永久），精确匹配 duration_sec
+  const duration = String(req.query.duration || '');
+  if (duration !== '' && duration !== 'all') qb.andWhere('k.duration_sec = :d', { d: duration });
   const start = String(req.query.start || '');
   const end = String(req.query.end || '');
   if (start && end) qb.andWhere('k.created_at >= :start AND k.created_at <= :end', { start, end: `${end} 23:59:59` });
