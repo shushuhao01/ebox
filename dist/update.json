@@ -3,13 +3,13 @@
     "latestVersionCode": 20805,
     "releaseDate": "2026/8/10",
     "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.5/eBox.exe",
-    "downloadSha256": "5B70608A4DD84CCCED699558AB8431F36BB9D378588D8D7E0F1971FDEF474580",
+    "downloadSha256": "5b70608a4dd84ccced699558ab8431f36bb9d378588d8d7e0f1971fdef474580",
     "downloadSize": 2660352,
     "changelog": [
         "eBox v2.8.5",
-        "操作更顺手：环境卡片支持按住拖动排序，想放哪里放哪里，排列顺序自动保存",
-        "体验更直观：拖动时卡片高亮提示，一眼看出正在调整哪个环境",
-        "细节优化：更新与授权相关提示更清晰"
+        "环境卡片支持按住拖动排序，顺序自动保存",
+        "拖动时卡片高亮反馈",
+        "细节优化"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
