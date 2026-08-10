@@ -408,11 +408,12 @@ namespace ui
 		const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(now - m_pressTime).count();
 		const float dx = e.point.x - m_pressOwnerX;
 		const float dy = e.point.y - m_pressOwnerY;
-		const bool longPress = elapsedMs >= 500;
+		const bool longPress = elapsedMs >= 250; // 长按 250ms 后移动即进入拖拽（原 500ms，响应更灵敏）
 		const bool moved = std::abs(dx) > 4.f || std::abs(dy) > 4.f;
+		const bool quickDrag = moved && (dx * dx + dy * dy) >= 196.f; // 明显快速拖动（>14px）无需等待长按
 
 		// 长按后移动（或明显快速拖动）才进入拖拽模式，避免影响普通点击
-		if (!m_dragging && longPress && moved)
+		if (!m_dragging && moved && (longPress || quickDrag))
 		{
 			m_dragging = true;
 			if (m_pfnOnDragStart)
@@ -449,7 +450,15 @@ namespace ui
 		const D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(
 			D2D1::RectF(0.f, 0.f, drawSize.width, drawSize.height),
 			12.0f, 12.0f);
-		if (m_isHovered || m_isSelected || m_isBright)
+		if (m_dragging)
+		{
+			// 拖拽中：半透明蓝底 + 蓝色粗描边，直观反馈当前卡片正在被拖动
+			solidBrush->SetColor(D2D1::ColorF(0xbbdefb, 0.85f));
+			renderTarget->FillRoundedRectangle(roundedRect, solidBrush);
+			solidBrush->SetColor(D2D1::ColorF(0x0078d4, 1.f));
+			renderTarget->DrawRoundedRectangle(roundedRect, solidBrush, 2.0f);
+		}
+		else if (m_isHovered || m_isSelected || m_isBright)
 		{
 			solidBrush->SetColor(D2D1::ColorF(0xf0f8ff));
 			renderTarget->FillRoundedRectangle(roundedRect, solidBrush);

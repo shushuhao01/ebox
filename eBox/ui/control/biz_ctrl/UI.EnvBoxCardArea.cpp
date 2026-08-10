@@ -537,7 +537,19 @@ namespace ui
 		for (auto it = m_envsToDraw.begin(); it != m_envsToDraw.end(); ++it)
 		{
 			EnvBoxCard* card = *it;
-			if (card->isHovered())
+			if (card == m_dragCard)
+			{
+				// 拖拽中的卡片：更大的阴影 + 半透明深色投影，悬浮在其它卡片之上
+				draw_box_shadow(renderCtx, card->getBounds(),
+				                {
+					                .offset = D2D1::Point2F(0.f, shadowOffsetY),
+					                .size = shadowSize * 1.5f,
+					                .layers = static_cast<int>(shadowSize * 1.5f),
+					                .color = D2D1::ColorF{0x0078d4, 0.10f},
+					                .radius = 12.f
+				                });
+			}
+			else if (card->isHovered())
 			{
 				draw_box_shadow(renderCtx, card->getBounds(),
 				                {
