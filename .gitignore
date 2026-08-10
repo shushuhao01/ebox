@@ -57,6 +57,11 @@ update.json
 !dist/update.json
 releases/
 
+# ===== 宣传/PPT 素材（本地创作，不入库）=====
+docs/ebox_ppt/
+docs/ebox_ppt_project/
+docs/*.log
+
 # ===== 密钥文件 =====
 *.key
 *.pem
