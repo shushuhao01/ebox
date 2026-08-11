@@ -1,14 +1,14 @@
 {
-    "latestVersion": "v2.8.5",
-    "latestVersionCode": 20805,
-    "releaseDate": "2026/8/10",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.5/eBox.exe",
-    "downloadSha256": "5b70608a4dd84ccced699558ab8431f36bb9d378588d8d7e0f1971fdef474580",
+    "latestVersion": "v2.8.6",
+    "latestVersionCode": 20806,
+    "releaseDate": "2026/8/11",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.6/eBox.exe",
+    "downloadSha256": "1ec8e87014e752921710f99cdb1bbaf620f611b8875e6108a0ca81e3cd49ed31",
     "downloadSize": 2660352,
     "changelog": [
-        "eBox v2.8.5",
-        "环境卡片支持按住拖动排序，顺序自动保存",
-        "拖动时卡片高亮反馈",
+        "eBox v2.8.6",
+        "全面兼容 Windows 7 及以上系统，老电脑也能正常启动",
+        "修复部分旧系统上无法启动的问题",
         "细节优化"
     ],
     "minSkipVersionCode": 0,

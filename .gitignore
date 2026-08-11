@@ -61,6 +61,7 @@ releases/
 docs/ebox_ppt/
 docs/ebox_ppt_project/
 docs/*.log
+docs/*.pptx
 
 # ===== 客户分发文件夹（含 exe 安装包，不入库）=====
 /eBox万能多开/

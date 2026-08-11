@@ -174,13 +174,13 @@ public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 2;
 	static constexpr int kVerMinor = 8;
-	static constexpr int kVerPatch = 5;
-	static constexpr int kVerCode  = 20805;  // 单调递增数字，用于版本比较
+	static constexpr int kVerPatch = 6;
+	static constexpr int kVerCode  = 20806;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v2.8.5"};
-	static constexpr std::wstring_view appUpdateDate{L"2026/8/10"};
+	static constexpr std::wstring_view appVersion{L"v2.8.6"};
+	static constexpr std::wstring_view appUpdateDate{L"2026/8/11"};
 
 	// ===== 自动升级配置 =====
 	// manifest 由 jsDelivr CDN 加速 GitHub 仓库文件，客户端追加时间戳破除缓存
