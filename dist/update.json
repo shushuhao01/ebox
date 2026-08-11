@@ -6,7 +6,10 @@
     "downloadSha256": "1ec8e87014e752921710f99cdb1bbaf620f611b8875e6108a0ca81e3cd49ed31",
     "downloadSize": 2660352,
     "changelog": [
-        "eBox v2.8.6 - Windows 7 compatibility fix"
+        "eBox v2.8.6",
+        "全面兼容 Windows 7 及以上系统，老电脑也能正常启动",
+        "修复部分旧系统上无法启动的问题",
+        "细节优化"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
