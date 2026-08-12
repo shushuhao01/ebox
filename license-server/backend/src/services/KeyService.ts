@@ -36,11 +36,13 @@ export interface GenerateParams {
 }
 
 export async function generateKeys(p: GenerateParams): Promise<{ codes: string[]; batchId: string | null }> {
+  console.log(`[gen] start count=${p.count} durationSec=${p.durationSec} bound=${p.bound} customerId=${p.customerId || '-'} batchId=${p.batchId || '-'} batchName=${p.batchName || '-'} t=${Date.now()}`);
   let batchId: string | null = null;
   const batchRepo = AppDataSource.getRepository(KeyBatch);
   if (p.batchId) {
     // 归入已有批次
     const existing = await batchRepo.findOneBy({ id: p.batchId });
+    console.log(`[gen] findBatchBy done existing=${existing ? existing.id : 'null'} t=${Date.now()}`);
     if (existing) batchId = existing.id;
   }
   if (!batchId && p.batchName) {
@@ -48,6 +50,7 @@ export async function generateKeys(p: GenerateParams): Promise<{ codes: string[]
       batchRepo.create({ name: p.batchName, remark: p.remark, createdBy: p.createdBy })
     );
     batchId = batch.id;
+    console.log(`[gen] createBatch done id=${batchId} t=${Date.now()}`);
   }
   const codes: string[] = [];
   // 批量插入：一次 INSERT 全部行，避免逐条 save 在大批量（如 500 个）时多次数据库往返导致请求超时
@@ -72,17 +75,21 @@ export async function generateKeys(p: GenerateParams): Promise<{ codes: string[]
     });
     codes.push(code);
   }
+  console.log(`[gen] codes built ${rows.length} 开始插入 t=${Date.now()}`);
   // 分批批量插入（每批 100 行）：单条多值 INSERT 行数过多时，在 max_allowed_packet 配置偏小的
   // MySQL 上会失败或变慢；分批可同时保证速度与稳定性（500 行仅 5 次往返）
   const BATCH_SIZE = 100;
   const insertedIds: string[] = [];
   for (let i = 0; i < rows.length; i += BATCH_SIZE) {
     const chunk = rows.slice(i, i + BATCH_SIZE);
+    console.log(`[gen] insert batch ${i / BATCH_SIZE + 1} (${chunk.length} rows) begin t=${Date.now()}`);
+    const t0 = Date.now();
     const r = await keyRepo()
       .createQueryBuilder()
       .insert()
       .values(chunk as never[])
       .execute();
+    console.log(`[gen] insert batch done ids=${r.identifiers.length} 耗时=${Date.now() - t0}ms t=${Date.now()}`);
     for (const ident of r.identifiers) {
       insertedIds.push(String((ident as { id: string | number }).id));
     }
@@ -97,7 +104,9 @@ export async function generateKeys(p: GenerateParams): Promise<{ codes: string[]
         .values(kcRows.slice(i, i + BATCH_SIZE) as never[])
         .execute();
     }
+    console.log(`[gen] key_customer inserted ${kcRows.length} t=${Date.now()}`);
   }
+  console.log(`[gen] done 返回 ${codes.length} 个码 t=${Date.now()}`);
   return { codes, batchId };
 }
 
