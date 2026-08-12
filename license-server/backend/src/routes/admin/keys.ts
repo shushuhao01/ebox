@@ -40,8 +40,8 @@ router.post('/keys/generate', async (req, res) => {
     const durationText = value.durationSec === 0 ? '永久' : `${Math.floor(value.durationSec / 86400)}天`;
     const unbindText = !value.bound ? '-' : value.unbindMax < 0 ? '不限' : value.unbindMax === 0 ? '禁止' : `每月${value.unbindMax}次`;
     const batchText = value.batchName || (batchId ? `批次#${batchId}` : '');
-    // 目标优先显示批次名；无批次时显示首个激活码，保证操作日志"目标"列始终有内容
-    const target = batchText || (codes.length > 0 ? `${codes[0]} 等${codes.length}个` : null);
+    // 目标优先显示批次名；无批次时显示首个激活码（截断显示，激活码全文 164 字符超过 target 列 VARCHAR(160)）
+    const target = batchText || (codes.length > 0 ? `${codes[0].slice(0, 60)}…等${codes.length}个` : null);
     console.log(`[gen] writeOperationLog begin t=${Date.now()}`);
     // 操作日志改后台异步写入（内部带超时+吞错）：生成激活码的响应不再被日志 INSERT 拖住，
     // 即使数据库异常也立即返回激活码，前端按钮不再一直转圈

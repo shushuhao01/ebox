@@ -4,6 +4,12 @@ import { Heartbeat } from '../entities/Heartbeat';
 import { logger } from '../config/logger';
 import type { ObjectLiteral, Repository } from 'typeorm';
 
+/** 按列宽截断字符串（target 160 / detail 255 / action 64 / ip 64），防止激活码全文过长写入报 Data too long */
+function truncateField(s: string | null | undefined, max: number): string | null {
+  if (s == null) return null;
+  return s.length > max ? s.slice(0, Math.max(0, max - 1)) + '…' : s;
+}
+
 /**
  * 写入操作日志。
  * 带 8 秒硬超时 + 内部吞错：操作日志属于审计辅助，绝不能因为数据库连接/锁异常
@@ -19,10 +25,10 @@ export async function writeOperationLog(
 ): Promise<void> {
   const row = AppDataSource.getRepository(OperationLog).create({
     userId,
-    action,
-    target,
-    detail,
-    ip,
+    action: truncateField(action, 64) ?? '',
+    target: truncateField(target, 160),
+    detail: truncateField(detail, 255),
+    ip: truncateField(ip, 64),
   });
   const TIMEOUT_MS = 8000;
   try {
