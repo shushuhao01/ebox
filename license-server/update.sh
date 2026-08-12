@@ -221,13 +221,17 @@ if ! command -v mysql >/dev/null 2>&1; then
 else
     TABLE_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
         -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE';" 2>/tmp/ebox-db.log)
+    # 核心表检查：license_keys / devices / heartbeats 缺一即视为结构不完整
+    CORE_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+        -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE' AND table_name IN ('license_keys','devices','heartbeats');" 2>/dev/null)
     if [ -z "$TABLE_COUNT" ]; then
         warn "数据库 $DB_DATABASE 连接失败（@ $DB_HOST:$DB_PORT）："
         tail -n 5 /tmp/ebox-db.log
         warn "请确认：库已创建 / DB_PASSWORD 正确 / DB_USER 对该库有权限"
-    elif [ "$TABLE_COUNT" -lt 8 ]; then
-        warn "数据库 $DB_DATABASE 表数量不足（$TABLE_COUNT 张），自动导入 database/schema.sql ..."
-        # 去掉 schema.sql 开头的 CREATE DATABASE / USE / 注释行，导入到 .env 指定的库
+    elif [ "$TABLE_COUNT" -lt 8 ] || [ "${CORE_COUNT:-0}" -lt 3 ]; then
+        warn "数据库 $DB_DATABASE 表结构不完整（表数 $TABLE_COUNT 张，核心表命中 ${CORE_COUNT:-0}/3），自动导入 database/schema.sql 补齐 ..."
+        # 去掉 schema.sql 开头的 CREATE DATABASE / USE / 注释行，导入到 .env 指定的库。
+        # schema.sql 全部为 CREATE TABLE IF NOT EXISTS，已存在的表自动跳过，不会影响已有数据
         sed -e '/^CREATE DATABASE /d' -e '/^USE `/d' -e '/^-- /d' "$APP_DIR/database/schema.sql" \
             | MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
             || fail "导入 database/schema.sql 失败（见上方 mysql 输出），可手动执行上述 sed 导入命令" /tmp/ebox-db.log
