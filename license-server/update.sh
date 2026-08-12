@@ -295,6 +295,22 @@ fi
 pm2 save >/dev/null 2>&1 || true
 ok "PM2 进程已就绪"
 
+# ------------------------------------------------------------
+# 9.5 PM2 日志轮转：pm2 捕获的 stdout/stderr 日志（~/.pm2/logs）
+#     会无限增长导致爆盘，必须按大小自动切割。配置为满 50M 切割、保留 5 份。
+# ------------------------------------------------------------
+step "9.5/10 PM2 日志轮转配置（满 50M 自动切割）"
+if pm2 describe pm2-logrotate >/dev/null 2>&1; then
+    info "pm2-logrotate 已安装，更新轮转参数..."
+else
+    run "安装 pm2-logrotate" pm2 install pm2-logrotate || warn "pm2-logrotate 安装失败，可手动执行：pm2 install pm2-logrotate"
+fi
+pm2 set pm2-logrotate:max_size 50M >/dev/null 2>&1 || true
+pm2 set pm2-logrotate:retain 5 >/dev/null 2>&1 || true
+pm2 set pm2-logrotate:compress true >/dev/null 2>&1 || true
+pm2 set pm2-logrotate:rotateInterval '0 0 * * *' >/dev/null 2>&1 || true
+ok "PM2 日志轮转已配置：单文件最大 50M、保留 5 份、每天 0 点检查切割"
+
 # 等待端口就绪
 for i in $(seq 1 20); do
     if curl -sf "http://127.0.0.1:$BACKEND_PORT/health" >/dev/null 2>&1; then

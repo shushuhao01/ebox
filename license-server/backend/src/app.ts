@@ -127,7 +127,10 @@ async function main() {
 
     // 定时任务：操作日志 + 心跳日志自动清理（保留天数 + 每日清理时间可配置，避免日志爆盘）。
     // 每分钟触发一次轻量检查，仅当当前时间匹配配置的 log_clean_time 时才执行删除。
+    // 加互斥锁：清理耗时较长（分批删除）时，下一次触发直接跳过，避免重叠执行。
+    let logCleaning = false;
     cron.schedule('* * * * *', async () => {
+      if (logCleaning) return;
       try {
         const [cleanTime, retentionDays] = await Promise.all([
           getConfigValue('log_clean_time'),
@@ -138,9 +141,14 @@ async function main() {
         const mm = String(now.getMinutes()).padStart(2, '0');
         if (`${hh}:${mm}` !== cleanTime) return;
         const days = Math.max(1, Number(retentionDays) || 1);
-        const r = await cleanExpiredData(days);
-        if (r.operationLogs + r.heartbeats > 0)
-          log.info(`日志清理：删除 ${r.operationLogs} 条操作日志、${r.heartbeats} 条心跳日志（超过 ${days} 天）`);
+        logCleaning = true;
+        try {
+          const r = await cleanExpiredData(days);
+          if (r.operationLogs + r.heartbeats > 0)
+            log.info(`日志清理：删除 ${r.operationLogs} 条操作日志、${r.heartbeats} 条心跳日志（超过 ${days} 天）`);
+        } finally {
+          logCleaning = false;
+        }
       } catch (e) {
         log.error('日志清理失败', e);
       }

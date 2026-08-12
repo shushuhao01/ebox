@@ -1,6 +1,7 @@
 import { AppDataSource } from '../config/database';
 import { OperationLog } from '../entities/OperationLog';
 import { Heartbeat } from '../entities/Heartbeat';
+import type { ObjectLiteral, Repository } from 'typeorm';
 
 export async function writeOperationLog(
   userId: string,
@@ -26,16 +27,42 @@ function retentionCutoff(retentionDays?: number): Date {
 }
 
 /**
+ * 分批删除过期数据。
+ * 一次性 DELETE 几十万行会长时间占用数据库连接并锁住整张表，
+ * 阻塞业务写入（如生成激活码时的操作日志 INSERT），导致前端一直转圈。
+ * 改为每批 500 行 + 批次间隔让出连接，避免长时间持锁。
+ */
+async function deleteExpiredInBatches<T extends ObjectLiteral>(
+  repo: Repository<T>,
+  cutoff: Date,
+  batchSize = 500,
+  maxBatches = 2000
+): Promise<number> {
+  const table = repo.metadata.tableName;
+  let total = 0;
+  for (let i = 0; i < maxBatches; i++) {
+    // 原生 SQL：DELETE ... LIMIT 仅 MySQL 支持，分批删除避免一次性删几十万行长时间锁表
+    const res: { affected?: number } = await repo.query(
+      `DELETE FROM \`${table}\` WHERE created_at < ? LIMIT ?`,
+      [cutoff, batchSize]
+    );
+    const affected = res?.affected ?? 0;
+    total += affected;
+    if (affected < batchSize) break; // 已删完
+    await new Promise((r) => setTimeout(r, 50)); // 让出连接与表锁
+  }
+  return total;
+}
+
+/**
  * 清理超过保留天数的操作日志，返回删除条数。
  * @param retentionDays 保留天数（<=0 时使用默认 1 天）
  */
 export async function cleanExpiredLogs(retentionDays?: number): Promise<number> {
-  const res = await AppDataSource.getRepository(OperationLog)
-    .createQueryBuilder()
-    .delete()
-    .where('created_at < :cutoff', { cutoff: retentionCutoff(retentionDays) })
-    .execute();
-  return res.affected || 0;
+  return deleteExpiredInBatches(
+    AppDataSource.getRepository(OperationLog),
+    retentionCutoff(retentionDays)
+  );
 }
 
 /**
@@ -43,12 +70,10 @@ export async function cleanExpiredLogs(retentionDays?: number): Promise<number> 
  * @param retentionDays 保留天数（<=0 时使用默认 1 天）
  */
 export async function cleanExpiredHeartbeats(retentionDays?: number): Promise<number> {
-  const res = await AppDataSource.getRepository(Heartbeat)
-    .createQueryBuilder()
-    .delete()
-    .where('created_at < :cutoff', { cutoff: retentionCutoff(retentionDays) })
-    .execute();
-  return res.affected || 0;
+  return deleteExpiredInBatches(
+    AppDataSource.getRepository(Heartbeat),
+    retentionCutoff(retentionDays)
+  );
 }
 
 /** 汇总清理结果：操作日志 + 心跳日志 */
