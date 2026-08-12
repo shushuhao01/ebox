@@ -56,6 +56,35 @@ run() {
     return 0
 }
 
+# 展示两次提交间的文件变更：A=新增(绿) D=删除(红) M/R/C=修改(黄)
+show_git_changes() {
+    local old_head="$1"
+    echo -e "${CYAN}--- 本次文件变更（A=新增  D=删除  M=修改）---${NC}"
+    local stats
+    stats=$(git diff --shortstat "$old_head" HEAD 2>/dev/null)
+    if [ -z "$stats" ]; then
+        echo "  （无文件变更，已是最新）"
+        return
+    fi
+    echo "  $stats"
+    git diff --name-status "$old_head" HEAD 2>/dev/null | while IFS=$'\t' read -r status path rest; do
+        case "$status" in
+            A)
+                echo -e "  ${GREEN}A${NC}  ${path}"
+                ;;
+            D)
+                echo -e "  ${RED}D${NC}  ${path}"
+                ;;
+            R*|C*)
+                echo -e "  ${YELLOW}${status}${NC}  ${path} -> ${rest}"
+                ;;
+            *)
+                echo -e "  ${YELLOW}${status}${NC}  ${path}"
+                ;;
+        esac
+    done
+}
+
 echo "============================================================"
 echo "🚀 eBox 授权服务平台 更新开始"
 echo "    应用目录: $APP_DIR"
@@ -192,12 +221,15 @@ if ! git diff --quiet; then
     git stash push -m "auto-stash before update $(date '+%F %T')" >/dev/null || fail "git stash 失败"
     STASHED=1
 fi
+OLD_HEAD=$(git rev-parse HEAD)
 if ! git pull origin main > /tmp/ebox-pull.log 2>&1; then
     tail -n 20 /tmp/ebox-pull.log
     [ -n "${STASHED:-}" ] && git stash pop >/dev/null 2>&1 || true
     fail "git pull 失败（见上方输出）"
 fi
 ok "代码已更新到最新"
+# 展示本次更新的文件变更（新增=绿 删除=红 修改=黄）
+show_git_changes "$OLD_HEAD"
 info "本次更新提交："
 git log --oneline -3
 [ -n "${STASHED:-}" ] && { git stash pop >/dev/null 2>&1 || warn "stash 恢复失败，改动在 git stash list 中"; }
