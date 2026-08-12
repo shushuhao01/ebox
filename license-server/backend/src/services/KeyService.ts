@@ -72,19 +72,31 @@ export async function generateKeys(p: GenerateParams): Promise<{ codes: string[]
     });
     codes.push(code);
   }
-  const insert = await keyRepo()
-    .createQueryBuilder()
-    .insert()
-    .values(rows as never[])
-    .execute();
-  if (p.customerId) {
-    // 客户关联同样批量插入（MySQL 单条多值 INSERT 的 identifiers 与 values 顺序一致）
-    const kcRows = insert.identifiers.map((ident, idx) => ({ keyId: ident.id, customerId: p.customerId }));
-    await AppDataSource.getRepository(KeyCustomer)
+  // 分批批量插入（每批 100 行）：单条多值 INSERT 行数过多时，在 max_allowed_packet 配置偏小的
+  // MySQL 上会失败或变慢；分批可同时保证速度与稳定性（500 行仅 5 次往返）
+  const BATCH_SIZE = 100;
+  const insertedIds: string[] = [];
+  for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+    const chunk = rows.slice(i, i + BATCH_SIZE);
+    const r = await keyRepo()
       .createQueryBuilder()
       .insert()
-      .values(kcRows as never[])
+      .values(chunk as never[])
       .execute();
+    for (const ident of r.identifiers) {
+      insertedIds.push(String((ident as { id: string | number }).id));
+    }
+  }
+  if (p.customerId) {
+    // 客户关联同样分批批量插入（identifiers 与 values 顺序一致）
+    const kcRows = insertedIds.map((keyId) => ({ keyId, customerId: p.customerId }));
+    for (let i = 0; i < kcRows.length; i += BATCH_SIZE) {
+      await AppDataSource.getRepository(KeyCustomer)
+        .createQueryBuilder()
+        .insert()
+        .values(kcRows.slice(i, i + BATCH_SIZE) as never[])
+        .execute();
+    }
   }
   return { codes, batchId };
 }

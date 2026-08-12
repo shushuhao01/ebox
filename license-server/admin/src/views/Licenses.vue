@@ -205,9 +205,14 @@
           <el-button link type="primary" :icon="CopyDocument" @click="copyAllCodes">全部复制</el-button>
         </div>
         <el-scrollbar max-height="320px">
-          <div v-for="(c, i) in genResult.codes" :key="i" class="code-line">
+          <div v-for="(c, i) in genResult.codes.slice(0, genShownCount)" :key="i" class="code-line">
             <span class="code-font">{{ c }}</span>
             <el-button link type="primary" :icon="CopyDocument" @click="copyText(c)" />
+          </div>
+          <div v-if="genShownCount < genResult.codes.length" style="text-align: center; padding: 8px 0">
+            <el-button plain size="small" @click="loadMoreCodes">
+              加载更多（还剩 {{ genResult.codes.length - genShownCount }} 个）
+            </el-button>
           </div>
         </el-scrollbar>
         <el-alert
@@ -492,6 +497,12 @@ const genForm = reactive({
 const customDays = ref(30)
 const customMode = ref(false) // true=自定义时长（与快捷时长互斥）
 const genResult = reactive<{ codes: string[]; batchId: string | null }>({ codes: [], batchId: null })
+// 生成结果列表限量渲染：默认只渲染前 50 个，避免一次性渲染几百个组件卡住页面
+const genShownCount = ref(50)
+
+function loadMoreCodes() {
+  genShownCount.value += 100
+}
 
 const customers = ref<Customer[]>([])
 const batches = ref<KeyBatch[]>([])
@@ -547,6 +558,7 @@ function openGenerate() {
   resetGenerateForm()
   genResult.codes = []
   genResult.batchId = null
+  genShownCount.value = 50
 }
 
 async function submitGenerate() {
@@ -573,8 +585,10 @@ async function submitGenerate() {
     const res = await generateKeys(params)
     genResult.codes = res.codes
     genResult.batchId = res.batchId
+    genShownCount.value = 50
     genStep.value = 1
     loadBatches()
+    load() // 生成成功后立即刷新主列表，保证关闭对话框即可看到新激活码
     ElMessage.success(`成功生成 ${res.codes.length} 个激活码`)
   } catch {
     // 拦截器已提示
@@ -588,6 +602,7 @@ function resetGenerate() {
   resetGenerateForm()
   genResult.codes = []
   genResult.batchId = null
+  genShownCount.value = 50
   load()
 }
 
