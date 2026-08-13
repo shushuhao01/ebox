@@ -611,59 +611,104 @@ namespace ui
 	{
 		const DWORD selfPid = GetCurrentProcessId();
 
-		// 1. 环境中通过 RPC 上报过的进程
-		std::vector<DWORD> pids = biz::env_mgr().getAllProcessIdsExclude(0);
+		// 多轮迭代终止：父进程被终止后子进程可能重新归属（reparent）甚至继续
+		// 派生新进程，单轮快照无法保证零残留。每轮重新快照、收集进程树，并按
+		// 已上报进程的 exe 文件名兜底匹配（解决 reparent 后树收集失效），
+		// 直到连续一轮没有任何进程被杀才结束。
+		for (int round = 0; round < 4; ++round)
+		{
+			// 1. 环境中通过 RPC 上报过的进程
+			std::vector<DWORD> pids = biz::env_mgr().getAllProcessIdsExclude(0);
 
-		// 2. 递归收集进程树后代（cmd -> 目标程序 -> 其派生的子进程），确保零残留
-		std::unordered_map<DWORD, std::vector<DWORD>> parentToChildren;
-		{
-			HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-			if (snapshot != INVALID_HANDLE_VALUE)
+			// 2. 记录这些进程的 exe 文件名（完整路径取文件名，规避 32/64 位路径重定向差异）
+			std::set<std::wstring> envExeNames;
+			for (const DWORD pid : pids)
 			{
-				PROCESSENTRY32W pe{sizeof(pe)};
-				if (Process32FirstW(snapshot, &pe))
+				if (HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid))
 				{
-					do
+					wchar_t buf[MAX_PATH]{};
+					DWORD size = MAX_PATH;
+					if (QueryFullProcessImageNameW(h, 0, buf, &size) && size > 0)
 					{
-						parentToChildren[pe.th32ParentProcessID].push_back(pe.th32ProcessID);
+						envExeNames.emplace(std::filesystem::path{buf}.filename().native());
 					}
-					while (Process32NextW(snapshot, &pe));
+					CloseHandle(h);
 				}
-				CloseHandle(snapshot);
 			}
-		}
-		std::vector<DWORD> allToKill = pids;
-		for (const DWORD pid : pids)
-		{
-			std::vector<DWORD> stack{pid};
-			while (!stack.empty())
+
+			// 3. 快照进程表：父子关系 + 每个进程的 exe 文件名
+			std::unordered_map<DWORD, std::vector<DWORD>> parentToChildren;
+			std::unordered_map<DWORD, std::wstring> pidToExeName;
 			{
-				const DWORD cur = stack.back();
-				stack.pop_back();
-				const auto it = parentToChildren.find(cur);
-				if (it == parentToChildren.end())
+				HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+				if (snapshot != INVALID_HANDLE_VALUE)
+				{
+					PROCESSENTRY32W pe{sizeof(pe)};
+					if (Process32FirstW(snapshot, &pe))
+					{
+						do
+						{
+							parentToChildren[pe.th32ParentProcessID].push_back(pe.th32ProcessID);
+							pidToExeName.emplace(pe.th32ProcessID, pe.szExeFile);
+						}
+						while (Process32NextW(snapshot, &pe));
+					}
+					CloseHandle(snapshot);
+				}
+			}
+
+			// 4. 收集待杀列表：上报进程 + 进程树后代 + 同名 exe 兜底
+			std::vector<DWORD> allToKill = pids;
+			for (const DWORD pid : pids)
+			{
+				std::vector<DWORD> stack{pid};
+				while (!stack.empty())
+				{
+					const DWORD cur = stack.back();
+					stack.pop_back();
+					const auto it = parentToChildren.find(cur);
+					if (it == parentToChildren.end())
+					{
+						continue;
+					}
+					for (const DWORD child : it->second)
+					{
+						allToKill.push_back(child);
+						stack.push_back(child);
+					}
+				}
+			}
+			for (const auto& [pid, exeName] : pidToExeName)
+			{
+				if (envExeNames.contains(exeName))
+				{
+					allToKill.push_back(pid);
+				}
+			}
+			// 去重
+			std::sort(allToKill.begin(), allToKill.end());
+			allToKill.erase(std::unique(allToKill.begin(), allToKill.end()), allToKill.end());
+
+			bool anyKilled = false;
+			for (const DWORD pid : allToKill)
+			{
+				if (pid == selfPid)
 				{
 					continue;
 				}
-				for (const DWORD child : it->second)
+				if (HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid))
 				{
-					allToKill.push_back(child);
-					stack.push_back(child);
+					TerminateProcess(hProc, 0);
+					CloseHandle(hProc);
+					anyKilled = true;
 				}
 			}
-		}
-
-		for (const DWORD pid : allToKill)
-		{
-			if (pid == selfPid)
+			if (!anyKilled)
 			{
-				continue;
+				break;
 			}
-			if (HANDLE hProc = OpenProcess(PROCESS_TERMINATE, FALSE, pid))
-			{
-				TerminateProcess(hProc, 0);
-				CloseHandle(hProc);
-			}
+			// 给被杀进程一点退出时间，并让新派生的子进程有时间出现，下一轮再收
+			std::this_thread::sleep_for(std::chrono::milliseconds(200));
 		}
 	}
 

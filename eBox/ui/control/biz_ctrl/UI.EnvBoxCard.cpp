@@ -64,6 +64,12 @@ namespace ui
 		{
 			m_asyncScope.spawn(onProcessCountChange(e, proc, count));
 		});
+		// 新建环境（启动新进程创建）才有“首次初始化”提示；老环境无 pending 标记不显示
+		m_bFirstLaunchPending = m_env->isFirstLaunchPending();
+		if (m_bFirstLaunchPending)
+		{
+			m_asyncScope.spawn(coro::co_with_cancellation(tickFirstLaunch(), m_stopSource.get_token()));
+		}
 		updateNameLayout();
 	}
 
@@ -139,6 +145,12 @@ namespace ui
 			if (m_pfnOnSelect)
 			{
 				m_pfnOnSelect(true);
+			}
+			// 该环境已有应用在运行且有窗口（多环境多实例时任务栏图标无法区分）：
+			// 直接将该环境的窗口调到前台，不重复启动；没有窗口才走正常启动流程
+			if (activateEnvWindows())
+			{
+				return;
 			}
 			// 启动该环境绑定的应用（首次启动时自动绑定）；未绑定则先让用户选择
 			std::wstring appPath(m_env->getAppPath());
@@ -510,16 +522,32 @@ namespace ui
 		m_btnRename->draw(renderCtx);
 		m_btnClose->draw(renderCtx);
 
-		// 状态行：在线（绿色圆点）/ 离线（灰色圆点）
+		// 状态行：首次初始化提示（新建环境）/ 在线（绿色圆点）/ 离线（灰色圆点）
 		constexpr float countLabelTop = PADDING + TITLE_HEIGHT + LINE1_GAP;
 		const bool bOnline = m_procCount > 0;
+		const bool bFirstInit = m_bFirstLaunchPending && !bOnline;
 		constexpr float statusDotRadius = 4.f;
-		solidBrush->SetColor(bOnline ? D2D1::ColorF(0x4caf50) : D2D1::ColorF(0xbdbdbd));
+		solidBrush->SetColor(bFirstInit ? D2D1::ColorF(0xed6c00)
+		                                : (bOnline ? D2D1::ColorF(0x4caf50) : D2D1::ColorF(0xbdbdbd)));
 		renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(PADDING + 5.f, countLabelTop + COUNT_HEIGHT / 2.f),
 		                                        statusDotRadius, statusDotRadius), solidBrush);
 
-		const std::wstring statusText = bOnline ? std::format(L"在线 · {} 个进程", m_procCount) : L"离线";
-		solidBrush->SetColor(bOnline ? D2D1::ColorF(0x2e7d32) : D2D1::ColorF(0x757575));
+		std::wstring statusText;
+		if (bFirstInit)
+		{
+			statusText = L"首次初始化中，请稍候…";
+			solidBrush->SetColor(D2D1::ColorF(0xed6c00));
+		}
+		else if (bOnline)
+		{
+			statusText = std::format(L"在线 · {} 个进程", m_procCount);
+			solidBrush->SetColor(D2D1::ColorF(0x2e7d32));
+		}
+		else
+		{
+			statusText = L"离线";
+			solidBrush->SetColor(D2D1::ColorF(0x757575));
+		}
 		renderTarget->DrawTextW(statusText.c_str(),
 		                        static_cast<UINT32>(statusText.length()),
 		                        app().textFormat().pTipsFormat,
@@ -559,6 +587,96 @@ namespace ui
 		}
 
 		m_bIdle = true;
+	}
+
+	coro::LazyTask<void> EnvBoxCard::tickFirstLaunch()
+	{
+		// 首次初始化提示期间每秒刷新重绘；pending 清除后（进程出现并持续运行
+		// 满阈值）提示自动消失。卡片销毁时 m_stopSource 请求取消，transfer_after
+		// 抛出的取消异常被 OnewayTask 吞掉，协程干净结束，不会阻塞 AsyncScope::join。
+		while (m_env && m_env->isFirstLaunchPending())
+		{
+			co_await sched::transfer_after(std::chrono::seconds{1}, app().get_scheduler());
+			if (!m_env->isFirstLaunchPending())
+			{
+				break;
+			}
+			update();
+		}
+		m_bFirstLaunchPending = false;
+		update();
+		co_return;
+	}
+
+	bool EnvBoxCard::activateEnvWindows()
+	{
+		if (!m_env)
+		{
+			return false;
+		}
+		const std::vector<void*> allWnds = m_env->getAllToplevelWindows();
+
+		// 优先选“主窗口”：可见、非最小化、面积最大（企业微信登录/主窗口最大）
+		HWND bestWnd = nullptr;
+		long bestArea = -1;
+		for (void* raw : allWnds)
+		{
+			const HWND hWnd = static_cast<HWND>(raw);
+			if (!::IsWindow(hWnd) || !::IsWindowVisible(hWnd) || ::IsIconic(hWnd))
+			{
+				continue;
+			}
+			RECT rc{};
+			if (!::GetWindowRect(hWnd, &rc))
+			{
+				continue;
+			}
+			const long area = (rc.right - rc.left) * (rc.bottom - rc.top);
+			if (area > bestArea)
+			{
+				bestArea = area;
+				bestWnd = hWnd;
+			}
+		}
+		// 没有可见窗口时退而取任意一个有效窗口（如最小化/隐藏的应用）
+		if (!bestWnd)
+		{
+			for (void* raw : allWnds)
+			{
+				const HWND hWnd = static_cast<HWND>(raw);
+				if (::IsWindow(hWnd))
+				{
+					bestWnd = hWnd;
+					break;
+				}
+			}
+		}
+		if (!bestWnd)
+		{
+			return false;
+		}
+
+		if (::IsIconic(bestWnd))
+		{
+			::ShowWindow(bestWnd, SW_RESTORE);
+		}
+		// 绕过 Windows 前台锁：把前台线程输入临时附加到目标窗口线程再置前
+		const HWND fg = ::GetForegroundWindow();
+		const DWORD fgThread = fg ? ::GetWindowThreadProcessId(fg, nullptr) : 0;
+		const DWORD targetThread = ::GetWindowThreadProcessId(bestWnd, nullptr);
+		if (fgThread && fgThread != targetThread)
+		{
+			::AttachThreadInput(fgThread, targetThread, TRUE);
+			::BringWindowToTop(bestWnd);
+			::SetForegroundWindow(bestWnd);
+			::AttachThreadInput(fgThread, targetThread, FALSE);
+		}
+		else
+		{
+			::BringWindowToTop(bestWnd);
+			::SetForegroundWindow(bestWnd);
+		}
+		return true;
 	}
 
 	coro::LazyTask<void> EnvBoxCard::onProcessCountChange(biz::Env::EProcEvent e, std::shared_ptr<biz::ProcessInfo> proc, std::size_t count)

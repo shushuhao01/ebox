@@ -218,13 +218,20 @@ namespace global
 	void Data::initializeDllFullPath()
 	{
 		namespace fs = std::filesystem;
+		// 同时记录 32/64 两个位宽的注入 DLL 路径。启动父进程（cmd）时用与自身
+		// 架构一致的那个；hook 到 CreateProcessW 给目标应用注入时，按目标进程
+		// 实际位数选择对应位宽的 DLL，避免 32 位应用被注入 64 位 DLL 而加载失败。
+		const fs::path path64{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"bin"} / fs::path{std::format(L"{}_64.bin", m_envFlagName)})};
+		const fs::path path32{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"bin"} / fs::path{std::format(L"{}_32.bin", m_envFlagName)})};
+		m_dllFullPath64 = path64.string();
+		m_dllFullPath32 = path32.string();
 		if constexpr (CURRENT_ARCH_BIT == ArchBit::Bit64)
 		{
-			m_dllFullPath = fs::path{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"bin"} / fs::path{std::format(L"{}_64.bin", m_envFlagName)})}.string();
+			m_dllFullPath = m_dllFullPath64;
 		}
 		else
 		{
-			m_dllFullPath = fs::path{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"bin"} / fs::path{std::format(L"{}_32.bin", m_envFlagName)})}.string();
+			m_dllFullPath = m_dllFullPath32;
 		}
 	}
 

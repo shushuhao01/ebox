@@ -58,9 +58,34 @@ namespace hook
 
 	inline PDETOUR_CREATE_PROCESS_ROUTINEW* pCreateProcessTrampolineW{nullptr};
 
+	// 按目标进程的实际位数选择对应位宽的注入 DLL：
+	//  - 64 位系统上的 64 位进程 → xxx_64.bin（MemoryDll64）
+	//  - 64 位系统上的 32 位（Wow64）进程 → xxx_32.bin（MemoryDll32）
+	//  - 32 位系统 → 一律 xxx_32.bin
+	// 修复：老版本固定注入当前架构 DLL，遇到 32 位目标应用（如企业微信）
+	// 时 LoadLibrary 必然失败，导致子进程被秒杀、应用根本无法启动。
+	inline std::string_view pick_dll_path_for_process(HANDLE hProcess)
+	{
+		bool bTarget64 = false;
+		SYSTEM_INFO si{};
+		GetNativeSystemInfo(&si);
+		const bool bSystem64 = si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64
+			|| si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_ARM64
+			|| si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_IA64;
+		if (bSystem64)
+		{
+			BOOL isWow64 = FALSE;
+			if (!(IsWow64Process(hProcess, &isWow64) && isWow64))
+			{
+				bTarget64 = true;
+			}
+		}
+		return global::Data::get().dllFullPathForArch(bTarget64);
+	}
+
 	BOOL inject_dll_to_process(LPPROCESS_INFORMATION lpProcessInformation)
 	{
-		std::string_view dllFullPath = global::Data::get().dllFullPath();
+		const std::string_view dllFullPath = pick_dll_path_for_process(lpProcessInformation->hProcess);
 		LPCSTR sz = dllFullPath.data();
 
 		if (!DetourUpdateProcessWithDll(lpProcessInformation->hProcess, &sz, 1) &&

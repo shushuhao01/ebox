@@ -1,3 +1,7 @@
+module;
+#include <windows.h>
+#include <tlhelp32.h>
+
 module Launcher;
 
 import "sys_defs.h";
@@ -65,12 +69,13 @@ namespace biz
 {
 	void Launcher::run(const std::shared_ptr<Env>& env, std::wstring_view exePath, std::wstring_view params /*= L""*/)
 	{
-		m_asyncScope.spawn(launch(env, exePath, params));
+		// UI 入口：启动成功后附带轮询兜底（慢电脑/注入失败时提示并可重试）
+		m_asyncScope.spawn(launchWithPoll(env, std::wstring{exePath}, std::wstring{params}));
 	}
 
 	void Launcher::runInNewEnv(std::wstring_view exePath, std::wstring_view params /*= L""*/)
 	{
-		m_asyncScope.spawn(launch(std::shared_ptr<Env>{}, exePath, params));
+		m_asyncScope.spawn(launchWithPoll(std::shared_ptr<Env>{}, std::wstring{exePath}, std::wstring{params}));
 	}
 
 	coro::LazyTask<void> Launcher::coRun(std::shared_ptr<Env> env, std::wstring_view exePath, std::wstring_view params)
@@ -154,5 +159,73 @@ namespace biz
 			throw;
 		}
 		co_return;
+	}
+
+	coro::LazyTask<void> Launcher::launchWithPoll(std::shared_ptr<Env> env, std::wstring exePath, std::wstring params)
+	{
+		co_await launch(env, exePath, params);
+		co_await pollTargetProcess(std::move(env), std::move(exePath), std::move(params));
+		co_return;
+	}
+
+	coro::LazyTask<void> Launcher::pollTargetProcess(std::shared_ptr<Env> env, std::wstring exePath, std::wstring params)
+	{
+		namespace fs = std::filesystem;
+		const std::wstring exeName = fs::path{exePath}.filename().native();
+		if (exeName.empty())
+		{
+			co_return;
+		}
+		// 最多等待 60 秒，每秒检查一次目标 exe 是否已出现在系统中。
+		// 只要进程出现过即视为启动成功（哪怕随后退出），不再打扰用户；
+		// 慢电脑/老系统上应用进程创建本身较慢，也可能注入失败导致进程从未出现。
+		bool bSeen = false;
+		for (int i = 0; i < 60; ++i)
+		{
+			if (isProcessRunning(exeName))
+			{
+				bSeen = true;
+				break;
+			}
+			co_await sched::transfer_after(std::chrono::seconds{1}, m_execCtx);
+		}
+		if (bSeen)
+		{
+			co_return;
+		}
+		// 超时未出现：切到 UI 线程弹窗，询问是否重试
+		co_await sched::transfer_to(app().get_scheduler());
+		const int ret = MessageBoxW(nullptr,
+		                            std::format(L"「{}」未能正常启动。\n电脑配置较低或系统较旧时首次启动可能较慢，\n是否再试一次？", exePath).c_str(),
+		                            MainApp::appName.data(), MB_YESNO | MB_ICONQUESTION | MB_TASKMODAL);
+		if (ret == IDYES)
+		{
+			co_await launch(env, exePath, params);
+		}
+		co_return;
+	}
+
+	bool Launcher::isProcessRunning(std::wstring_view exeName)
+	{
+		const HANDLE hSnapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+		if (hSnapshot == INVALID_HANDLE_VALUE)
+		{
+			return false;
+		}
+		bool bFound = false;
+		PROCESSENTRY32W entry{sizeof(entry)};
+		if (Process32FirstW(hSnapshot, &entry))
+		{
+			do
+			{
+				if (_wcsicmp(entry.szExeFile, std::wstring{exeName}.c_str()) == 0)
+				{
+					bFound = true;
+					break;
+				}
+			} while (Process32NextW(hSnapshot, &entry));
+		}
+		CloseHandle(hSnapshot);
+		return bFound;
 	}
 }

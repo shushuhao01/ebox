@@ -478,11 +478,11 @@ namespace ui
 			solidBrush->SetColor(D2D1::ColorF(0xe0e0e0));
 			renderTarget->DrawLine(D2D1::Point2F(PADDING, LIST_Y_POS_START), D2D1::Point2F(width - PADDING, LIST_Y_POS_START), solidBrush);
 
-			// 新建环境首次启动提示：首次数据初始化约需 15~30 秒，提示用户稍候，后续启动恢复正常
+			// 新建环境首次启动提示：首次数据初始化期间提示用户稍候，后续启动恢复正常
 			bool firstLaunch = m_processList.hasEnv() && m_processList.getEnv()->isFirstLaunchPending();
 			if (firstLaunch)
 			{
-				// 满 30 秒且窗口已出现（或进程已退出）才清除提示，避免过早消失
+				// 应用窗口已出现或进程已全部退出，立即清除提示
 				if (m_processList.getEnv()->shouldClearFirstLaunchPending())
 				{
 					m_processList.getEnv()->markFirstLaunchDone();

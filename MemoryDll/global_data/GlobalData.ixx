@@ -63,7 +63,13 @@ namespace global
 		std::wstring_view envFlagName() const { return m_envFlagName; }
 		std::string_view envFlagNameA() const { return m_envFlagNameA; }
 		std::wstring_view rootPath() const { return m_rootPath; }
+		// 当前进程架构对应的注入 DLL 路径（兼容旧调用）
 		std::string_view dllFullPath() const { return m_dllFullPath; }
+		// 按目标进程位数选择注入 DLL：true=64 位进程，false=32 位进程
+		std::string_view dllFullPathForArch(bool want64) const
+		{
+			return want64 ? std::string_view{m_dllFullPath64} : std::string_view{m_dllFullPath32};
+		}
 		HKEY appKey() const { return m_appKey; }
 		std::uint32_t inputSyncMsgId() const { return m_inputSyncMsgId; }
 
@@ -88,7 +94,9 @@ namespace global
 		bool m_bIsCmd{false};
 		std::wstring m_envFlagName;
 		std::string m_envFlagNameA;
-		std::string m_dllFullPath;
+		std::string m_dllFullPath;   // 当前进程架构对应的注入 DLL 路径
+		std::string m_dllFullPath32; // 32 位目标进程注入用（MemoryDll32.dll）
+		std::string m_dllFullPath64; // 64 位目标进程注入用（MemoryDll64.dll）
 		std::wstring m_rootPath;
 		std::wstring m_selfFullPath;
 		std::wstring m_selfFileName;

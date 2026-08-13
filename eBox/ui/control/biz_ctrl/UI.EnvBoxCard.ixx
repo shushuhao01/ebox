@@ -80,7 +80,11 @@ namespace ui
 		coro::LazyTask<void> resetToIdleLater();
 		coro::LazyTask<void> onProcessCountChange(biz::Env::EProcEvent e, std::shared_ptr<biz::ProcessInfo> proc, std::size_t count);
 		coro::LazyTask<void> tickRuntime();
-		// void onBtnStartPressed();
+		// 首次启动（新建环境）期间每秒刷新，驱动“首次初始化中”提示的重绘与自动消失
+		coro::LazyTask<void> tickFirstLaunch();
+		// 将本环境已运行应用的主窗口置前（多环境多实例时可区分每个环境的窗口）；
+		// 找到有效窗口并成功置前返回 true，否则返回 false（此时应走启动流程）
+		bool activateEnvWindows();
 
 	private:
 		std::unique_ptr<Button> m_btnStart;
@@ -102,6 +106,9 @@ namespace ui
 		std::size_t m_procCount{0};
 		std::wstring m_strProcCount{L"0"};
 		std::chrono::steady_clock::time_point m_startTime{};
+		// 该环境是否处于“首次初始化中”（新建环境启动后 pending 未清除），
+		// 为 true 且在卡片模式时显示“首次初始化中，请稍候”提示
+		bool m_bFirstLaunchPending{false};
 		bool m_bIdle;
 		std::stop_source m_stopSource{std::nostopstate};
 		OnSelected m_pfnOnSelect;
