@@ -1,14 +1,14 @@
 {
-    "latestVersion": "v2.8.8",
-    "latestVersionCode": 20808,
+    "latestVersion": "v2.8.9",
+    "latestVersionCode": 20809,
     "releaseDate": "2026/8/13",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.8/eBox.exe",
-    "downloadSha256": "AB8833905872BCF49FD5E8F4182DBD68808B271DBE2B542A4CA543E05841C226",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.9/eBox.exe",
+    "downloadSha256": "1C13965FDF98ACDF8E2F7BF64F4FD6DD1DC7A7615F460816C2D871005B528329",
     "downloadSize": 2699776,
     "changelog": [
-        "eBox v2.8.8",
-        "修复退出应用后偶发进程残留、再次启动提示“已运行”的问题",
-        "退出应用更快更干净，不再受网络影响",
+        "eBox v2.8.9",
+        "恢复进程区首次启动温馨提示：窗口出现后继续展示约 30 秒",
+        "卡片环境区首次初始化提示保持原有行为",
         "细节优化"
     ],
     "minSkipVersionCode": 0,

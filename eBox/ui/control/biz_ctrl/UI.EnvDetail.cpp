@@ -478,17 +478,11 @@ namespace ui
 			solidBrush->SetColor(D2D1::ColorF(0xe0e0e0));
 			renderTarget->DrawLine(D2D1::Point2F(PADDING, LIST_Y_POS_START), D2D1::Point2F(width - PADDING, LIST_Y_POS_START), solidBrush);
 
-			// 新建环境首次启动提示：首次数据初始化期间提示用户稍候，后续启动恢复正常
-			bool firstLaunch = m_processList.hasEnv() && m_processList.getEnv()->isFirstLaunchPending();
-			if (firstLaunch)
-			{
-				// 应用窗口已出现或进程已全部退出，立即清除提示
-				if (m_processList.getEnv()->shouldClearFirstLaunchPending())
-				{
-					m_processList.getEnv()->markFirstLaunchDone();
-					firstLaunch = false;
-				}
-			}
+			// 进程区"首次启动温馨提示"：首次数据初始化期间持续展示；窗口已出现后
+			// 继续展示满 30 秒再消失（isFirstLaunchTipActive 判定）；进程全部退出
+			// 立即消失。与卡片区（EnvBoxCard"首次初始化中，请稍候"）分开：
+			// 卡片区在窗口出现时立即清除，保持现状。
+			bool firstLaunch = m_processList.hasEnv() && m_processList.getEnv()->isFirstLaunchTipActive();
 			if (firstLaunch)
 			{
 				const float tipTop = LIST_Y_POS_START + FIRST_LAUNCH_TIP_GAP;
