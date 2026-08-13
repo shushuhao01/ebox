@@ -110,7 +110,14 @@ namespace ui
 		// 为 true 且在卡片模式时显示“首次初始化中，请稍候”提示
 		bool m_bFirstLaunchPending{false};
 		bool m_bIdle;
-		std::stop_source m_stopSource{std::nostopstate};
+		// 注意：不能用 std::nostopstate 初始化——无共享状态时 stop_possible() 为 false，
+		// request_stop() 是空操作，transfer_after/transfer_to 走非取消路径，
+		// 析构时的取消将完全失效（退出残留根因之一）。
+		std::stop_source m_stopSource{};
+		// 仅用于卡片销毁时取消 onProcessCountChange / tickRuntime 这两个跨线程协程。
+		// 与 m_stopSource 分开：后者会被 setBusyTemp 复用（启动选中环境时重置），
+		// 若混用会把运行中环境的“已运行 X 分钟”计时和进程计数更新误取消。
+		std::stop_source m_lifeStopSource{};
 		OnSelected m_pfnOnSelect;
 		OnProcCountChange m_pfnOnProcCountChange;
 		OnSummaryChange m_pfnOnSummaryChange;

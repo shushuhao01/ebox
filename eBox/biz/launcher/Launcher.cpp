@@ -164,12 +164,15 @@ namespace biz
 	coro::LazyTask<void> Launcher::launchWithPoll(std::shared_ptr<Env> env, std::wstring exePath, std::wstring params)
 	{
 		co_await launch(env, exePath, params);
-		co_await pollTargetProcess(std::move(env), std::move(exePath), std::move(params));
+		// 只对轮询部分启用取消：应用退出（Launcher 析构）时立即终止轮询，
+		// 避免 join() 阻塞最多 60 秒、或超时弹窗挡住退出流程。
+		co_await coro::co_with_cancellation(pollTargetProcess(std::move(env), std::move(exePath), std::move(params)), m_stopSource.get_token());
 		co_return;
 	}
 
 	coro::LazyTask<void> Launcher::pollTargetProcess(std::shared_ptr<Env> env, std::wstring exePath, std::wstring params)
 	{
+		std::stop_token token = co_await coro::get_current_cancellation_token();
 		namespace fs = std::filesystem;
 		const std::wstring exeName = fs::path{exePath}.filename().native();
 		if (exeName.empty())
@@ -182,6 +185,11 @@ namespace biz
 		bool bSeen = false;
 		for (int i = 0; i < 60; ++i)
 		{
+			if (token.stop_requested())
+			{
+				// 应用正在退出，不再轮询
+				co_return;
+			}
 			if (isProcessRunning(exeName))
 			{
 				bSeen = true;
@@ -189,12 +197,17 @@ namespace biz
 			}
 			co_await sched::transfer_after(std::chrono::seconds{1}, m_execCtx);
 		}
-		if (bSeen)
+		if (bSeen || token.stop_requested())
 		{
 			co_return;
 		}
 		// 超时未出现：切到 UI 线程弹窗，询问是否重试
 		co_await sched::transfer_to(app().get_scheduler());
+		if (token.stop_requested())
+		{
+			// 退出过程中超时，不弹窗打扰
+			co_return;
+		}
 		const int ret = MessageBoxW(nullptr,
 		                            std::format(L"「{}」未能正常启动。\n电脑配置较低或系统较旧时首次启动可能较慢，\n是否再试一次？", exePath).c_str(),
 		                            MainApp::appName.data(), MB_YESNO | MB_ICONQUESTION | MB_TASKMODAL);

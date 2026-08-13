@@ -1,18 +1,15 @@
 {
-    "latestVersion": "v2.8.7",
-    "latestVersionCode": 20807,
+    "latestVersion": "v2.8.8",
+    "latestVersionCode": 20808,
     "releaseDate": "2026/8/13",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.7/eBox.exe",
-    "downloadSha256": "1ea69ee26549aab019e44bf070601da62086520a70ecb7afaa811f55fbc99ba0",
-    "downloadSize": 2696192,
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.8/eBox.exe",
+    "downloadSha256": "AB8833905872BCF49FD5E8F4182DBD68808B271DBE2B542A4CA543E05841C226",
+    "downloadSize": 2699776,
     "changelog": [
-        "eBox v2.8.7",
-        "修复部分电脑（老系统/慢配置）启动环境失败、一直显示离线的问题：按应用位数自动匹配 32/64 位注入，启动后等待应用进程出现，超时提示一键重试",
-        "新建环境时卡片显示首次初始化中，请稍候，应用窗口弹出或关闭进程后自动消失",
-        "关闭 eBox 后彻底结束所有环境进程，不再残留后台进程",
-        "新建环境启动提速：核心数据并行预拷贝，更快弹出应用窗口",
-        "卡片启动优化：环境已在运行时点击启动，直接把该环境的窗口调到最前面，多开企业微信无需靠任务栏区分",
-        "修复已知问题，细节优化"
+        "eBox v2.8.8",
+        "修复退出应用后偶发进程残留、再次启动提示“已运行”的问题",
+        "退出应用更快更干净，不再受网络影响",
+        "细节优化"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false

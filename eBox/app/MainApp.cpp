@@ -2,6 +2,8 @@ module;
 #pragma comment(lib, "Comctl32.lib")
 module MainApp;
 
+import std;
+
 import "sys_defs.h";
 #ifndef _SYS_DEFS_H_
 #pragma message("Just for IntelliSense. You should not see this message!")
@@ -44,6 +46,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 		biz::license::startHeartbeatLoop();
 
 		app.runMessageLoop();
+
+		// 通知心跳线程尽快结束（不 join）：若其正阻塞在同步 HTTP 请求，
+		// 等待会拖慢退出。真正退出由函数末尾的 ExitProcess 兜底（跳过静态析构）。
+		biz::license::requestStopHeartbeat();
 	}
 	catch (const std::exception& e)
 	{
@@ -61,7 +67,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 		clear_quit_msg();
 		MessageBoxW(nullptr, L"Unknown error", MainApp::appName.data(), MB_OK | MB_ICONERROR | MB_TASKMODAL);
 	}
-	return 0;
+	// 栈对象（MainWindow/Core/MainApp 及全部 UI 树）已完成析构，环境 hive 已保存、
+	// RPC 服务器已关闭。静态存储期对象（如心跳 jthread）的析构会在 main 返回后
+	// join 阻塞（心跳 HTTP 请求挂起时最多可达数十秒，表现为"退出残留进程"），
+	// 因此直接 ExitProcess 跳过静态析构，保证进程立即、干净退出。
+	ExitProcess(0);
 }
 
 void MainApp::parseCmdLine() const

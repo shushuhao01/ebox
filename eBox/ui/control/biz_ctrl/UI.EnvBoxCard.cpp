@@ -10,6 +10,7 @@ import MainApp;
 import Scheduler;
 import Biz.Core;
 import UI.Core;
+import std;
 
 namespace
 {
@@ -47,9 +48,15 @@ namespace ui
 {
 	EnvBoxCard::~EnvBoxCard()
 	{
-		m_stopSource.request_stop();
-		// 不再接收通知，且会等待已经通知的回调结束
+		// 1. 先解除通知回调：setProcCountChangeNotify 与通知回调在 Env 的锁上互斥，
+		//    返回后不会再 spawn 任何新的 onProcessCountChange（其首个挂起点是
+		//    transfer_to(UI调度器)，若在 UI 线程阻塞于 join() 时仍在队列中会死锁）。
 		m_env->setProcCountChangeNotify(nullptr);
+		// 2. 再请求取消：此前已 spawn 的协程（挂在 transfer_to/transfer_after 上）
+		//    由 stop_callback 在当前线程同步恢复并抛取消异常，干净结束协程，
+		//    从而保证下面 join() 不会无限阻塞（否则 eBox.exe 退出时残留进程）。
+		m_stopSource.request_stop();
+		m_lifeStopSource.request_stop();
 		// 之后就绝对不会spawn新的协程，才可以安全等待所有协程结束
 		m_asyncScope.join();
 	}
@@ -62,7 +69,10 @@ namespace ui
 
 		m_env->setProcCountChangeNotify([this](biz::Env::EProcEvent e, const std::shared_ptr<biz::ProcessInfo>& proc, std::size_t count)
 		{
-			m_asyncScope.spawn(onProcessCountChange(e, proc, count));
+			// 用 m_lifeStopSource 包裹：退出销毁时若该协程还挂在 transfer_to(UI调度器)
+			// 队列里（killAllEnvProcesses 强杀进程后、UI 线程忙于析构），request_stop
+			// 会同步取消它，避免 AsyncScope::join() 无限等待导致 eBox.exe 残留。
+			m_asyncScope.spawn(coro::co_with_cancellation(onProcessCountChange(e, proc, count), m_lifeStopSource.get_token()));
 		});
 		// 新建环境（启动新进程创建）才有“首次初始化”提示；老环境无 pending 标记不显示
 		m_bFirstLaunchPending = m_env->isFirstLaunchPending();
@@ -702,9 +712,12 @@ namespace ui
 
 		if (m_procCount > 0 && m_startTime.time_since_epoch().count() == 0)
 		{
-			// 环境首次有进程时记录启动时刻，并启动每秒刷新计时
+			// 环境首次有进程时记录启动时刻，并启动每秒刷新计时。
+			// 用 m_lifeStopSource 包裹：退出销毁时（m_procCount 可能因通知未处理
+			// 而未归零）request_stop 同步取消这个 while(true) 循环，否则
+			// AsyncScope::join() 将无限阻塞，eBox.exe 退出后残留进程。
 			m_startTime = std::chrono::steady_clock::now();
-			m_asyncScope.spawn(tickRuntime());
+			m_asyncScope.spawn(coro::co_with_cancellation(tickRuntime(), m_lifeStopSource.get_token()));
 		}
 		if (m_procCount == 0)
 		{
@@ -737,7 +750,8 @@ namespace ui
 		while (true)
 		{
 			co_await sched::transfer_after(std::chrono::seconds{1}, app().get_scheduler());
-			if (m_procCount == 0)
+			// 卡片销毁时由析构函数请求取消，这里双保险直接退出循环
+			if (m_lifeStopSource.stop_requested() || m_procCount == 0)
 			{
 				break;
 			}

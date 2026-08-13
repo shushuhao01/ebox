@@ -10,6 +10,12 @@ namespace biz
 	export class Launcher
 	{
 	public:
+		~Launcher()
+		{
+			// 退出时先请求取消轮询协程，避免 m_asyncScope 析构时的 join() 阻塞最多 60 秒
+			m_stopSource.request_stop();
+		}
+
 		void run(const std::shared_ptr<Env>& env, std::wstring_view exePath, std::wstring_view params = L"");
 		void runInNewEnv(std::wstring_view exePath, std::wstring_view params = L"");
 
@@ -28,5 +34,8 @@ namespace biz
 	private:
 		sched::SingleThreadContext m_execCtx;
 		coro::AsyncScope m_asyncScope;
+		// 退出时取消正在进行的启动轮询（pollTargetProcess），防止析构 join() 阻塞。
+		// 不能用 std::nostopstate：无共享状态时 request_stop() 是空操作，取消失效。
+		std::stop_source m_stopSource{};
 	};
 }

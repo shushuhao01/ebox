@@ -87,6 +87,9 @@ namespace biz
 		// 宿主（MainApp）在生命周期内调用 start/stop。
 		export void startHeartbeatLoop();
 		export void stopHeartbeatLoop();
+		// 仅请求停止（不 join）：应用退出时礼貌通知心跳线程尽快结束，
+		// 但不等它（若正阻塞在同步 HTTP 请求，join 会拖慢退出）。静态析构前调用。
+		export void requestStopHeartbeat();
 
 		// 纯校验激活码（不持久化），返回有效性/到期时间/是否绑定/解绑上限；发码工具校验用
 		export struct VerifyResult
