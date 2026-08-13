@@ -3,13 +3,13 @@
     "latestVersionCode": 20808,
     "releaseDate": "2026/8/13",
     "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.8.8/eBox.exe",
-    "downloadSha256": "ab8833905872bcf49fd5e8f4182dbd68808b271dbe2b542a4ca543e05841c226",
+    "downloadSha256": "AB8833905872BCF49FD5E8F4182DBD68808B271DBE2B542A4CA543E05841C226",
     "downloadSize": 2699776,
     "changelog": [
         "eBox v2.8.8",
-        "淇閫€鍑哄簲鐢ㄥ悗鍋跺彂杩涚▼娈嬬暀銆佸啀娆″惎鍔ㄦ彁绀衡€滃凡杩愯鈥濈殑闂",
-        "閫€鍑哄簲鐢ㄦ洿蹇洿骞插噣锛屼笉鍐嶅彈缃戠粶褰卞搷",
-        "缁嗚妭浼樺寲"
+        "修复退出应用后偶发进程残留、再次启动提示“已运行”的问题",
+        "退出应用更快更干净，不再受网络影响",
+        "细节优化"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
