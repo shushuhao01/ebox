@@ -31,6 +31,8 @@ namespace ui
 		// 磁盘卡：环形饼图（红=已用 / 蓝=未用），标题带盘符切换
 		void drawDiskCard(const RenderContext& renderCtx, const D2D1_RECT_F& card,
 		                  float usedPercent, std::uint64_t usedBytes, std::uint64_t totalBytes) const;
+		// 磁盘卡右下角"清理垃圾"按钮：弹确认框后启动全盘垃圾清理脚本
+		void onCleanBtnClick();
 		void drawChart(const RenderContext& renderCtx, const D2D1_RECT_F& area,
 		               const std::deque<float>& history, float maxValue, D2D1_COLOR_F accent) const;
 
@@ -38,6 +40,7 @@ namespace ui
 		// 鼠标：点击磁盘卡标题区域切换盘符
 		virtual void onClick(const MouseEvent& e) override;
 		virtual void onMouseMove(const MouseEvent& e) override;
+		virtual void onMouseLeave(const MouseEvent& e) override;
 
 	private:
 		// 采样周期（秒）与保留的历史点数
@@ -70,6 +73,7 @@ namespace ui
 		std::wstring m_diskDisplay;   // 标题栏显示文本（如 "D盘使用"）
 		std::deque<float> m_diskHistory;
 		bool m_diskTitleHovered{false};
+		bool m_cleanHovered{false};   // 磁盘卡右下角"清理垃圾"按钮悬停
 
 		// GPU/显存数据源是否可用（PDH 计数器不存在时降级为“--”）
 		bool m_gpuAvailable{false};

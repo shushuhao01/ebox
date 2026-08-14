@@ -9,6 +9,7 @@ import "sys_defs.hpp";
 #include <pdh.h>
 #include <dxgi.h>
 #include <psapi.h>
+#include "res/resource.h"
 
 // 个别 Windows SDK 头在模块单元中宏不可见时兜底
 #ifndef PDH_MORE_DATA
@@ -25,6 +26,12 @@ namespace
 	constexpr float TITLE_LINE_HEIGHT = 16.f;
 	constexpr float VALUE_LINE_HEIGHT = 30.f;
 	constexpr float DETAIL_LINE_HEIGHT = 14.f;
+
+	// 磁盘卡右下角"清理垃圾"按钮尺寸/位置常量
+	constexpr float CLEAN_BTN_W = 34.f;
+	constexpr float CLEAN_BTN_H = 34.f;
+	constexpr float CLEAN_BTN_RIGHT_MARGIN = 10.f; // 按钮距卡片右缘
+	constexpr float CLEAN_PIE_RIGHT_MARGIN = 52.f; // 饼图圆心距卡片右缘（原 10，左移腾出按钮位）
 
 	// 看板卡片配色（青蓝系，与应用主色调一致；浅底区分背景）
 	// 注意：D2D1_COLOR_F 是 {r,g,b,a} 四元结构体，聚合初始化必须给 4 个浮点分量，
@@ -64,6 +71,83 @@ namespace
 			return std::format(L"{:.1f} KB", bytes / KB);
 		}
 		return std::format(L"{} B", bytes);
+	}
+
+	// 计算磁盘卡右下角"清理垃圾"按钮矩形（与 card 同一坐标系；图标透明无底色，仅作命中区域）
+	D2D1_RECT_F calcCleanBtnRect(const D2D1_RECT_F& card)
+	{
+		const float btnCenterY = card.bottom - 16.f - CLEAN_BTN_H * 0.5f; // 贴近卡片底缘（右下角）
+		return D2D1::RectF(card.right - CLEAN_BTN_RIGHT_MARGIN - CLEAN_BTN_W, btnCenterY - CLEAN_BTN_H * 0.5f,
+		                   card.right - CLEAN_BTN_RIGHT_MARGIN, btnCenterY + CLEAN_BTN_H * 0.5f);
+	}
+
+	// D2D 手绘垃圾桶图标（无图片资源，纯基本图元）
+	void draw_trash_icon(const UniqueComPtr<ID2D1HwndRenderTarget>& rt,
+	                     const UniqueComPtr<ID2D1SolidColorBrush>& brush,
+	                     float cx, float cy, float s, D2D1_COLOR_F color)
+	{
+		const float l = cx - s * 0.5f, r = cx + s * 0.5f;
+		const float t = cy - s * 0.5f, b = cy + s * 0.5f;
+		brush->SetColor(color);
+		// 盖（横线）+ 顶部小把手
+		rt->DrawLine(D2D1::Point2F(l + 2.f, t + 6.f), D2D1::Point2F(r - 2.f, t + 6.f), brush.get(), 1.5f);
+		rt->DrawRectangle(D2D1::RectF(cx - 3.f, t + 1.f, cx + 3.f, t + 5.f), brush.get(), 1.3f);
+		// 桶身（两侧斜边 + 底边）
+		rt->DrawLine(D2D1::Point2F(l + 3.f, t + 8.f), D2D1::Point2F(l + 5.f, b - 3.f), brush.get(), 1.5f);
+		rt->DrawLine(D2D1::Point2F(r - 3.f, t + 8.f), D2D1::Point2F(r - 5.f, b - 3.f), brush.get(), 1.5f);
+		rt->DrawLine(D2D1::Point2F(l + 5.f, b - 3.f), D2D1::Point2F(r - 5.f, b - 3.f), brush.get(), 1.5f);
+		// 桶内竖纹
+		rt->DrawLine(D2D1::Point2F(cx - 2.f, t + 11.f), D2D1::Point2F(cx - 2.f, b - 6.f), brush.get(), 1.1f);
+		rt->DrawLine(D2D1::Point2F(cx + 2.f, t + 11.f), D2D1::Point2F(cx + 2.f, b - 6.f), brush.get(), 1.1f);
+	}
+
+	// 全盘垃圾清理：把内嵌清理脚本解出到 %TEMP%\eBox\，以管理员权限启动（脚本加 /auto 跳过回车确认）
+	void run_junk_cleaner(HWND owner)
+	{
+		const HRSRC hRes = FindResourceW(nullptr, MAKEINTRESOURCEW(IDR_CLEANER_SCRIPT), RT_RCDATA);
+		const HGLOBAL hLoaded = hRes ? LoadResource(nullptr, hRes) : nullptr;
+		const void* pData = hLoaded ? LockResource(hLoaded) : nullptr;
+		const DWORD dataSize = hRes ? SizeofResource(nullptr, hRes) : 0;
+		if (!pData || dataSize == 0)
+		{
+			MessageBoxW(owner, L"清理脚本资源缺失，无法启动全盘清理。", L"全盘垃圾清理", MB_OK | MB_ICONERROR);
+			return;
+		}
+		wchar_t tempDir[MAX_PATH]{};
+		GetTempPathW(MAX_PATH, tempDir);
+		const std::wstring dir = std::wstring(tempDir) + L"eBox";
+		CreateDirectoryW(dir.c_str(), nullptr);
+		const std::wstring batPath = dir + L"\\cleaner.bat";
+		HANDLE hFile = CreateFileW(batPath.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (hFile == INVALID_HANDLE_VALUE)
+		{
+			MessageBoxW(owner, L"无法写入清理脚本临时文件，请检查磁盘空间。", L"全盘垃圾清理", MB_OK | MB_ICONERROR);
+			return;
+		}
+		DWORD written = 0;
+		const BOOL ok = WriteFile(hFile, pData, dataSize, &written, nullptr);
+		CloseHandle(hFile);
+		if (!ok || written != dataSize)
+		{
+			DeleteFileW(batPath.c_str());
+			MessageBoxW(owner, L"写入清理脚本临时文件失败，请检查磁盘空间。", L"全盘垃圾清理", MB_OK | MB_ICONERROR);
+			return;
+		}
+		SHELLEXECUTEINFOW siw{sizeof(siw)};
+		siw.hwnd = owner;
+		siw.lpVerb = L"runas";
+		siw.lpFile = L"cmd.exe";
+		const std::wstring params = std::format(L"/c \"\"{}\" /auto\"", batPath);
+		siw.lpParameters = params.c_str();
+		siw.nShow = SW_SHOWNORMAL;
+		if (!ShellExecuteExW(&siw))
+		{
+			const DWORD err = GetLastError();
+			if (err != ERROR_CANCELLED)
+			{
+				MessageBoxW(owner, std::format(L"启动清理脚本失败（错误码 {}）。", err).c_str(), L"全盘垃圾清理", MB_OK | MB_ICONERROR);
+			}
+		}
 	}
 }
 
@@ -439,9 +523,10 @@ namespace ui
 			                       solidBrush, 1.f);
 		}
 
-		// 环形饼图区域（卡片右下角，圆心下移到 0.70 高度避免与上方明细文字重叠）
+		// 环形饼图区域（卡片右下角，圆心下移到 0.70 高度避免与上方明细文字重叠；
+		// 左移腾出右下角空白放置"清理垃圾"按钮）
 		const float pieDiameter = std::min(cardWidth * 0.5f, cardHeight * 0.42f);
-		const D2D1_POINT_2F pieCenter{card.right - pieDiameter * 0.5f - 10.f, card.top + cardHeight * 0.70f};
+		const D2D1_POINT_2F pieCenter{card.right - pieDiameter * 0.5f - CLEAN_PIE_RIGHT_MARGIN, card.top + cardHeight * 0.70f};
 		const float pieRadius = pieDiameter * 0.5f;
 		const float pieRing = std::max(8.f, pieRadius * 0.38f); // 环宽
 
@@ -530,6 +615,12 @@ namespace ui
 		renderTarget->DrawTextW(totalText.c_str(), static_cast<UINT32>(totalText.size()),
 		                        app().textFormat().pTipsFormat,
 		                        D2D1::RectF(card.left + 12.f, detailY + DETAIL_LINE_HEIGHT, card.right - 12.f, detailY + DETAIL_LINE_HEIGHT * 2.f), solidBrush);
+
+		// 右下角"清理垃圾"图标（饼图左移后的空白处）：无底色块，仅画垃圾桶图标本体，悬停变深蓝
+		const D2D1_RECT_F cleanBtn = calcCleanBtnRect(card);
+		const D2D1_POINT_2F iconCenter{(cleanBtn.left + cleanBtn.right) * 0.5f, (cleanBtn.top + cleanBtn.bottom) * 0.5f};
+		draw_trash_icon(renderTarget, solidBrush, iconCenter.x, iconCenter.y, 20.f,
+		                m_cleanHovered ? D2D1::ColorF(0x1976d2) : D2D1::ColorF(0x9aa3af));
 	}
 
 	void FeaturesArea::onClick(const MouseEvent& e)
@@ -551,18 +642,26 @@ namespace ui
 				m_diskHistory.clear(); // 切换盘后清空旧盘曲线，重新累计
 				sampleAndUpdate();
 			}
+			return;
+		}
+		// 清理按钮（右下角垃圾桶）：弹确认框并启动全盘垃圾清理
+		const D2D1_RECT_F cleanBtn = calcCleanBtnRect(diskCard);
+		if (e.point.x >= cleanBtn.left && e.point.x <= cleanBtn.right &&
+		    e.point.y >= cleanBtn.top && e.point.y <= cleanBtn.bottom)
+		{
+			onCleanBtnClick();
 		}
 	}
 
 	void FeaturesArea::onMouseMove(const MouseEvent& e)
 	{
 		// 悬停磁盘卡标题区域高亮（提示可点击切换盘符）
-		const D2D1_RECT_F& owner = getBoundsInOwner();
-		const float w = owner.right - owner.left;
-		const float h = owner.bottom - owner.top;
+		const D2D1_RECT_F& bounds = getBoundsInOwner();
+		const float w = bounds.right - bounds.left;
+		const float h = bounds.bottom - bounds.top;
 		const float cardWidth = (w - PADDING * 2.f - CARD_GAP * 4.f) / 5.f;
-		const D2D1_RECT_F diskCard = D2D1::RectF(owner.left + PADDING + 4.f * (cardWidth + CARD_GAP), owner.top + PADDING,
-		                                         owner.left + PADDING + 4.f * (cardWidth + CARD_GAP) + cardWidth, owner.top + h - PADDING);
+		const D2D1_RECT_F diskCard = D2D1::RectF(bounds.left + PADDING + 4.f * (cardWidth + CARD_GAP), bounds.top + PADDING,
+		                                         bounds.left + PADDING + 4.f * (cardWidth + CARD_GAP) + cardWidth, bounds.top + h - PADDING);
 		const bool overTitle = e.point.x >= diskCard.left && e.point.x <= diskCard.right &&
 		                       e.point.y >= diskCard.top && e.point.y <= diskCard.top + 32.f;
 		if (overTitle != m_diskTitleHovered)
@@ -570,6 +669,64 @@ namespace ui
 			m_diskTitleHovered = overTitle;
 			update();
 		}
+		// 清理图标悬停：变色 + 悬浮提示词（提示词跟随鼠标移动，随 onMouseLeave 清除）
+		const D2D1_RECT_F cleanBtn = calcCleanBtnRect(diskCard);
+		const bool overClean = e.point.x >= cleanBtn.left && e.point.x <= cleanBtn.right &&
+		                       e.point.y >= cleanBtn.top && e.point.y <= cleanBtn.bottom;
+		if (overClean)
+		{
+			owner()->setTooltip(L"全盘垃圾清理", e.point);
+		}
+		if (overClean != m_cleanHovered)
+		{
+			m_cleanHovered = overClean;
+			if (!overClean)
+			{
+				owner()->clearTooltip();
+			}
+			update();
+		}
+	}
+
+	void FeaturesArea::onMouseLeave(const MouseEvent& e)
+	{
+		(void)e;
+		// 鼠标离开本控件：清除悬浮提示词与悬停状态
+		if (m_cleanHovered || m_diskTitleHovered)
+		{
+			m_cleanHovered = false;
+			m_diskTitleHovered = false;
+			owner()->clearTooltip();
+			update();
+		}
+	}
+
+	void FeaturesArea::onCleanBtnClick()
+	{
+		WindowBase* const wnd = owner();
+		if (wnd)
+		{
+			wnd->clearTooltip();
+		}
+		const HWND hwnd = wnd ? wnd->nativeHandle() : nullptr;
+		const int ret = MessageBoxW(hwnd,
+			L"全盘垃圾清理将执行以下操作：\n\n"
+			L"· 系统临时文件 / Windows更新缓存 / 错误报告 / 崩溃转储 / 回收站\n"
+			L"· 浏览器缓存、开发工具缓存、应用缓存、缩略图缓存\n"
+			L"· 微信/企业微信/QQ/钉钉 的缓存、聊天图片/视频/文件\n"
+			L"· eBox 多开环境内的缓存与聊天记录（不影响登录状态）\n"
+			L"· 全盘 *.tmp / *.dmp / Thumbs.db 等散落垃圾文件\n\n"
+			L"警告：\n"
+			L"① 以上均为永久删除，不可恢复！请先保存正在编辑的文档。\n"
+			L"② 将自动关闭正在运行的浏览器、微信、企业微信、QQ、钉钉等程序（含 eBox 多开中的对应进程）。\n"
+			L"③ 需要管理员权限，将弹出 UAC 授权窗口。\n\n"
+			L"是否继续？",
+			L"全盘垃圾清理", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+		if (ret != IDYES)
+		{
+			return;
+		}
+		run_junk_cleaner(hwnd);
 	}
 
 	void FeaturesArea::drawMetricCard(const RenderContext& renderCtx, const D2D1_RECT_F& card,
