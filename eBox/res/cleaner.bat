@@ -1,6 +1,6 @@
 @echo off
 rem ============================================================
-rem  All-Drive Junk Cleaner (全盘垃圾清理工具 v2.1)
+rem  All-Drive Junk Cleaner (全盘垃圾清理工具 v2.2)
 rem  Auto-detect all fixed drives and clean them all.
 rem  Compatible: Windows 7 / 8 / 8.1 / 10 / 11 (PowerShell 2.0+)
 rem  This file must be saved as UTF-8 (no BOM).
@@ -20,7 +20,7 @@ exit /b
 #PSCODE
 # ==================== 以下为 PowerShell 主程序(由上方批处理引导执行) ====================
 $ErrorActionPreference = 'Continue'
-try { $Host.UI.RawUI.WindowTitle = '全盘垃圾清理工具 v2.0' } catch {}
+try { $Host.UI.RawUI.WindowTitle = '全盘垃圾清理工具 v2.2' } catch {}
 
 # ---------------- 工具函数 (全部兼容 PowerShell 2.0) ----------------
 function Format-Size {
@@ -48,31 +48,157 @@ function New-Obj {
     return $o
 }
 
-function Set-Progress {
-    # 统一进度条封装:固定 Id 与 Activity、Status 补齐/截断到固定宽度,避免控制台文字重影
-    param([string]$Status, [int]$Percent = -1)
-    $st = [string]$Status
-    if ($st.Length -gt 56) { $st = $st.Substring(0, 56) }
-    elseif ($st.Length -lt 56) { $st = $st.PadRight(56) }
-    if ($Percent -ge 0) {
-        Write-Progress -Id 1 -Activity '全盘垃圾清理' -Status $st -PercentComplete $Percent
-    } else {
-        Write-Progress -Id 1 -Activity '全盘垃圾清理' -Status $st
+function Test-ConsoleUsable {
+    # 检测是否有可用控制台句柄(输出被重定向/管道捕获时句柄无效,Console API 会抛异常)。
+    # 无控制台时进度绘制整体跳过,避免异常;真实交互窗口正常显示。
+    if ($null -ne $script:ConsoleUsable) { return $script:ConsoleUsable }
+    $script:ConsoleUsable = $false
+    try { [void][Console]::WindowWidth; $script:ConsoleUsable = $true } catch {}
+    return $script:ConsoleUsable
+}
+
+function Draw-Bar {
+    # 生成 ASCII 进度条(不依赖 Write-Progress,避免其文本重叠 bug)
+    param([int]$Pct, [int]$Width = 20)
+    $p = $Pct; if ($p -gt 100) { $p = 100 }; if ($p -lt 0) { $p = 0 }
+    $filled = [int]([double]$p / 100 * $Width)
+    return (('#' * $filled) + ('-' * ($Width - $filled)))
+}
+
+function Draw-ProgressBars {
+    # 自绘进度区: 用控制台光标定位整块重绘。每次先覆盖上次绘制的所有行,再逐行整宽填充写新内容,
+    # 行数变化/文字变短都不会残留旧字符,彻底解决重叠(替代 Write-Progress)。
+    # 首次调用记录起点行与开始时间; 每槽一行 @{Label;Count;Found;Current;Done;Total};
+    # 末尾总进度行附带实时扫描速度。Clear-Progress 用空格清除并复位光标。
+    param([string]$Title, $Slots, [int]$Done, [int]$Total)
+    if (-not (Test-ConsoleUsable)) { return }
+    if ($null -eq $script:ProgressTop) {
+        try { $script:ProgressTop = [Console]::CursorTop } catch { $script:ProgressTop = 0 }
+        $script:ProgressStart = [DateTime]::UtcNow
+        $script:ProgressPrevDone = -1
+        $script:ProgressLastLines = 0
     }
+    $w = 79
+    try { $w = [Console]::WindowWidth - 1 } catch {}
+    if ($w -lt 40) { $w = 40 }
+    $row = [int]$script:ProgressTop
+    $lines = New-Object System.Collections.ArrayList
+    if ($Title) { [void]$lines.Add(('  ' + $Title)) }
+    $totProc = 0
+    if ($Slots) {
+        $shown = 0
+        foreach ($s in $Slots) {
+            if ($shown -ge 10) { break }
+            $bar = ''
+            $pctTxt = '  --'
+            $pct = -1
+            if ($null -ne $s.DoneFlags) {
+                # 整盘百分比 = 已完成分片 / 总分片(全部完成才是 100%,避免根层快分片提前显示 100%)
+                $tot = 0; $dn = 0
+                foreach ($f in @($s.DoneFlags)) { $tot++; if ($f) { $dn++ } }
+                if ($tot -gt 0) { $pct = [int](100 * $dn / $tot) }
+            } elseif ($s.Done) { $pct = 100 }
+            elseif ($s.Total -gt 0) { $pct = [int](100 * [double]$s.Count / $s.Total) }
+            if ($pct -ge 0) { $bar = Draw-Bar $pct 16; $pctTxt = ('{0,3}%' -f $pct) }
+            $cur = [string]$s.Current
+            if ($cur.Length -gt 44) { $cur = '..' + $cur.Substring($cur.Length - 42) }
+            if ($bar) { $bar = $bar + ' ' }
+            [void]$lines.Add(('  [{0}] {1}{2} | 已处理 {3} | 发现 {4} | {5}' -f $s.Label, $bar, $pctTxt, $s.Count, $s.Found, $cur))
+            $totProc += [int]$s.Count
+            $shown++
+        }
+    }
+    $pctAll = 0
+    if ($Total -gt 0) { $pctAll = [int](100 * [double]$Done / $Total) }
+    $speedTxt = ''
+    if (($null -ne $script:ProgressStart) -and ($totProc -gt 0)) {
+        $el = ([DateTime]::UtcNow - $script:ProgressStart).TotalSeconds
+        if ($el -gt 0) { $speedTxt = (' | {0} 项/秒' -f ([int]($totProc / $el))) }
+    }
+    [void]$lines.Add(('  总进度: {0}/{1} ({2}%){3}' -f $Done, $Total, $pctAll, $speedTxt))
+    # 先覆盖上一次绘制的所有行(空白),行数变化也不会残留重叠
+    try {
+        for ($y = $row; $y -lt ($row + $script:ProgressLastLines); $y++) {
+            [Console]::SetCursorPosition(0, $y)
+            Write-Host (' ' * $w) -NoNewline
+        }
+    } catch {}
+    $y = $row
+    foreach ($ln in $lines) {
+        $s = [string]$ln
+        if ($s.Length -gt $w) { $s = $s.Substring(0, $w) }
+        try { [Console]::SetCursorPosition(0, $y) } catch { break }
+        Write-Host ($s.PadRight($w)) -NoNewline
+        $y++
+    }
+    $script:ProgressLastLines = $lines.Count
+    $script:ProgressEnd = $y - 1
+}
+
+function Set-Progress {
+    # 自绘单行/两行总进度(替代 Write-Progress)。标题绘制在首行(ProgressTop), 状态行在其下方;
+    # 每行整宽填充, 文字变短也不残留; Clear-Progress 从 ProgressTop 起整块清除(含标题行)。
+    param([string]$Status, [int]$Percent = -1, [string]$Title = '')
+    if (-not (Test-ConsoleUsable)) { return }
+    if ($null -eq $script:ProgressTop) {
+        try { $script:ProgressTop = [Console]::CursorTop } catch { $script:ProgressTop = 0 }
+    }
+    $w = 79; try { $w = [Console]::WindowWidth - 1 } catch {}
+    if ($w -lt 40) { $w = 40 }
+    $row = [int]$script:ProgressTop
+    if ($Title) {
+        $t = '  ' + $Title
+        if ($t.Length -gt $w) { $t = $t.Substring(0, $w) }
+        try { [Console]::SetCursorPosition(0, $row) } catch {}
+        Write-Host ($t.PadRight($w)) -NoNewline
+        $row++
+    }
+    $bar = Draw-Bar $Percent 20
+    $st = [string]$Status
+    if ($st.Length -gt 30) { $st = $st.Substring(0, 30) }
+    $line = ('  {0} {1,3}%  {2}' -f $bar, $Percent, $st)
+    if ($line.Length -gt $w) { $line = $line.Substring(0, $w) }
+    try { [Console]::SetCursorPosition(0, $row) } catch {}
+    Write-Host ($line.PadRight($w)) -NoNewline
+    $script:ProgressEnd = $row
 }
 
 function Clear-Progress {
-    Write-Progress -Id 1 -Activity '全盘垃圾清理' -Completed
+    # 清除自绘进度区并复位光标(含标题行,整块清除)
+    if (-not (Test-ConsoleUsable)) {
+        $script:ProgressTop = $null; $script:ProgressEnd = $null
+        $script:ProgressLastLines = 0; $script:ProgressStart = $null; $script:ProgressPrevDone = -1
+        return
+    }
+    if ($null -eq $script:ProgressTop) { return }
+    $startY = [int]$script:ProgressTop
+    $endY = [int]$script:ProgressEnd
+    $w = 79; try { $w = [Console]::WindowWidth } catch {}
+    for ($y = $startY; $y -le $endY; $y++) {
+        try { [Console]::SetCursorPosition(0, $y) } catch { continue }
+        Write-Host ((' ' * $w)) -NoNewline
+    }
+    try { [Console]::SetCursorPosition(0, $startY) } catch {}
+    $script:ProgressTop = $null
+    $script:ProgressEnd = $null
+    $script:ProgressLastLines = 0
+    $script:ProgressStart = $null
+    $script:ProgressPrevDone = -1
 }
 
 function Test-IsUnder {
-    # 判断 Path 是否等于或位于 Bases 中任一目录之下(不区分大小写),用于跨运行空间并行时的 eBox 环境保护
+    # 判断 Path 是否等于或位于 Bases 中任一目录之下(不区分大小写),用于跨运行空间并行时的 eBox 环境保护。
+    # 两侧都经 GetFullPath 规范化,避免大小写/尾部分隔符/8.3 短名差异导致误判。
     param([string]$Path, [string[]]$Bases)
     if (-not $Path) { return $false }
+    $p = ''
+    try { $p = [System.IO.Path]::GetFullPath($Path) } catch { $p = $Path }
     foreach ($b in $Bases) {
         if (-not $b) { continue }
-        if ($Path -ieq $b) { return $true }
-        if ($Path.StartsWith(($b + '\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        $bb = ''
+        try { $bb = [System.IO.Path]::GetFullPath($b) } catch { $bb = $b }
+        if ($p -ieq $bb) { return $true }
+        if ($p.StartsWith(($bb + '\'), [StringComparison]::OrdinalIgnoreCase)) { return $true }
     }
     return $false
 }
@@ -88,7 +214,8 @@ function Invoke-Parallel {
         [string]$ProgressActivity = '',
         [string[]]$FunctionNames = @(),
         [int[]]$Counter = $null,
-        [int]$RefreshMs = 250
+        [int]$RefreshMs = 250,
+        [object]$ProgressSlots = $null
     )
     $list = @($InputObjects)
     if ($list.Count -eq 0) { return @() }
@@ -119,8 +246,6 @@ function Invoke-Parallel {
         $doneFlags = New-Object 'bool[]' $list.Count
         $resultsArr = New-Object 'object[]' $list.Count
         $done = 0
-        $spin = 0
-        $spinChars = @('|','/','-','\')
         while ($done -lt $list.Count) {
             for ($i = 0; $i -lt $list.Count; $i++) {
                 if ($doneFlags[$i]) { continue }
@@ -133,25 +258,22 @@ function Invoke-Parallel {
                 }
             }
             if ($ProgressActivity) {
-                $spin++
-                $ch = $spinChars[$spin % 4]
-                $cur = 0
-                if ($null -ne $Counter) { $cur = $Counter[0] }
-                if ($null -ne $Counter) {
-                    $status = ('{0} {1}/{2}  已遍历 {3} 个目录' -f $ch, $done, $list.Count, $cur)
+                if ($null -ne $ProgressSlots) {
+                    Draw-ProgressBars -Title $ProgressActivity -Slots $ProgressSlots -Done $done -Total $list.Count
                 } else {
-                    $status = ('{0} {1}/{2}' -f $ch, $done, $list.Count)
+                    $pct = 0
+                    if ($list.Count -gt 0) { $pct = [int](100 * $done / $list.Count) }
+                    Set-Progress -Status ('{0}/{1}' -f $done, $list.Count) -Percent $pct -Title $ProgressActivity
                 }
-                $pct = 0
-                if ($list.Count -gt 0) { $pct = [int](100 * $done / $list.Count) }
-                Set-Progress -Status $status -Percent $pct
             }
             if ($done -lt $list.Count) { Start-Sleep -Milliseconds $RefreshMs }
         }
         $results = New-Object System.Collections.ArrayList
         foreach ($r in $resultsArr) { foreach ($o in @($r)) { [void]$results.Add($o) } }
         if ($ProgressActivity) { Clear-Progress }
-        return ,$results.ToArray()
+        # 直接返回扁平结果数组(不要用一元逗号包裹,否则调用处 @() 会得到"1 个元素=整个结果数组",
+        # 导致 $scanResAll[$idx] 只能取到 [0], 其余为 null, 扫描结果解析为空)
+        return $results.ToArray()
     } finally {
         $pool.Close()
     }
@@ -209,118 +331,131 @@ function Get-DirsDepth {
     return $result.ToArray()
 }
 
-function Scan-AppRoots {
-    # 在 Base 下按目录名(不区分大小写)搜索应用数据根目录,限制深度(纯函数,供并行调用;虚拟机检测已移至 Scan-JunkFiles 以提速)
-    param([string]$Base, [int[]]$Counter)
-    $rootNames = @('WeChat Files', 'xwechat_files', 'WXWork', 'Tencent Files', 'DingTalk', 'DingtalkData')
-    $skip = @('$RECYCLE.BIN', 'System Volume Information', 'Windows', 'node_modules', '.git', 'WinSxS')
-    $found = New-Object System.Collections.ArrayList
+function New-ScanSlices {
+    # 将磁盘根目录切成扫描片: 根片(只扫根层) + 各非系统一级子目录片(完整 DFS)。
+    # 目的: 每个片是一个独立任务, 可被多个 Runspace 并行扫描, 避免"整盘单线程"拖慢。
+    param([string]$Base, [string[]]$IgnoreBases)
+    $sysTop = @('$recycle.bin','system volume information','windows','program files','program files (x86)',
+        'programdata','boot','recovery','$windows.~bt','$windows.~ws','$getcurrent','esd','windows.old','perflogs')
+    $rootNames = @('WeChat Files','xwechat_files','WXWork','Tencent Files','DingTalk','DingtalkData')
+    $junkDirNames = @('cache','caches','temp','tmp','logs','log','crashpad','crashreports','crashdumps',
+        'minidumps','cache_data','code cache','gpucache','media cache','inetcache','cacheddata',
+        'cachedprofilesdata','cachedextensions','cachedextensionvsixs','squirreltemp','cache2','shadercache',
+        'grshadercache','dawncache','service worker','serviceworkercachestorage','update cache','updatecache')
+    $slices = New-Object System.Collections.ArrayList
+    [void]$slices.Add(@{ Base = $Base; MaxDepth = 1 })   # 根片: 只扫根层,判定直接子目录
+    try {
+        $rootDi = New-Object System.IO.DirectoryInfo($Base)
+        foreach ($sub in $rootDi.GetDirectories()) {
+            try { if ($sub.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue } } catch { continue }
+            $sn = $sub.Name.ToLower()
+            if ($sysTop -contains $sn) { continue }
+            if ($rootNames -contains $sub.Name) { continue }   # 应用数据根由根片识别,不必再深扫
+            if ($junkDirNames -contains $sn) { continue }      # 垃圾目录由根片识别,不必再深扫
+            if (Test-IsUnder $sub.FullName $IgnoreBases) { continue }
+            [void]$slices.Add(@{ Base = $sub.FullName; MaxDepth = 10 })
+        }
+    } catch {}
+    return $slices.ToArray()
+}
+
+function Scan-DriveSlice {
+    # 一次遍历同时收集: 应用数据根 / 缓存垃圾目录 / 散落垃圾文件 / 虚拟机目录。
+    # 替代旧版 Scan-AppRoots + Scan-JunkDirs + Scan-JunkFiles 的三遍整盘重复遍历, 大幅提速。
+    # -Slot: 共享进度槽(hashtable 引用)。同一盘的多个分片共享一个槽,这里按"累计增量"写入
+    # (每次把本片新增的处理数累加到槽上), 这样进度数字只会持续上涨,不会因多片回写而回跳。
+    # 每 100 个目录节流更新一次, 避免多线程写共享内存的缓存竞争, 同时保证进度条实时有动静。
+    param([string]$Base, [int]$MaxDepth, [string[]]$IgnoreBases, [hashtable]$Slot = $null, [int]$SlotIdx = -1)
+    $rootNames = @('WeChat Files','xwechat_files','WXWork','Tencent Files','DingTalk','DingtalkData')
+    $junkDirNames = @('cache','caches','temp','tmp','logs','log','crashpad','crashreports','crashdumps',
+        'minidumps','cache_data','code cache','gpucache','media cache','inetcache','cacheddata',
+        'cachedprofilesdata','cachedextensions','cachedextensionvsixs','squirreltemp','cache2','shadercache',
+        'grshadercache','dawncache','service worker','serviceworkercachestorage','update cache','updatecache')
+    $skipDirs = @('$recycle.bin','system volume information','windows','winsxs','node_modules','.git',
+        'program files','program files (x86)','programdata','boot','system32','syswow64','recovery',
+        'system','assembly','found.000')
+    $junkExt = @('.tmp','.temp','.dmp','.chk','.gid','.crdownload','.partial')
+    $junkNames = @('thumbs.db')
+    $roots = New-Object System.Collections.ArrayList
+    $junk = New-Object System.Collections.ArrayList
+    $files = New-Object System.Collections.ArrayList
+    $vmx = New-Object System.Collections.ArrayList
+    $n = 0
+    $foundLocal = 0
+    $lastThrottle = 0
+    $slotFoundLast = 0
     $stack = New-Object System.Collections.Stack
     $stack.Push(@($Base, 0))
     while ($stack.Count -gt 0) {
         $cur = $stack.Pop()
         $dir = [string]$cur[0]; $depth = [int]$cur[1]
-        if ($null -ne $Counter) { $Counter[0]++ }
-        $subs = $null
-        try { $subs = (New-Object System.IO.DirectoryInfo($dir)).GetDirectories() } catch { continue }
-        foreach ($s in $subs) {
-            try { if ($s.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue } } catch { continue }
-            if ($rootNames -contains $s.Name) { [void]$found.Add($s.FullName); continue }
-            if ($skip -contains $s.Name) { continue }
-            if (($depth + 1) -lt 6) { $stack.Push(@($s.FullName, ($depth + 1))) }
+        if (($depth -ge $MaxDepth) -and ($depth -gt 0)) { continue }
+        $n++
+        if (($null -ne $Slot) -and (($n - $lastThrottle) -ge 100)) {
+            $Slot.Count = [int]$Slot.Count + ($n - $lastThrottle)
+            $lastThrottle = $n
+            if (($foundLocal - $slotFoundLast) -gt 0) { $Slot.Found = [int]$Slot.Found + ($foundLocal - $slotFoundLast); $slotFoundLast = $foundLocal }
+            $Slot.Current = $dir
         }
-    }
-    return @{ Roots = $found.ToArray() }
-}
-
-function Scan-JunkFiles {
-    # 全盘搜索临时/垃圾文件,并顺带检测虚拟机目录(含 .vmx/.vbox 文件的目录)(纯函数,供并行调用)
-    param([string]$Base, [string[]]$IgnoreBases, [int[]]$Counter)
-    $junkExt = @('.tmp', '.temp', '.dmp', '.chk', '.gid', '.crdownload', '.partial')
-    $junkNames = @('thumbs.db')
-    $skip = @('$RECYCLE.BIN', 'System Volume Information', '.git')
-    $files = New-Object System.Collections.ArrayList
-    $vmx = New-Object System.Collections.ArrayList
-    $stack = New-Object System.Collections.Stack
-    $stack.Push($Base)
-    while ($stack.Count -gt 0) {
-        $dir = [string]$stack.Pop()
-        if ($null -ne $Counter) { $Counter[0]++ }
         $di = $null
         try { $di = New-Object System.IO.DirectoryInfo($dir) } catch { continue }
         $hasVm = $false
         try {
             foreach ($sub in $di.GetDirectories()) {
-                if ($skip -contains $sub.Name) { continue }
                 try { if ($sub.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue } } catch { continue }
                 if (Test-IsUnder $sub.FullName $IgnoreBases) { continue }
-                $stack.Push($sub.FullName)
+                $sn = $sub.Name.ToLower()
+                if ($skipDirs -contains $sn) { continue }
+                if ($rootNames -contains $sub.Name) { [void]$roots.Add($sub.FullName); $foundLocal++; continue }
+                if ($junkDirNames -contains $sn) { [void]$junk.Add($sub.FullName); $foundLocal++; continue }
+                if (($depth + 1) -lt $MaxDepth) { $stack.Push(@($sub.FullName, ($depth + 1))) }
             }
         } catch {}
         try {
             foreach ($f in $di.GetFiles()) {
                 $ext = $f.Extension.ToLower()
-                if (($junkExt -contains $ext) -or ($junkNames -contains $f.Name.ToLower())) { [void]$files.Add($f) }
+                if (($junkExt -contains $ext) -or ($junkNames -contains $f.Name.ToLower())) { [void]$files.Add($f); $foundLocal++ }
                 if (($ext -eq '.vmx') -or ($ext -eq '.vbox')) { $hasVm = $true }
             }
         } catch {}
         if ($hasVm) { [void]$vmx.Add($di.FullName) }
     }
-    return @{ Files = $files.ToArray(); VmxDirs = $vmx.ToArray() }
-}
-
-function Scan-JunkDirs {
-    # 全盘扫描所有目录, 按目录名识别缓存/临时/日志/崩溃目录(不区分大小写,纯函数,供并行调用)
-    # 不局限特定应用路径, 任何目录名符合垃圾特征的都会被收集
-    param([string]$Base, [string[]]$IgnoreBases, [int[]]$Counter)
-    $junkDirNames = @('cache', 'caches', 'temp', 'tmp', 'logs', 'log', 'crashpad', 'crashreports',
-        'crashdumps', 'minidumps', 'cache_data', 'code cache', 'gpucache', 'media cache', 'inetcache',
-        'cacheddata', 'cachedprofilesdata', 'cachedextensions', 'cachedextensionvsixs', 'squirreltemp',
-        'cache2', 'shadercache', 'grshadercache', 'dawncache', 'service worker', 'serviceworkercachestorage',
-        'update cache', 'updatecache')
-    $skipDirs = @('$recycle.bin', 'system volume information', 'windows', 'winsxs', 'node_modules',
-        '.git', 'program files', 'program files (x86)', 'programdata', 'boot', 'system32', 'syswow64',
-        'recovery', 'system', 'temp$', 'assembly', 'found.000')
-    $found = New-Object System.Collections.ArrayList
-    $stack = New-Object System.Collections.Stack
-    $stack.Push(@($Base, 0))
-    while ($stack.Count -gt 0) {
-        $cur = $stack.Pop()
-        $dir = [string]$cur[0]; $depth = [int]$cur[1]
-        if ($null -ne $Counter) { $Counter[0]++ }
-        $subs = $null
-        try { $subs = (New-Object System.IO.DirectoryInfo($dir)).GetDirectories() } catch { continue }
-        foreach ($s in $subs) {
-            try { if ($s.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue } } catch { continue }
-            if (Test-IsUnder $s.FullName $IgnoreBases) { continue }
-            $sn = $s.Name.ToLower()
-            if ($skipDirs -contains $sn) { continue }
-            if ($junkDirNames -contains $sn) { [void]$found.Add($s.FullName); continue }
-            if (($depth + 1) -lt 10) { $stack.Push(@($s.FullName, ($depth + 1))) }
+    if ($null -ne $Slot) {
+        if ($n -gt $lastThrottle) { $Slot.Count = [int]$Slot.Count + ($n - $lastThrottle) }
+        if (($foundLocal - $slotFoundLast) -gt 0) { $Slot.Found = [int]$Slot.Found + ($foundLocal - $slotFoundLast) }
+        # 只标记本分片完成; 整盘百分比由 Draw-ProgressBars 汇总全部 DoneFlags 计算,
+        # 避免"第一个快分片(根层)完成就把整盘显示成 100%"的错误。
+        if (($SlotIdx -ge 0) -and ($null -ne $Slot.DoneFlags)) {
+            try { $Slot.DoneFlags[$SlotIdx] = $true } catch {}
         }
+        $Slot.Current = ''
     }
-    return @{ Dirs = $found.ToArray() }
+    return @{ Roots = $roots.ToArray(); JunkDirs = $junk.ToArray(); Files = $files.ToArray(); VmxDirs = $vmx.ToArray() }
 }
 
 function Remove-DirContents {
-    # 删除目录内所有内容但保留目录本身
+    # 删除目录内所有内容但保留目录本身。
+    # 提速: 用 robocopy /MIR 空目录镜像清空(robocopy 原生多线程,远快于逐文件串行删除)。
+    # 被占用的文件会保留, 再用 Remove-Item 兜底删除一次。
     param([string]$dir)
     $fail = 0
     if (-not $dir) { return 0 }
-    if ($dir.TrimEnd('\').Length -le 3) { return 0 }
-    $items = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
-    foreach ($it in $items) {
-        $done = $false
-        try {
-            if ($it.PSIsContainer) {
-                [System.IO.Directory]::Delete($it.FullName, $true)
-            } else {
-                try { $it.Attributes = [System.IO.FileAttributes]::Normal } catch {}
-                [System.IO.File]::Delete($it.FullName)
-            }
-            $done = $true
-        } catch {}
-        if (-not $done) {
+    $d = $dir.TrimEnd('\')
+    if ($d.Length -le 3) { return 0 }
+    if (-not (Test-Path -LiteralPath $dir)) { return 0 }
+    $empty = Join-Path $env:TEMP ('ebox_empty_' + [System.Guid]::NewGuid().ToString('N'))
+    try {
+        New-Item -ItemType Directory -Path $empty -Force -ErrorAction SilentlyContinue | Out-Null
+        & robocopy.exe $empty $dir /MIR /R:1 /W:1 /NFL /NDL /NJH /NJS /NP 2>$null | Out-Null
+        $rc = $LASTEXITCODE
+        if ($rc -ge 8) { $fail = 1 }
+    } catch { $fail++ }
+    finally {
+        Remove-Item -LiteralPath $empty -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    if (Test-Path -LiteralPath $dir) {
+        $items = @(Get-ChildItem -LiteralPath $dir -Force -ErrorAction SilentlyContinue)
+        foreach ($it in $items) {
             try { Remove-Item -LiteralPath $it.FullName -Recurse -Force -ErrorAction Stop } catch { $fail++ }
         }
     }
@@ -480,7 +615,7 @@ Init-EBoxEnvBases
 try { Clear-Host } catch {}
 Write-Host ''
 Write-Host '  =============================================' -ForegroundColor Cyan
-Write-Host '          全 盘 垃 圾 清 理 工 具  v2.0' -ForegroundColor Cyan
+Write-Host '          全 盘 垃 圾 清 理 工 具  v2.2' -ForegroundColor Cyan
 Write-Host '  =============================================' -ForegroundColor Cyan
 Write-Host ('  检测到本地磁盘: ' + ($drives -join '  ')) -ForegroundColor Green
 Write-Host ''
@@ -513,7 +648,10 @@ if ($env:EBOX_AUTO -ne '1') {
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $isAdmin) {
     try {
-        Start-Process -FilePath 'cmd.exe' -ArgumentList ('/c "{0}"' -f $env:SELF) -Verb RunAs -ErrorAction Stop
+        # 提权重启时保留 /auto(由 eBox 应用内确认框替代回车确认,避免二次确认)
+        $argLine = '/c "{0}"' -f $env:SELF
+        if ($env:EBOX_AUTO -eq '1') { $argLine = '/c "{0}" /auto' -f $env:SELF }
+        Start-Process -FilePath 'cmd.exe' -ArgumentList $argLine -Verb RunAs -ErrorAction Stop
         exit
     } catch {
         Write-Host '  未获得管理员权限,将以普通权限继续(部分内容可能清理不彻底)。' -ForegroundColor Yellow
@@ -531,19 +669,19 @@ $parallelDegree = 8
 try {
     $cpu = [int]$env:NUMBER_OF_PROCESSORS
     if ($cpu -gt 0) {
-        if ($cpu -gt 8) { $parallelDegree = 8 } else { $parallelDegree = $cpu }
+        if ($cpu -gt 8) { $parallelDegree = [Math]::Min(12, $cpu) } else { $parallelDegree = $cpu }
     }
 } catch {}
 $scanWorker = {
-    param($task, $counter)
-    if ($task['Kind'] -eq 'AppRoots') { return (Scan-AppRoots -Base $task['Base'] -Counter $counter) }
-    elseif ($task['Kind'] -eq 'JunkDirs') { return (Scan-JunkDirs -Base $task['Base'] -IgnoreBases $task['IgnoreBases'] -Counter $counter) }
-    elseif ($task['Kind'] -eq 'JunkFiles') { return (Scan-JunkFiles -Base $task['Base'] -IgnoreBases $task['IgnoreBases'] -Counter $counter) }
+    param($task)
+    return (Scan-DriveSlice -Base $task['Base'] -MaxDepth $task['MaxDepth'] -IgnoreBases $task['IgnoreBases'] -Slot $task['Slot'] -SlotIdx $task['SlotIdx'])
 }
-$scanFns = @('Scan-AppRoots', 'Scan-JunkDirs', 'Scan-JunkFiles', 'Test-IsUnder')
+$scanFns = @('Scan-DriveSlice', 'Test-IsUnder')
 
-# ---- 并行扫描: 所有磁盘同时并行(应用数据根目录 / 缓存目录 / 散落垃圾文件) ----
+# ---- 并行扫描: 按磁盘子目录分片,多线程并行(应用根/缓存目录/垃圾文件/虚拟机 一次遍历) ----
 $scanDriveList = New-Object System.Collections.ArrayList
+$scanSliceCounts = New-Object System.Collections.ArrayList
+$scanSlots = New-Object System.Collections.ArrayList
 $scanTasks = New-Object System.Collections.ArrayList
 foreach ($dv in $drives) {
     $scanBase = "$dv`:\"
@@ -552,25 +690,36 @@ foreach ($dv in $drives) {
         continue
     }
     [void]$scanDriveList.Add($dv)
-    [void]$scanTasks.Add(@{ Base = $scanBase; Kind = 'AppRoots'; IgnoreBases = $envBases })
-    [void]$scanTasks.Add(@{ Base = $scanBase; Kind = 'JunkDirs'; IgnoreBases = $envBases })
-    [void]$scanTasks.Add(@{ Base = $scanBase; Kind = 'JunkFiles'; IgnoreBases = $envBases })
+    # 每盘一个共享进度槽(该盘所有分片任务都写入它),进度条按盘显示一行
+    # DoneFlags: 每分片一格, 分片完成置 true; 整盘百分比=已完成分片/总分片, 全部完成才 100%
+    $slices = @(New-ScanSlices -Base $scanBase -IgnoreBases $envBases)
+    $doneFlags = New-Object 'object[]' $slices.Count
+    for ($k = 0; $k -lt $slices.Count; $k++) { $doneFlags[$k] = $false }
+    $slot = @{ Label = $dv; Count = 0; Found = 0; Current = ''; Done = $false; Total = 0; DoneFlags = $doneFlags }
+    [void]$scanSlots.Add($slot)
+    [void]$scanSliceCounts.Add($slices.Count)
+    $sid = 0
+    foreach ($s in $slices) {
+        [void]$scanTasks.Add(@{ Base = $s['Base']; MaxDepth = $s['MaxDepth']; IgnoreBases = $envBases; Slot = $slot; SlotIdx = $sid })
+        $sid++
+    }
 }
 
-$scanCounter = New-Object 'int[]' 1
 $scanResAll = @()
 if ($scanTasks.Count -gt 0) {
     Write-Host ''
     Write-Host ('  正在并行扫描 {0} 个磁盘(大磁盘需数分钟,请耐心等待)...' -f $scanDriveList.Count) -ForegroundColor Cyan
-    $scanResAll = @(Invoke-Parallel -InputObjects @($scanTasks) -ScriptBlock $scanWorker -FunctionNames $scanFns -Throttle $parallelDegree -ProgressActivity '正在扫描所有磁盘' -Counter $scanCounter -RefreshMs 250)
+    $scanResAll = @(Invoke-Parallel -InputObjects @($scanTasks) -ScriptBlock $scanWorker -FunctionNames $scanFns -Throttle $parallelDegree -ProgressActivity '正在扫描所有磁盘' -ProgressSlots @($scanSlots) -RefreshMs 200)
 }
 
 # ---- 逐盘处理扫描结果(顺序执行,开销小) ----
 $scanCount = 0
 $idx = 0
-foreach ($dv in $scanDriveList) {
+for ($di = 0; $di -lt $scanDriveList.Count; $di++) {
+    $dv = $scanDriveList[$di]
     $scanBase = "$dv`:\"
     $scanCount++
+    $sliceCount = $scanSliceCounts[$di]
     Write-Host ''
     Write-Host ('  ------ 扫描 {0} 盘 ------  [{1}/{2}]' -f $dv, $scanCount, $scanDriveList.Count) -ForegroundColor DarkYellow
 
@@ -581,25 +730,38 @@ foreach ($dv in $scanDriveList) {
     $rb = "$dv`:\`$RECYCLE.BIN"
     if (Test-Path -LiteralPath $rb) { Add-Cat 'recycle' $rb }
 
-    $appRootsRes = $scanResAll[$idx]; $idx++
-    $junkDirsRes = $scanResAll[$idx]; $idx++
-    $junkFilesRes = $scanResAll[$idx]; $idx++
-
-    $roots = @($appRootsRes['Roots'])
-    foreach ($v in @($junkFilesRes['VmxDirs'])) { [void]$global:QJVmxDirs.Add($v) }
-    foreach ($r in $roots) { Write-Host ('        应用数据: ' + $r) -ForegroundColor DarkGray }
+    # 汇总该盘所有分片结果
+    $roots = New-Object System.Collections.ArrayList
+    $junkDirs = New-Object System.Collections.ArrayList
+    $junkFiles = New-Object System.Collections.ArrayList
+    for ($s = 0; $s -lt $sliceCount; $s++) {
+        $res = $scanResAll[$idx]; $idx++
+        foreach ($r in @($res['Roots'])) { [void]$roots.Add($r) }
+        foreach ($jd in @($res['JunkDirs'])) { [void]$junkDirs.Add($jd) }
+        foreach ($jf in @($res['Files'])) { [void]$junkFiles.Add($jf) }
+        foreach ($v in @($res['VmxDirs'])) { [void]$global:QJVmxDirs.Add($v) }
+    }
+    $roots = @($roots | Sort-Object -Unique)
+    $junkDirs = @($junkDirs | Sort-Object -Unique)
+    if ($roots.Count -gt 0) {
+        Write-Host ('        应用数据根目录 {0} 个:' -f $roots.Count) -ForegroundColor DarkGray
+        foreach ($r in $roots) { Write-Host ('          - ' + $r) -ForegroundColor DarkGray }
+    }
 
     Add-AppRootCategories $roots
 
-    $junkDirs = @($junkDirsRes['Dirs'])
     if ($junkDirs.Count -gt 0) {
-        Write-Host ('        发现 {0} 个缓存/垃圾目录。' -f $junkDirs.Count) -ForegroundColor DarkGray
+        Write-Host ('        缓存/垃圾目录 {0} 个:' -f $junkDirs.Count) -ForegroundColor DarkGray
+        foreach ($jd in $junkDirs) { Write-Host ('          - ' + $jd) -ForegroundColor DarkGray }
         foreach ($jd in $junkDirs) { Add-Cat 'disk_cache' $jd }
     }
 
-    $junkFiles = @($junkFilesRes['Files'])
     if ($junkFiles.Count -gt 0) {
-        Write-Host ('        发现 {0} 个临时/垃圾文件。' -f $junkFiles.Count) -ForegroundColor DarkGray
+        Write-Host ('        临时/垃圾文件 {0} 个:' -f $junkFiles.Count) -ForegroundColor DarkGray
+        $shown = 0
+        foreach ($jf in $junkFiles) {
+            if ($shown -lt 5) { Write-Host ('          - ' + $jf.FullName) -ForegroundColor DarkGray; $shown++ }
+        }
         if (-not $global:QJCatFiles.ContainsKey('junk_files')) { $global:QJCatFiles['junk_files'] = @() }
         foreach ($jf in $junkFiles) { $global:QJCatFiles['junk_files'] += $jf }
     }
@@ -783,9 +945,6 @@ if ($vmDirs.Count -gt 0) {
     $vmCnt = 0
     foreach ($vmDir in $vmDirs) {
         $vmCnt++
-        $s = '收集虚拟机 {0}/{1}' -f $vmCnt, $vmDirs.Count
-        $pct = [int](100 * $vmCnt / $vmDirs.Count)
-        Set-Progress -Status $s -Percent $pct
         Write-Host ('        虚拟机: ' + $vmDir) -ForegroundColor DarkGray
         # 目录内及一级子目录的日志/转储/临时文件 (绝不碰 .vmdk/.vdi/.vmx/.nvram/.vmem/.vmss/.vmsn)
         foreach ($f in @(Get-SubFiles $vmDir)) {
@@ -805,17 +964,19 @@ if ($vmDirs.Count -gt 0) {
     Clear-Progress
 }
 
-# ---------------- eBox 多开环境数据: 缓存 + 聊天记录 ----------------
-# 白名单与应用"环境清理"按钮完全一致:
+# ---------------- eBox 多开环境数据: 缓存 + 聊天记录(按环境分组) ----------------
+# 白名单与应用"环境清理"按钮完全一致, 且严格限制为垃圾目录:
 #  缓存: qtCef/WXWorkCefCache/着色器/浏览器指标/字典 等整目录;
 #        Default profile 下的 Cache/Code Cache/GPU缓存/Service Worker 等子缓存
 #  聊天记录: 各数字企业目录下的 Data 消息库 / Index 搜索索引
-# 绝不触碰: 注册表 hive / Cookies / Local Storage / Preferences / 企业配置 / 设备指纹
-$global:EBXEnvCacheDirs = New-Object System.Collections.ArrayList
-$global:EBXEnvChatDirs = New-Object System.Collections.ArrayList
+# 绝不触碰(以下任何一项都不会被加入清理列表):
+#  注册表 hive / Cookies / Local Storage / Preferences / 企业配置 / 设备指纹 / 登录状态
+# 未安装 eBox 或没有对应环境目录时自动跳过。
+$global:EBXEnvList = New-Object System.Collections.ArrayList
 
 function Add-EnvWxworkCaches {
-    param([string]$WxDir)
+    # 白名单收集某个 wxwork 目录内的缓存/聊天记录目录到输出容器(只收集路径,不删任何文件)
+    param([string]$WxDir, $CacheOut, $ChatOut)
     $whole = @('qtcef','wxworkcefcache','shadercache','grshadercache','graphitedawncache','browsermetrics','segmentation_platform','dictionaries')
     $defSub = @('cache','code cache','gpucache','dawncache','dawnwebgpucache','dawnwebgpu','shadercache','grshadercache','graphitedawncache','service worker','shared dictionary')
     $stack = New-Object System.Collections.Stack
@@ -827,13 +988,13 @@ function Add-EnvWxworkCaches {
         foreach ($s in $subs) {
             try { if ($s.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue } } catch { continue }
             $sn = $s.Name.ToLower()
-            if ($whole -contains $sn) { [void]$global:EBXEnvCacheDirs.Add($s.FullName); continue }
+            if ($whole -contains $sn) { [void]$CacheOut.Add($s.FullName); continue }
             if ($sn -eq 'default') {
                 $ds = $null
                 try { $ds = (New-Object System.IO.DirectoryInfo($s.FullName)).GetDirectories() } catch { continue }
                 foreach ($d in $ds) {
                     $dn = $d.Name.ToLower()
-                    if ($defSub -contains $dn) { [void]$global:EBXEnvCacheDirs.Add($d.FullName) }
+                    if ($defSub -contains $dn) { [void]$CacheOut.Add($d.FullName) }
                 }
                 continue
             }
@@ -851,19 +1012,97 @@ function Add-EnvWxworkCaches {
                 try { $eds = (New-Object System.IO.DirectoryInfo($e.FullName)).GetDirectories() } catch { continue }
                 foreach ($d in $eds) {
                     $dn = $d.Name.ToLower()
-                    if (($dn -eq 'data') -or ($dn -eq 'index')) { [void]$global:EBXEnvChatDirs.Add($d.FullName) }
+                    if (($dn -eq 'data') -or ($dn -eq 'index')) { [void]$ChatOut.Add($d.FullName) }
                 }
             }
         }
     }
 }
 
+function Get-EBoxEnvNameMap {
+    # 读取 eBox 环境注册表 hive 文件(<Env>\data\eBox 或 eBox_<用户名>), 建立 目录index -> 显示名 映射。
+    # eBox 改名只改显示名(Name REG_SZ), 环境目录名(index)不变; hive 内 Env\<flagName>\Index(REG_DWORD) 与目录名一致。
+    # 用 reg.exe load 挂载读取(管理员权限); eBox 正在运行占用 hive 或权限不足时返回空表, 调用方降级用目录名。
+    param([string]$DataDir)
+    $key = [string]$DataDir
+    if ($null -eq $script:EnvNameMapCache) { $script:EnvNameMapCache = @{} }
+    if ($script:EnvNameMapCache.ContainsKey($key)) { return $script:EnvNameMapCache[$key] }
+    $map = @{}
+    if ((-not $DataDir) -or (-not (Test-Path -LiteralPath $DataDir))) { return $map }
+    $hive = Join-Path $DataDir 'eBox'
+    if (-not (Test-Path -LiteralPath $hive)) {
+        $cands = @(Get-ChildItem -LiteralPath $DataDir -Filter 'eBox_*' -Force -ErrorAction SilentlyContinue | Where-Object { -not $_.PSIsContainer })
+        if ($cands.Count -gt 0) { $hive = $cands[0].FullName } else { return $map }
+    }
+    $mount = 'eBoxClean' + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
+    try { & reg.exe delete "HKU\$mount" /f 2>$null | Out-Null } catch {}
+    $loaded = $false
+    try {
+        & reg.exe load "HKU\$mount" "$hive" 2>$null | Out-Null
+        $loaded = ($LASTEXITCODE -eq 0)
+    } catch {}
+    if (-not $loaded) { $global:EBoxEnvNameReadFailed = $true; return $map }
+    # 用 reg.exe query 读取(独立进程,不占用本进程注册表句柄,保证 unload 成功、不残留挂载)
+    try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
+    try {
+        $out = @(& reg.exe query "HKU\$mount\Env" /s 2>$null)
+        $curIdx = -1
+        foreach ($line in $out) {
+            $s = [string]$line
+            # 子键头(含根键)行: "HKEY_USERS\<mount>\Env[<子键>]"; 进入新块先结算上一子键
+            if ($s -match '^\s*HKEY_USERS\\') {
+                if (($curIdx -ge 0) -and (-not $map.ContainsKey($curIdx))) { $map[$curIdx] = '' }
+                $curIdx = -1
+                continue
+            }
+            $m = [regex]::Match($s, '^\s+(\S+)\s+(\S+)\s*(.*)$')
+            if (-not $m.Success) { continue }
+            $vn = $m.Groups[1].Value.ToLower()
+            $vt = $m.Groups[2].Value.ToLower()
+            $vd = $m.Groups[3].Value.Trim()
+            if (($vt -eq 'reg_dword') -and ($vn -eq 'index')) {
+                # 读到新的 Index: 上一子键若有 Index 但无 Name, 也先入 map(留空, 由调用方回退默认名)
+                if (($curIdx -ge 0) -and (-not $map.ContainsKey($curIdx))) { $map[$curIdx] = '' }
+                $hex = $vd
+                if ($hex.StartsWith('0x')) { $hex = $hex.Substring(2) }
+                try { $curIdx = [Convert]::ToInt32($hex, 16) } catch { $curIdx = -1 }
+            }
+            elseif (($vt -eq 'reg_sz') -and ($vn -eq 'name')) {
+                if (($curIdx -ge 0) -and $vd) { $map[$curIdx] = $vd }
+            }
+        }
+        # 结尾: 最后一个子键若有 Index 但无 Name, 同样入 map(留空)
+        if (($curIdx -ge 0) -and (-not $map.ContainsKey($curIdx))) { $map[$curIdx] = '' }
+    } catch {}
+    finally {
+        if ($loaded) { try { & reg.exe unload "HKU\$mount" 2>$null | Out-Null } catch {} }
+    }
+    $script:EnvNameMapCache[$key] = $map
+    return $map
+}
+
 function Collect-EBoxEnvData {
+    # 每个环境目录生成一条记录 @{Display;Name;Dir;Base;CacheDirs;ChatDirs;Size}; 无垃圾目录的环境自动跳过。
+    # 目录名=index; 显示名优先取 hive 中的 Name(改名后的名称), 读不到时用"环境{index}";
+    # Display 形如"环境 3"或"环境 工作号A (目录 3)"; 仅处理数字目录, 跳过 data 目录与 *_to_delete 残留。
     foreach ($base in $global:EBoxEnvBases) {
         if (-not (Test-Path -LiteralPath $base)) { continue }
+        $nameMap = Get-EBoxEnvNameMap -DataDir (Join-Path $base 'data')
         $envDirs = $null
         try { $envDirs = (New-Object System.IO.DirectoryInfo($base)).GetDirectories() } catch { continue }
         foreach ($envDir in $envDirs) {
+            $dirName = $envDir.Name
+            if ($dirName -eq 'data') { continue }
+            if ($dirName.EndsWith('_to_delete')) { continue }
+            if (-not ($dirName -match '^\d+$')) { continue }
+            $index = [int]$dirName
+            $displayName = $null
+            if ($nameMap.ContainsKey($index)) { $displayName = $nameMap[$index] }
+            if (-not $displayName) { $displayName = ('环境' + $dirName) }
+            if ($displayName -eq ('环境' + $dirName)) { $disp = ('环境 ' + $dirName) }
+            else { $disp = ('环境 ' + $displayName + ' (目录 ' + $dirName + ')') }
+            $cacheOut = New-Object System.Collections.ArrayList
+            $chatOut = New-Object System.Collections.ArrayList
             $stack = New-Object System.Collections.Stack
             $stack.Push($envDir.FullName)
             while ($stack.Count -gt 0) {
@@ -872,16 +1111,36 @@ function Collect-EBoxEnvData {
                 try { $subs = (New-Object System.IO.DirectoryInfo($dir)).GetDirectories() } catch { continue }
                 foreach ($s in $subs) {
                     try { if ($s.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { continue } } catch { continue }
-                    if ($s.Name.ToLower() -eq 'wxwork') { Add-EnvWxworkCaches $s.FullName; continue }
+                    if ($s.Name.ToLower() -eq 'wxwork') { Add-EnvWxworkCaches $s.FullName $cacheOut $chatOut; continue }
                     $stack.Push($s.FullName)
                 }
+            }
+            if (($cacheOut.Count -gt 0) -or ($chatOut.Count -gt 0)) {
+                [void]$global:EBXEnvList.Add(@{ Display = $disp; Name = $displayName; Dir = $dirName; Base = $envDir.FullName; CacheDirs = $cacheOut; ChatDirs = $chatOut; Size = [double]0 })
             }
         }
     }
 }
 Collect-EBoxEnvData
-if ($global:EBXEnvCacheDirs.Count -gt 0) { $global:QJCat['ebox_env_cache'] = @($global:EBXEnvCacheDirs | Sort-Object -Unique) }
-if ($global:EBXEnvChatDirs.Count -gt 0) { $global:QJCat['ebox_env_chat'] = @($global:EBXEnvChatDirs | Sort-Object -Unique) }
+
+# 按环境显示垃圾清单并统计大小(仅缓存+聊天记录; 没有环境/没有对应文件时整段跳过)
+if ($global:EBXEnvList.Count -gt 0) {
+    Write-Host ''
+    Write-Host ('  eBox 多开环境垃圾(按环境, 共 {0} 个环境):' -f $global:EBXEnvList.Count) -ForegroundColor DarkYellow
+    if ($global:EBoxEnvNameReadFailed) {
+        Write-Host '    提示: 未能读取环境显示名(eBox 可能正在运行), 已按目录序号显示。' -ForegroundColor DarkGray
+    }
+    $envSizeWorker = { param($e) $s = [double]0; foreach ($p in $e['CacheDirs']) { $s += Get-DirSize $p }; foreach ($p in $e['ChatDirs']) { $s += Get-DirSize $p }; return @{ Size = $s } }
+    $envSizes = @(Invoke-Parallel -InputObjects @($global:EBXEnvList) -ScriptBlock $envSizeWorker -FunctionNames @('Get-DirSize') -Throttle $parallelDegree -ProgressActivity '正在统计环境垃圾大小')
+    for ($i = 0; $i -lt $global:EBXEnvList.Count; $i++) { $global:EBXEnvList[$i].Size = $envSizes[$i]['Size'] }
+    foreach ($e in $global:EBXEnvList) {
+        if ($e.Size -gt 0) {
+            Write-Host ('    [{0}] 缓存 {1} 目录, 聊天记录 {2} 目录, 共 {3}' -f $e.Display, $e.CacheDirs.Count, $e.ChatDirs.Count, (Format-Size $e.Size)) -ForegroundColor DarkGray
+        } else {
+            Write-Host ('    [{0}] 缓存 {1} 目录, 聊天记录 {2} 目录, 无可清理内容' -f $e.Display, $e.CacheDirs.Count, $e.ChatDirs.Count) -ForegroundColor DarkGray
+        }
+    }
+}
 
 # ---------------- 组装清理项目列表 ----------------
 $meta = @(
@@ -917,9 +1176,7 @@ $meta = @(
     @{K='qq_recv';      G='QQ/TIM';   N='接收保存的文件';           Note='属于您保存的文件,默认不清理';        Sel=$false},
     @{K='dd_cache';     G='钉钉';     N='缓存与日志';               Note='安全';                              Sel=$true},
     @{K='disk_cache';   G='全盘缓存'; N='全盘扫描发现的缓存/临时/日志目录'; Note='不局限应用路径,凡目录名符合垃圾特征'; Sel=$true},
-    @{K='root_temp';    G='通用';     N='磁盘根目录临时文件夹';     Note='Temp/Tmp/Cache 目录的内容';          Sel=$true},
-    @{K='ebox_env_cache'; G='eBox环境'; N='多开环境缓存(CEF/着色器)'; Note='与应用"环境清理"一致,不影响登录';    Sel=$true},
-    @{K='ebox_env_chat';  G='eBox环境'; N='多开环境聊天记录(消息库/索引)'; Note='清理后历史聊天记录无法查看,不影响登录'; Sel=$true}
+    @{K='root_temp';    G='通用';     N='磁盘根目录临时文件夹';     Note='Temp/Tmp/Cache 目录的内容';          Sel=$true}
 )
 
 $targets = New-Object System.Collections.ArrayList
@@ -957,6 +1214,19 @@ foreach ($m in $meta) {
     [void]$targets.Add((New-Obj @{
         Group=$m.G; Name=$m.N; Paths=$clean; Files=$files; Mode='Contents';
         Selected=$m.Sel; Note=$m.Note; Size=[double]0; TakeOwn=$to
+    }))
+}
+
+# eBox 多开环境: 每个环境一个清理目标(仅缓存+聊天记录白名单目录, 不影响登录状态)
+foreach ($e in $global:EBXEnvList) {
+    $envPaths = @()
+    foreach ($p in @($e.CacheDirs)) { $envPaths += $p }
+    foreach ($p in @($e.ChatDirs)) { $envPaths += $p }
+    $envPaths = @($envPaths | Where-Object { $_ } | Sort-Object -Unique)
+    if ($envPaths.Count -eq 0) { continue }
+    [void]$targets.Add((New-Obj @{
+        Group='eBox环境'; Name=($e.Display + ' (缓存+聊天记录)'); Paths=$envPaths; Files=@(); Mode='Contents';
+        Selected=$true; Note='仅缓存与聊天记录, 不影响登录状态'; Size=[double]$e.Size; TakeOwn=$false
     }))
 }
 
@@ -1040,8 +1310,6 @@ $catNames = @{
     'dd_cache'    = '钉钉缓存'
     'disk_cache'  = '全盘缓存/临时/日志目录'
     'root_temp'   = '根目录临时'
-    'ebox_env_cache' = 'eBox环境缓存'
-    'ebox_env_chat'  = 'eBox环境聊天记录'
 }
 $foundAny = $false
 foreach ($k in @($global:QJCat.Keys)) {
@@ -1149,6 +1417,8 @@ Write-Host ''
 Write-Host '  开始清理(内容多时需几分钟,请耐心等待)...' -ForegroundColor Cyan
 $driveFree = @{}
 foreach ($dv in $drives) { $driveFree[$dv] = (Get-PSDrive -Name $dv -ErrorAction SilentlyContinue).Free }
+$driveFreed = @{}
+foreach ($dv in $drives) { $driveFreed[$dv] = [double]0 }
 $totalFreed = [double]0
 $totalFail = 0
 $report = New-Object System.Collections.ArrayList
@@ -1176,6 +1446,9 @@ foreach ($t in $recycleTargets) {
     }
     $totalFreed += $freed
     $totalFail += $fail
+    $drvF = ''
+    if ($t.Paths.Count -gt 0) { $drvF = $t.Paths[0].Substring(0, 1) }
+    if ($drvF -and $driveFreed.ContainsKey($drvF)) { $driveFreed[$drvF] += $freed }
     [void]$report.Add((New-Obj @{ Group=$t.Group; Name=$t.Name; Freed=$freed; Fail=$fail }))
     if ($fail -gt 0) {
         Write-Host ('释放 ' + (Format-Size $freed) + ',有 ' + $fail + ' 项被占用未删除') -ForegroundColor Yellow
@@ -1243,6 +1516,9 @@ if ($cleanTargets.Count -gt 0) {
         $ti++
         $totalFreed += $freed
         $totalFail += $fail
+        $drvF = ''
+        if ($t.Paths.Count -gt 0) { $drvF = $t.Paths[0].Substring(0, 1) }
+        if ($drvF -and $driveFreed.ContainsKey($drvF)) { $driveFreed[$drvF] += $freed }
         [void]$report.Add((New-Obj @{ Group=$t.Group; Name=$t.Name; Freed=$freed; Fail=$fail }))
         if ($fail -gt 0) {
             Write-Host ('    [{0}/{1}] 清理 [{2}] {3}: 释放 {4},有 {5} 项被占用未删除' -f $ti, $selected.Count, $t.Group, $t.Name, (Format-Size $freed), $fail) -ForegroundColor Yellow
@@ -1266,7 +1542,7 @@ foreach ($dv in $drives) {
     $before = $driveFree[$dv]
     $after = (Get-PSDrive -Name $dv -ErrorAction SilentlyContinue).Free
     if (($null -ne $before) -and ($null -ne $after)) {
-        Write-Host ('  {0} 盘可用空间: {1}  ->  {2}' -f $dv, (Format-Size $before), (Format-Size $after))
+        Write-Host ('  {0} 盘可用: {1}  ->  {2}   (本盘释放 {3})' -f $dv, (Format-Size $before), (Format-Size $after), (Format-Size $driveFreed[$dv])) -ForegroundColor Green
     }
 }
 if ($totalFail -gt 0) {
