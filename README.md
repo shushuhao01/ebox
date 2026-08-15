@@ -36,6 +36,7 @@ eBox 通过 **PE 内存加载 + API Hook + 路径重定向** 的方式，让每�
 | **进程注入** | 通过 PE Loader 将 `MemoryDll.dll` 加载到目标进程，Hook 关键 API |
 | **离线激活** | ECDSA P-256 签名的激活码体系，支持单机绑定/通用码两种模式 |
 | **自动升级** | 启动后异步检查更新，红点提示不强制升级，一键下载安装替换 |
+| **全盘垃圾清理** | 首页磁盘卡片一键清理系统/浏览器/微信/企业微信等垃圾，并按 eBox 环境名称清理各环境缓存与聊天记录（不动环境关键文件） |
 | **拖拽启动** | 直接将可执行文件拖到窗口，自动新建/选择环境运行 |
 | **多账号支持** | 同时登录多个 QYWX 等客户端，方便多账号管理 |
 
@@ -101,7 +102,7 @@ eBox 通过 **PE 内存加载 + API Hook + 路径重定向** 的方式，让每�
 │   │   ├── page/               #   页面（首页/下载页）
 │   │   ├── UI.MainWindow.cpp   #   主窗口
 │   │   └── UI.MainWindow.ixx
-│   ├── res/                    # 资源（图标/RC/嵌入 DLL）
+│   ├── res/                    # 资源（图标/RC/嵌入 DLL/清理脚本 cleaner.bat）
 │   └── eBox.vcxproj
 ├── MemoryDll/                 # 注入 DLL 源码
 │   ├── hook/                   #   各类 API Hook
@@ -121,6 +122,8 @@ eBox 通过 **PE 内存加载 + API Hook + 路径重定向** 的方式，让每�
 ├── tools/KeyGen/               # 激活码生成工具（含私钥，仅内部使用，已 gitignore）
 ├── license-server/             # 授权服务平台（后端 API + 管理面板，独立镜像至 eBox-online 子仓库）
 ├── sync-subrepo.ps1            # 授权平台同步到子仓库的脚本（git subtree）
+├── 全盘垃圾清理工具.bat        # 全盘垃圾清理脚本（UTF-8 无 BOM，与 eBox 内嵌资源同源）
+├── .github/                    # GitHub Actions（auto-update.yml 发布后自动更新 update.json 并 purge CDN）
 ├── dist/                       # 分发产物（update.json 模板等）
 ├── docs/                       # 文档
 ├── eBox.sln                    # Visual Studio 解决方案
@@ -219,6 +222,17 @@ $msbuild = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere
 - 本软件支持多开同一程序互不干扰（如同时登录多个 QYWX）
 - 每个环境拥有独立的配置、缓存与聊天数据
 - 本软件只能简单地在环境之间隔离，不会阻止环境内进程访问环境外资源
+
+### 全盘垃圾清理
+
+首页「磁盘」卡片右下角的垃圾桶按钮，可一键执行全盘垃圾清理（V2.9.0 新增，脚本内置在 exe 中，无需额外安装）：
+
+- 点击后弹出确认框，确认后以**管理员权限**启动清理脚本（`cmd /c cleaner.bat /auto`，`/auto` 跳过脚本内的回车确认）
+- 覆盖范围：系统临时文件/更新缓存/预读取/显卡着色器缓存、旧系统残留、各类日志与崩溃转储、浏览器缓存、微信/企业微信/QQ/TIM/钉钉缓存与聊天文件、各盘回收站、磁盘根目录及全盘扫描发现的缓存/临时/日志目录
+- **eBox 多开环境**：按环境名称分组列出（支持改名后的名称，形如 `环境 WorkA (目录 3)`），仅清理各环境的缓存与聊天记录，**不会触碰环境关键文件**，不影响登录状态
+- 扫描与清理均**多线程并行**，控制台实时显示每个磁盘的进度条，清理完成后按磁盘/环境逐项汇报释放空间
+- 若电脑未安装 eBox 或没有对应环境，相关项目自动跳过
+- 脚本源文件为仓库根目录的 `全盘垃圾清理工具.bat`（`eBox/res/cleaner.bat` 与之字节级同步，构建时嵌入 exe）
 
 ---
 
@@ -437,29 +451,28 @@ jsDelivr CDN（https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.jso
 版本比较 → 红点提示 → 下载升级包 → SHA-256 校验 → 自动安装
 ```
 
-### 发布新版本流程
+### 发布新版本流程（自动化）
 
-1. 修改 [eBox/app/MainApp.ixx](eBox/app/MainApp.ixx) 中的版本号常量（`kVerMajor`/`kVerMinor`/`kVerPatch`/`kVerCode`）
-2. 同步更新 [eBox/res/eBox.rc](eBox/res/eBox.rc) 中的 `FILEVERSION`/`PRODUCTVERSION`
-3. 构建 Release|x64，得到 `bin/x64/eBox.exe`
-4. 计算新 exe 的 SHA-256：
-   ```powershell
-   Get-FileHash "bin\x64\eBox.exe" -Algorithm SHA256
-   ```
-5. 更新 `dist/update.json`（字段含义见 [dist/update.json](dist/update.json) 模板）
-6. 将新版 `eBox.exe` 上传到下载地址（`downloadUrl` 指向的位置，可用 GitHub Releases / 对象存储等）
-7. 提交并推送 `dist/update.json` 与源码改动到 GitHub
-8. 访问以下 URL 手动刷新 jsDelivr CDN 缓存（5 分钟内全员生效）：
-   ```
-   https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json
-   ```
+发布流程已由 `.github/workflows/auto-update.yml` 自动化（V2.9.0 起）：
+
+1. 修改 [eBox/app/MainApp.ixx](eBox/app/MainApp.ixx) 中的版本号常量（`kVerMajor`/`kVerMinor`/`kVerPatch`/`kVerCode`/`appVersion`/`appUpdateDate`）
+2. 同步更新 [eBox/biz/license/License.cpp](eBox/biz/license/License.cpp)（`kAppVersion`，本地维护）、[eBox/res/eBox.rc](eBox/res/eBox.rc)（`FILEVERSION`/`PRODUCTVERSION`）与 [eBox/ui/UI.MainWindow.cpp](eBox/ui/UI.MainWindow.cpp)（标题注释）
+3. 构建 Release|x64，得到 `bin/x64/eBox.exe`（PostBuild 自动复制为 `bin/x64/eBox-<版本号>.exe`）
+4. 提交并推送源码改动到 GitHub（main）
+5. 创建 GitHub Release：tag `vX.Y.Z`、上传资产 `eBox.exe`、正文**每行一条**更新日志（支持 `- ` 列表前缀，工作流会自动去除）
+6. 工作流自动完成：下载资产 → 计算 SHA-256/大小 → 重写 `dist/update.json` 并推回 main → **purge jsDelivr CDN**（5 分钟内全员可见）
+
+> **手动兜底**（工作流失败时）：按以下步骤手动处理——
+> 1. 计算 SHA-256：`Get-FileHash "bin\x64\eBox.exe" -Algorithm SHA256`
+> 2. 更新 `dist/update.json`（字段见下表），`downloadUrl` 指向 `https://github.com/shushuhao01/ebox/releases/download/vX.Y.Z/eBox.exe`
+> 3. 提交推送后访问 `https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json` 手动 purge（短时间内请勿重复触发，jsDelivr 会限流）
 
 ### update.json 字段说明
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
-| `latestVersion` | string | 版本号字符串，如 `"v2.7.0"` |
-| `latestVersionCode` | int | 单调递增数字，用于版本比较（如 `20700`） |
+| `latestVersion` | string | 版本号字符串，如 `"v2.9.0"` |
+| `latestVersionCode` | int | 单调递增数字，用于版本比较（如 `20900`） |
 | `releaseDate` | string | 发布日期，如 `"2026/8/7"` |
 | `downloadUrl` | string | 升级包下载地址（HTTPS 推荐） |
 | `downloadSha256` | string | 升级包 SHA-256（小写十六进制），客户端据此校验完整性 |
@@ -478,12 +491,17 @@ jsDelivr CDN（https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.jso
 
 ```cpp
 static constexpr int kVerMajor = 2;     // 主版本号
-static constexpr int kVerMinor = 7;     // 次版本号
+static constexpr int kVerMinor = 9;     // 次版本号
 static constexpr int kVerPatch = 0;     // 修订号
-static constexpr int kVerCode  = 20700; // 单调递增数字，用于版本比较
+static constexpr int kVerCode  = 20900; // 单调递增数字，用于版本比较
 ```
 
-发布新版本时需同步更新此四处定义与 `.rc` 中的 `FILEVERSION`/`PRODUCTVERSION`。
+发布新版本时需**同步更新 4 处**：
+
+1. [eBox/app/MainApp.ixx](eBox/app/MainApp.ixx)：`kVerMajor`/`kVerMinor`/`kVerPatch`/`kVerCode` + `appVersion`/`appUpdateDate`
+2. [eBox/biz/license/License.cpp](eBox/biz/license/License.cpp)：`kAppVersion`（本地维护，skip-worktree 不入库）
+3. [eBox/res/eBox.rc](eBox/res/eBox.rc)：`FILEVERSION`/`PRODUCTVERSION` 及字符串
+4. [eBox/ui/UI.MainWindow.cpp](eBox/ui/UI.MainWindow.cpp)：窗口标题注释
 
 ### 模块依赖关系
 
@@ -505,10 +523,10 @@ MemoryDll (注入层，独立)
 
 ## 许可证
 
-本项目基于 [GNU General Public License v3.0](LICENSE) 开源。
+本项目基于 [MIT License](LICENSE) 开源。
 
-- 任何使用、修改、分发需遵守 GPL v3 条款
-- 商业使用请联系作者获取授权
+- 可自由使用、修改、分发（需保留版权声明）
+- 商业使用无需额外授权
 
 ---
 
