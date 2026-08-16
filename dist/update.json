@@ -1,19 +1,13 @@
 {
-    "latestVersion": "v2.9.0",
-    "latestVersionCode": 20900,
-    "releaseDate": "2026/8/15",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.9.0/eBox.exe",
-    "downloadSha256": "8ea1697719bc5bddda91cfc39f2fcb4ad7db76769491d6af02f658d57ffda31e",
-    "downloadSize": 2785280,
+    "latestVersion": "v2.9.1",
+    "latestVersionCode": 20901,
+    "releaseDate": "2026/8/16",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.9.1/eBox.exe",
+    "downloadSha256": "bb7dce1ae8e2e792a36e99a33746a9285b07b9befeb8c81a18b07cc70a83b81b",
+    "downloadSize": 2785792,
     "changelog": [
-        "eBox v2.9.0",
-        "新增：首页磁盘卡片清理按钮，内置全盘垃圾清理工具（一键清理系统、浏览器、微信、企业微信、eBox 多开环境等垃圾）",
-        "新增：全盘扫描与清理多线程并行，实时显示每个磁盘的扫描进度",
-        "新增：eBox 多开环境垃圾按环境名称分组列出（支持改名后的名称），仅清理缓存与聊天记录，不影响登录状态与关键文件",
-        "新增：清理完成后按磁盘与环境逐项汇报释放的空间",
-        "优化：进度条实时刷新显示，避免文字重叠",
-        "修复：改名后的 eBox 环境在扫描结果中正确显示新名称",
-        "修复：扫码起始阶段进度条即显示 100% 的问题"
+        "修复：环境日志面板标题跟随环境名称显示（支持改名后的名称，未改名保持默认名）",
+        "优化：点击\"更新\"按钮时，若无待装更新则实时检查最新版本并提示结果"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
