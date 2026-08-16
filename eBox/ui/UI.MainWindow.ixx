@@ -127,6 +127,7 @@ namespace ui
 		std::stop_source m_updateTimerStop;  // 6小时周期复检的取消令牌
 		std::stop_source m_dlStopSource;     // 下载协程的取消令牌（关窗/点取消时 request_stop）
 		biz::update::CheckResult m_lastCheckResult{biz::update::CheckResult::NoUpdate};  // 最近一次检查结果（用于区分提示）
+		bool m_manualCheckPending{false};  // 用户点击"更新"触发实时检查：检查完成后自动弹窗展示结果
 
 		// ===== 下载进度（跨线程 atomic，供进度弹窗轮询）=====
 		std::atomic<std::uint64_t> m_dlDownloaded{0};

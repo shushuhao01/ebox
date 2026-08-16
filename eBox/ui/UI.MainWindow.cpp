@@ -954,7 +954,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v2.9.0   更新时间：2026/8/15   [到期：yyyy-MM-dd]
+		// 标题：eBox v2.9.1   更新时间：2026/8/16   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1191,28 +1191,48 @@ namespace ui
 			// 无更新/失败/已忽略：保持红点熄灭
 			m_hasUpdate = false;
 		}
+
+		// 手动点击"更新"触发的实时检查：完成后自动展示结果
+		if (m_manualCheckPending)
+		{
+			m_manualCheckPending = false;
+			if (m_pendingUpdate)
+			{
+				showUpdateDialog();  // 有更新：弹出更新详情
+			}
+			else
+			{
+				// 无更新/失败/已忽略：按最近一次检查结果区分提示，避免网络失败误报"已是最新版本"
+				switch (m_lastCheckResult)
+				{
+				case biz::update::CheckResult::NetworkError:
+					MessageBoxW(nativeHandle(), L"检查更新失败，请检查网络连接后重试。",
+					            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
+					break;
+				case biz::update::CheckResult::SkippedThisVersion:
+					MessageBoxW(nativeHandle(), L"您已选择忽略此版本的更新，有新版本时会再次提示。",
+					            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+					break;
+				default:
+					MessageBoxW(nativeHandle(), L"当前已是最新版本。",
+					            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+					break;
+				}
+			}
+		}
 	}
 
 	void MainWindow::showUpdateDialog()
 	{
 		if (!m_pendingUpdate)
 		{
-			// 无待安装更新：按最近一次检查结果区分提示，避免网络失败误报"已是最新版本"
-			switch (m_lastCheckResult)
+			// 无待装更新：先实时拉取最新 manifest（时间戳破除 CDN 缓存），检查完成后自动展示结果
+			if (m_manualCheckPending)
 			{
-			case biz::update::CheckResult::NetworkError:
-				MessageBoxW(nativeHandle(), L"检查更新失败，请检查网络连接后重试。",
-				            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
-				break;
-			case biz::update::CheckResult::SkippedThisVersion:
-				MessageBoxW(nativeHandle(), L"您已选择忽略此版本的更新，有新版本时会再次提示。",
-				            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
-				break;
-			default:
-				MessageBoxW(nativeHandle(), L"当前已是最新版本。",
-				            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
-				break;
+				return;  // 已有实时检查在进行，忽略重复点击
 			}
+			m_manualCheckPending = true;
+			startUpdateCheck();
 			return;
 		}
 		const auto& manifest = *m_pendingUpdate;

@@ -114,9 +114,16 @@ namespace ui
 		update();
 	}
 
+	void EnvLogPanel::setEnvName(std::wstring_view envName)
+	{
+		m_envName = envName;
+		update();
+	}
+
 	void EnvLogPanel::clearEnv()
 	{
 		m_hasEnv = false;
+		m_envName.clear();
 		m_logs.clear();
 		m_logLines.clear();
 		m_scrollBar.setTotalSize(0.f);
@@ -346,11 +353,20 @@ namespace ui
 		solidBrush->SetColor(m_isHovered ? D2D1::ColorF(0xbbdefb) : D2D1::ColorF(0xd7dde4));
 		renderTarget->DrawRoundedRectangle(cardRect, solidBrush);
 
-		// 标题
+		// 标题：显示名跟随环境卡片（改名后为新名称，未改名保持默认名），名称缺失时回退"环境N"
 		std::wstring title;
 		if (m_hasEnv)
 		{
-			title = std::format(L"环境{} 日志（{} 条）{}", m_envIndex, m_logs.size(), m_expanded ? L"（滚轮查看）" : L"");
+			std::wstring displayName;
+			if (m_envName.empty())
+			{
+				displayName = std::format(L"环境{}", m_envIndex);
+			}
+			else
+			{
+				displayName = m_envName;
+			}
+			title = std::format(L"{} 日志（{} 条）{}", displayName, m_logs.size(), m_expanded ? L"（滚轮查看）" : L"");
 		}
 		else
 		{

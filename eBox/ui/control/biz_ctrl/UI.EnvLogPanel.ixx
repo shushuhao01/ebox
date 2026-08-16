@@ -24,6 +24,8 @@ namespace ui
 	public:
 		// 绑定当前选中的环境（index 对应的日志）；envIndex 无效则显示“未选择环境”
 		void setEnvIndex(std::uint32_t envIndex);
+		// 设置环境显示名称（改名后的名称；与左侧环境卡片一致，未改名时为默认名）
+		void setEnvName(std::wstring_view envName);
 		void clearEnv();
 		bool hasEnv() const noexcept { return m_hasEnv; }
 		bool isExpanded() const noexcept { return m_expanded; }
@@ -67,6 +69,7 @@ namespace ui
 		bool m_hasEnv{false};
 		float m_maxExpandHeight{180.f};
 		std::uint32_t m_envIndex{0};
+		std::wstring m_envName;
 
 		// 渲染用日志行缓存（展开时刷新）
 		std::vector<biz::EnvLogEntry> m_logs;

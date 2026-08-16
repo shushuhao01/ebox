@@ -293,6 +293,7 @@ namespace ui
 		}
 		m_processList.setEnv(env);
 		m_logPanel.setEnvIndex(env->getIndex());
+		m_logPanel.setEnvName(env->getName());
 		m_infoPanel.setEnv(env);
 		update();
 	}
