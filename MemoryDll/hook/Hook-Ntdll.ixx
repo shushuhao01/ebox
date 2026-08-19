@@ -5,6 +5,7 @@ module;
 export module Hook:Ntdll;
 
 import "sys_defs.h";
+import "hook_cache.h";
 import :Core;
 import std;
 import GlobalData;
@@ -295,6 +296,107 @@ namespace hook
 		return false;
 	}
 
+	// 重定向拷贝"等待超时"记录（TTL 去重）：
+	// 同一重定向文件等待落盘超时后，TTL 内不再重复等待（直接查一次立即返回），
+	// 避免 WXWork 高频访问缺失文件（属性查询轮询、重复打开/创建）时每次访问都
+	// 阻塞数百毫秒轮询造成 UI 迟缓。超时后由调用方回退原有逻辑（如创建空文件），
+	// 与拷贝失败的既有降级行为一致；TTL 过期后允许重新尝试。
+	class RedirectTimeoutCache
+	{
+	public:
+		// 返回 true 表示允许等待（TTL 内无超时记录）
+		bool should_wait(const std::wstring& path)
+		{
+			const ULONGLONG now = ::GetTickCount64();
+			std::lock_guard lock(m_mutex);
+			purge_locked(now);
+			return m_timeouts.find(path) == m_timeouts.end();
+		}
+
+		void record_timeout(const std::wstring& path)
+		{
+			const ULONGLONG now = ::GetTickCount64();
+			std::lock_guard lock(m_mutex);
+			purge_locked(now);
+			if (m_timeouts.size() >= MaxEntries)
+			{
+				m_timeouts.clear(); // 达到上限：整体清空（后续文件重新尝试）
+			}
+			m_timeouts[path] = now;
+		}
+
+	private:
+		static constexpr ULONGLONG TtlMs = 5000;
+		static constexpr std::size_t MaxEntries = 512;
+
+		void purge_locked(ULONGLONG now)
+		{
+			for (auto it = m_timeouts.begin(); it != m_timeouts.end();)
+			{
+				if (now - it->second > TtlMs)
+				{
+					it = m_timeouts.erase(it);
+				}
+				else
+				{
+					++it;
+				}
+			}
+		}
+
+		std::mutex m_mutex;
+		std::unordered_map<std::wstring, ULONGLONG> m_timeouts;
+	};
+
+	// 单例指针：InterlockedCompareExchangePointer 一次性发布（无 magic static）。
+	// 反射注入子进程下 magic static 初始化不可靠（实测 WXWorkWeb 崩溃），且永不析构
+	// 由操作系统回收，避免短命中转进程退出竞态（与 hook_cache 同一约定）。
+	RedirectTimeoutCache* g_redirectTimeoutCachePtr = nullptr;
+
+	RedirectTimeoutCache& redirect_timeout_cache()
+	{
+		if (g_redirectTimeoutCachePtr == nullptr)
+		{
+			RedirectTimeoutCache* fresh = new RedirectTimeoutCache;
+			if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&g_redirectTimeoutCachePtr),
+			                                        fresh, nullptr) != nullptr)
+			{
+				delete fresh; // 其他线程抢先发布，释放本线程临时对象
+			}
+		}
+		return *g_redirectTimeoutCachePtr;
+	}
+
+	// 有界等待重定向目标落盘。返回 true 表示已就绪。
+	// 宿主收到 createRedirectFile 请求后由工作池【异步】拷贝（原子 temp+rename 落盘）。
+	// ncalrpc 无调用超时（RPC_C_OPT_CALL_TIMEOUT 对 local RPC 无效），不能在调用线程内
+	// 同步等待宿主返回；这里以 10ms 粒度有界轮询（总 500ms），超时后记录到 TTL 去重表，
+	// TTL 内再访问同一文件不再重复等待，由调用方回退到原有逻辑（如创建空文件）。
+	// 既杜绝无限阻塞，又避免高频访问缺失文件时反复等待造成的 UI 迟缓。
+	bool wait_redirect_ready(std::wstring_view redirectPath)
+	{
+		const std::wstring path{redirectPath};
+		if (redirect_target_has_data(path))
+		{
+			return true;
+		}
+		if (!redirect_timeout_cache().should_wait(path))
+		{
+			return false; // 最近已超时过，不再重复等待
+		}
+		constexpr int MaxAttempts = 50; // 50 * 10ms = 500ms
+		for (int i = 0; i < MaxAttempts; ++i)
+		{
+			if (redirect_target_has_data(path))
+			{
+				return true;
+			}
+			Sleep(10);
+		}
+		redirect_timeout_cache().record_timeout(path);
+		return false;
+	}
+
 	template <auto trampoline>
 	NTSTATUS NTAPI NtCreateFile(OUT PHANDLE FileHandle, IN ACCESS_MASK DesiredAccess, IN POBJECT_ATTRIBUTES ObjectAttributes,
 	                            OUT PIO_STATUS_BLOCK IoStatusBlock, IN PLARGE_INTEGER AllocationSize OPTIONAL, IN ULONG FileAttributes,
@@ -363,6 +465,7 @@ namespace hook
 				{
 					NtClose(tempSrcHandle);
 					rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+					wait_redirect_ready(redirectPath.value());
 					const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
 					UNICODE_STRING newObjName;
 					newObjName.Buffer = redirectPath.value().data();
@@ -426,6 +529,7 @@ namespace hook
 			// 为什么不直接在这里创建文件并copy?
 			// 因为要考虑多进程架构的软件可能同时都要访问同一个文件，在这里做并发限制比较困难，而且NtCreateFile还被hook了，用不了高阶接口。干脆用eBox做
 			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+			wait_redirect_ready(redirectPath.value());
 
 			// 最终再次尝试重定向位置
 			ObjectAttributes->ObjectName = &newObjName;
@@ -507,6 +611,7 @@ namespace hook
 			NtClose(tempSrcHandle);
 
 			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+			wait_redirect_ready(redirectPath.value());
 
 			// 最终再次尝试重定向位置
 			ObjectAttributes->ObjectName = &newObjName;
@@ -567,6 +672,7 @@ namespace hook
 		}
 
 		rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
+		wait_redirect_ready(redirectPath.value());
 
 		// 最终再次尝试重定向位置
 		ObjectAttributes->ObjectName = &newObjName;
@@ -820,25 +926,26 @@ namespace hook
 		return ret;
 	}
 
-	std::unordered_set<std::uint64_t> GetAllProcessInOtherEnv()
+	// 供 hook_cache 使用的全量拉取回调: 返回"其他环境全部 pid"集合
+	bool fetch_other_processes(std::unordered_set<ULONG_PTR>& out)
 	{
-		std::unordered_set<std::uint64_t> allProc;
 		try
 		{
 			const rpc::ClientDefault c;
 			std::uint64_t pids[rpc::MAX_PID_COUNT]{};
 			std::uint32_t count = rpc::MAX_PID_COUNT;
 			c.getAllProcessIdExclude(global::Data::get().envFlag(), pids, &count);
-			allProc.reserve(count);
+			out.reserve(count);
 			for (std::uint32_t i = 0; i < count; ++i)
 			{
-				allProc.insert(pids[i]);
+				out.insert(static_cast<ULONG_PTR>(pids[i]));
 			}
+			return true;
 		}
 		catch (...)
 		{
+			return false;
 		}
-		return allProc;
 	}
 
 	template <auto trampoline>
@@ -852,13 +959,13 @@ namespace hook
 
 		if (SystemInformationClass == SystemProcessInformation)
 		{
-			const std::unordered_set<std::uint64_t> allProcInOtherEnv = GetAllProcessInOtherEnv();
+			// 用 TTL 缓存过滤其他环境进程(见 hook_cache.h), 避免每次进程枚举都同步 RPC
 			PSYSTEM_PROCESS_INFORMATION pIndex = static_cast<PSYSTEM_PROCESS_INFORMATION>(SystemInformation);
 			PSYSTEM_PROCESS_INFORMATION pShow = pIndex;
 
 			do
 			{
-				if (pIndex->UniqueProcessId && allProcInOtherEnv.contains(reinterpret_cast<ULONG_PTR>(pIndex->UniqueProcessId)))
+				if (pIndex->UniqueProcessId && hook_cache::process_other(reinterpret_cast<ULONG_PTR>(pIndex->UniqueProcessId)))
 				{
 					if (pIndex->NextEntryOffset)
 					{
@@ -935,18 +1042,26 @@ namespace hook
 		{
 			return buffer;
 		}
+		// 单次系统调用：先用 512 字节栈缓冲（注册表键名一般远小于此），不足才动态分配
+		std::array<std::byte, 512> stackBuf{};
 		ULONG size = 0;
-		NtQueryKey(KeyHandle, KeyNameInformation, nullptr, 0, &size);
-		if (size == 0)
+		const NTSTATUS status = NtQueryKey(KeyHandle, KeyNameInformation, stackBuf.data(), static_cast<ULONG>(stackBuf.size()), &size);
+		if (status == STATUS_BUFFER_TOO_SMALL && size > stackBuf.size())
+		{
+			buffer.resize(size);
+			if (!NT_SUCCESS(NtQueryKey(KeyHandle, KeyNameInformation, buffer.data(), size, &size)))
+			{
+				buffer.clear();
+				return buffer;
+			}
+			return buffer;
+		}
+		if (!NT_SUCCESS(status))
 		{
 			return buffer;
 		}
 		buffer.resize(size);
-		if (!NT_SUCCESS(NtQueryKey(KeyHandle, KeyNameInformation, buffer.data(), size, &size)))
-		{
-			buffer.clear();
-			return buffer;
-		}
+		std::memcpy(buffer.data(), stackBuf.data(), size);
 		return buffer;
 	}
 
@@ -1004,6 +1119,8 @@ namespace hook
 		const std::wstring keyName = GetKeyName(KeyHandle);
 		if (keyName.size() && !global::is_app_key_name(keyName))
 		{
+			// 该键已被写入 appKey，否定缓存失效
+			global::Data::get().clear_key_not_in_app_cache(keyName);
 			const std::expected<HKEY, LSTATUS> result =
 				RegCreateKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
 				.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
@@ -1036,26 +1153,32 @@ namespace hook
 		const std::wstring keyName = GetKeyName(KeyHandle);
 		if (keyName.size() && !global::is_app_key_name(keyName))
 		{
-			const std::expected<HKEY, LSTATUS> result =
-				RegOpenKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
-				.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
-				{
-					const NTSTATUS status = trampoline(hKey, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
-					RegCloseKey(hKey);
-					if (!NT_SUCCESS(status))
+			// 否定缓存命中：该键已确认不在 appKey，直接查真实注册表（省去每次失败的 RegOpenKeyExW 系统调用）
+			if (!global::Data::get().is_key_not_in_app_cache(keyName))
+			{
+				const std::expected<HKEY, LSTATUS> result =
+					RegOpenKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
+					.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
 					{
-						return std::unexpected{status};
-					}
-					return std::expected<HKEY, LSTATUS>{HKEY{}};
-				});
-			if (result)
-			{
-				return STATUS_SUCCESS;
-			}
-			// 缓冲区不够不认为是失败，也直接返回。
-			if (result.error() == STATUS_BUFFER_TOO_SMALL || result.error() == STATUS_BUFFER_OVERFLOW)
-			{
-				return result.error();
+						const NTSTATUS status = trampoline(hKey, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
+						RegCloseKey(hKey);
+						if (!NT_SUCCESS(status))
+						{
+							return std::unexpected{status};
+						}
+						return std::expected<HKEY, LSTATUS>{HKEY{}};
+					});
+				if (result)
+				{
+					return STATUS_SUCCESS;
+				}
+				// 缓冲区不够不认为是失败，也直接返回。
+				if (result.error() == STATUS_BUFFER_TOO_SMALL || result.error() == STATUS_BUFFER_OVERFLOW)
+				{
+					return result.error();
+				}
+				// 键不在 appKey（打开失败）：标记否定缓存，后续同一键查询直接走真实注册表
+				global::Data::get().mark_key_not_in_app_cache(keyName);
 			}
 		}
 		return trampoline(KeyHandle, ValueName, KeyValueInformationClass, KeyValueInformation, Length, ResultLength);
@@ -1073,26 +1196,32 @@ namespace hook
 		const std::wstring keyName = GetKeyName(KeyHandle);
 		if (keyName.size() && !global::is_app_key_name(keyName))
 		{
-			const std::expected<HKEY, LSTATUS> result =
-				RegOpenKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
-				.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
-				{
-					const NTSTATUS status = trampoline(hKey, ValueEntries, EntryCount, ValueBuffer, BufferLength, RequiredBufferLength);
-					RegCloseKey(hKey);
-					if (!NT_SUCCESS(status))
+			// 否定缓存命中：该键已确认不在 appKey，直接查真实注册表
+			if (!global::Data::get().is_key_not_in_app_cache(keyName))
+			{
+				const std::expected<HKEY, LSTATUS> result =
+					RegOpenKeyExW(global::Data::get().appKey(), global::remove_leading_backslashes_sv(keyName).data())
+					.and_then([&](HKEY hKey)-> std::expected<HKEY, LSTATUS>
 					{
-						return std::unexpected{status};
-					}
-					return std::expected<HKEY, LSTATUS>{HKEY{}};
-				});
-			if (result)
-			{
-				return STATUS_SUCCESS;
-			}
-			// 缓冲区不够不认为是失败，也直接返回。
-			if (result.error() == STATUS_BUFFER_TOO_SMALL || result.error() == STATUS_BUFFER_OVERFLOW)
-			{
-				return result.error();
+						const NTSTATUS status = trampoline(hKey, ValueEntries, EntryCount, ValueBuffer, BufferLength, RequiredBufferLength);
+						RegCloseKey(hKey);
+						if (!NT_SUCCESS(status))
+						{
+							return std::unexpected{status};
+						}
+						return std::expected<HKEY, LSTATUS>{HKEY{}};
+					});
+				if (result)
+				{
+					return STATUS_SUCCESS;
+				}
+				// 缓冲区不够不认为是失败，也直接返回。
+				if (result.error() == STATUS_BUFFER_TOO_SMALL || result.error() == STATUS_BUFFER_OVERFLOW)
+				{
+					return result.error();
+				}
+				// 键不在 appKey（打开失败）：标记否定缓存
+				global::Data::get().mark_key_not_in_app_cache(keyName);
 			}
 		}
 		return trampoline(KeyHandle, ValueEntries, EntryCount, ValueBuffer, BufferLength, RequiredBufferLength);
@@ -1100,6 +1229,9 @@ namespace hook
 
 	void hook_ntdll()
 	{
+		// 注册进程隔离查询的全量拉取回调(hook_cache TTL 缓存用)
+		hook_cache::set_proc_fetcher(&fetch_other_processes);
+
 		constexpr auto NTDLL_LIB_NAME = utils::make_literal_name<L"ntdll.dll">();
 		sys_info::SysDllMapHelper ntdllMapped = sys_info::get_ntdll_mapped();
 		void* ntdllMappedAddress = ntdllMapped.memAddress();

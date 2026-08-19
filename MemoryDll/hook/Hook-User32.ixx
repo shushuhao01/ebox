@@ -1,47 +1,175 @@
 export module Hook:User32;
 
 import "sys_defs.h";
+import "hook_cache.h";
+import std;
 import :Core;
 import GlobalData;
 import RpcClient;
 
 namespace hook
 {
+	namespace
+	{
+		// 顶层窗口增删的异步 RPC 泵。
+		// CreateWindowEx/DestroyWindow 的 hook 在应用 UI 线程内被高频调用（登录、快速点击时
+		// 建/销毁窗口极频繁）。若在调用线程内同步 RPC，一旦宿主 ncalrpc 端点繁忙（如宿主正在
+		// 同步拷贝文件），UI 线程会无限阻塞——且 ncalrpc 会忽略 RPC_C_OPT_CALL_TIMEOUT
+		// （local RPC 不支持该选项），客户端等待是永久的（实测表现为"未响应"）。
+		// 这里把窗口上报改为后台线程 fire-and-forget：宿主另有 WndEnumerator 每进程 2s
+		// 周期兜底 + hook_cache TTL 缓存，毫秒级延迟不影响窗口隔离语义。
+		class AsyncWindowRpcPump
+		{
+		public:
+			AsyncWindowRpcPump() : m_thread([this] { loop(); })
+			{
+			}
+
+			~AsyncWindowRpcPump()
+			{
+				{
+					std::lock_guard lock(m_mutex);
+					m_stop = true;
+				}
+				m_cv.notify_all();
+				if (m_thread.joinable())
+				{
+					m_thread.join();
+				}
+			}
+
+			AsyncWindowRpcPump(const AsyncWindowRpcPump&) = delete;
+			AsyncWindowRpcPump& operator=(const AsyncWindowRpcPump&) = delete;
+
+			void post(bool bAdd, void* hWnd)
+			{
+				{
+					std::lock_guard lock(m_mutex);
+					if (m_queue.size() >= MaxQueueSize)
+					{
+						return; // 队列满直接丢弃：宿主有 WndEnumerator 兜底，窗口隔离最终一致
+					}
+					m_queue.emplace_back(bAdd, hWnd);
+				}
+				m_cv.notify_one();
+			}
+
+		private:
+			static constexpr std::size_t MaxQueueSize = 512;
+
+			void loop()
+			{
+				for (;;)
+				{
+					Item item;
+					{
+						std::unique_lock lock(m_mutex);
+						m_cv.wait(lock, [this] { return m_stop || !m_queue.empty(); });
+						if (m_stop && m_queue.empty())
+						{
+							break;
+						}
+						item = m_queue.front();
+						m_queue.pop_front();
+					}
+					try
+					{
+						const rpc::ClientDefault c;
+						if (item.bAdd)
+						{
+							c.addToplevelWindow(item.hWnd, GetCurrentProcessId(), global::Data::get().envFlag());
+						}
+						else
+						{
+							c.removeToplevelWindow(item.hWnd, GetCurrentProcessId(), global::Data::get().envFlag());
+						}
+					}
+					catch (...)
+					{
+					}
+				}
+			}
+
+			struct Item
+			{
+				bool bAdd;
+				void* hWnd;
+			};
+
+			std::mutex m_mutex;
+			std::condition_variable m_cv;
+			std::deque<Item> m_queue;
+			bool m_stop{false};
+			std::thread m_thread;
+		};
+
+		// 单例指针：InterlockedCompareExchangePointer 一次性发布（无 magic static）。
+		// 反射注入子进程(WXWorkWeb/crashpad)下 magic static 初始化不可靠（实测崩溃），
+		// 且进程退出时静态析构会 join 后台线程造成无限等待（cmd 卡 30 秒）。永不析构
+		// 由操作系统在进程退出时回收线程；长命进程(WXWork)中行为与普通静态对象一致。
+		AsyncWindowRpcPump* g_pumpPtr = nullptr;
+
+		AsyncWindowRpcPump& asyncWindowRpcPump()
+		{
+			if (g_pumpPtr == nullptr)
+			{
+				AsyncWindowRpcPump* fresh = new AsyncWindowRpcPump;
+				if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&g_pumpPtr),
+				                                        fresh, nullptr) != nullptr)
+				{
+					delete fresh; // 其他线程抢先发布，释放本线程临时对象
+				}
+			}
+			return *g_pumpPtr;
+		}
+	}
+
 	void add_toplevel_window(void* hWnd)
 	{
-		try
-		{
-			const rpc::ClientDefault c;
-			c.addToplevelWindow(hWnd, GetCurrentProcessId(), global::Data::get().envFlag());
-		}
-		catch (...)
-		{
-		}
+		asyncWindowRpcPump().post(true, hWnd);
 	}
 
 	void remove_toplevel_window(void* hWnd)
 	{
-		try
-		{
-			const rpc::ClientDefault c;
-			c.removeToplevelWindow(hWnd, GetCurrentProcessId(), global::Data::get().envFlag());
-		}
-		catch (...)
-		{
-		}
+		asyncWindowRpcPump().post(false, hWnd);
 	}
 
 	bool contains_toplevel_window_in_other_env(void* hWnd)
 	{
+		// 走进程级 TTL 缓存(见 hook_cache.h): 把"每次窗口 API 同步 RPC"降为 TTL 内一次全量拉取,
+		// 20 环境并发时避免 RPC 端点成为输入法/窗口枚举的瓶颈。语义与原实现一致。
+		return hook_cache::window_other(reinterpret_cast<HWND>(hWnd));
+	}
+
+	// 供 hook_cache 使用的全量拉取回调: 返回"其他环境顶层窗口"集合(带与 get_all_toplevel_window_in_other_env 相同的过滤)
+	bool fetch_other_windows(std::unordered_set<HWND>& out)
+	{
 		try
 		{
 			const rpc::ClientDefault c;
-			return c.containsToplevelWindowExclude(hWnd, global::Data::get().envFlag());
+			std::uint64_t hWnds[rpc::MAX_TOPLEVEL_WND_COUNT]{};
+			std::uint32_t count = rpc::MAX_TOPLEVEL_WND_COUNT;
+			c.getAllToplevelWindowExclude(global::Data::get().envFlag(), hWnds, &count);
+			out.reserve(count);
+			for (std::uint32_t i = 0; i < count; ++i)
+			{
+				HWND hWnd = reinterpret_cast<HWND>(hWnds[i]);
+				if (GetWindowExStyle(hWnd) & WS_EX_TOOLWINDOW)
+				{
+					continue;
+				}
+				if (const HWND owner = GetWindow(hWnd, GW_OWNER); owner && !IsWindowVisible(owner))
+				{
+					continue;
+				}
+				out.insert(hWnd);
+			}
+			return true;
 		}
 		catch (...)
 		{
+			return false;
 		}
-		return true;
 	}
 
 	std::vector<HWND> get_all_toplevel_window_in_other_env()
@@ -400,8 +528,19 @@ namespace hook
 
 	HWND get_desktop_window()
 	{
-		static HWND hDesktopWindow = GetDesktopWindow();
-		return hDesktopWindow;
+		// 反射注入子进程下 magic static 的 _Init_thread_header 初始化机制不可靠，
+		// 与 hook_cache 同一约定：InterlockedCompareExchangePointer 一次性发布。
+		static HWND* s_hDesktopWindow = nullptr; // 常量初始化，无 guard
+		if (s_hDesktopWindow == nullptr)
+		{
+			HWND* fresh = new HWND{::GetDesktopWindow()};
+			if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&s_hDesktopWindow),
+			                                        fresh, nullptr) != nullptr)
+			{
+				delete fresh; // 其他线程抢先发布，释放本线程临时对象
+			}
+		}
+		return *s_hDesktopWindow;
 	}
 
 	template <auto Trampoline>
@@ -491,16 +630,20 @@ namespace hook
 			return hWnd;
 		}
 
-		if (uCmd != GW_HWNDNEXT || uCmd != GW_HWNDPREV)
+		// 只有"兄弟遍历"命令(GW_HWNDNEXT/GW_HWNDPREV)能沿 Z 序跳过其他环境窗口；
+		// 其他命令无法跳过，直接拒绝返回（隔离语义）。
+		if (uCmd != GW_HWNDNEXT && uCmd != GW_HWNDPREV)
 		{
 			return nullptr;
 		}
 
+		// 沿 Z 序以"上一次结果"为参考窗口不断前进，跳过属于其他环境的窗口，
+		// 直到找到本环境窗口或遍历完成。防御性上限防死循环。
 		HWND hResult = Trampoline(hWnd, uCmd);
 		int tryCount = 1000;
 		while (hResult && tryCount > 0 && contains_toplevel_window_in_other_env(hResult))
 		{
-			hResult = Trampoline(hWnd, uCmd);
+			hResult = Trampoline(hResult, uCmd);
 			tryCount--;
 		}
 		return hResult;
@@ -565,6 +708,9 @@ namespace hook
 
 	void hook_user32()
 	{
+		// 注册窗口隔离查询的全量拉取回调(hook_cache TTL 缓存用)
+		hook_cache::set_wnd_fetcher(&fetch_other_windows);
+
 		// 顶层窗口管理
 		create_hook_by_func_ptr<&::CreateWindowExA>().setHookFromGetter([&](auto trampolineConst)
 		{

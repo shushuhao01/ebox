@@ -171,37 +171,78 @@ namespace
 
 namespace biz
 {
-	void FileRedirect::requestCreateRedirectFile(const std::wstring& originalFile, const std::wstring& redirectFile)
+	FileRedirect::FileRedirect()
 	{
-		std::shared_ptr<DoneEvent> doneEvent;
-		bool bIsFirstRequest;
+		m_workers.reserve(WorkerCount);
+		for (std::size_t i = 0; i < WorkerCount; ++i)
 		{
-			std::lock_guard lock(m_mutex);
-			if (const auto it = m_tasks.find(redirectFile); it == m_tasks.end())
-			{
-				doneEvent = std::make_shared<DoneEvent>();
-				m_tasks.insert(std::make_pair(redirectFile, doneEvent));
-				bIsFirstRequest = true;
-			}
-			else
-			{
-				doneEvent = it->second;
-				bIsFirstRequest = false;
-			}
-		}
-		if (bIsFirstRequest)
-		{
-			create_redirect_file(originalFile, redirectFile);
-			doneEvent->signal();
-			endTask(redirectFile);
-		}
-		else
-		{
-			doneEvent->wait();
+			m_workers.emplace_back([this] { workerLoop(); });
 		}
 	}
 
-	void FileRedirect::endTask(const std::wstring& redirectFile)
+	FileRedirect::~FileRedirect()
+	{
+		{
+			std::lock_guard lock(m_queueMutex);
+			m_stop = true;
+		}
+		m_queueCv.notify_all();
+		for (auto& worker : m_workers)
+		{
+			if (worker.joinable())
+			{
+				worker.join();
+			}
+		}
+	}
+
+	void FileRedirect::requestCreateRedirectFile(const std::wstring& originalFile, const std::wstring& redirectFile)
+	{
+		// 去重：同一目标文件的拷贝任务已在排队/执行中则不再重复入队；
+		// 执行完毕后从 m_tasks 移除，后续请求可重试（如上次拷贝失败）。
+		{
+			std::lock_guard lock(m_mutex);
+			if (m_tasks.contains(redirectFile))
+			{
+				return;
+			}
+			m_tasks.emplace(redirectFile, std::uint8_t{0});
+		}
+		{
+			std::lock_guard lock(m_queueMutex);
+			if (m_queue.size() >= MaxQueueSize)
+			{
+				// 队列已满：放弃本次拷贝（客户端有界轮询超时后回退自建文件，
+				// 与拷贝失败时的既有降级行为一致），避免内存无界增长。
+				finishTask(redirectFile);
+				return;
+			}
+			m_queue.push_back(Task{std::wstring{originalFile}, std::wstring{redirectFile}});
+		}
+		m_queueCv.notify_one();
+	}
+
+	void FileRedirect::workerLoop()
+	{
+		for (;;)
+		{
+			Task task;
+			{
+				std::unique_lock lock(m_queueMutex);
+				m_queueCv.wait(lock, [this] { return m_stop || !m_queue.empty(); });
+				if (m_stop && m_queue.empty())
+				{
+					break;
+				}
+				task = std::move(m_queue.front());
+				m_queue.pop_front();
+			}
+			create_redirect_file(task.originalFile, task.redirectFile);
+			finishTask(task.redirectFile);
+		}
+	}
+
+	void FileRedirect::finishTask(const std::wstring& redirectFile)
 	{
 		std::lock_guard lock(m_mutex);
 		m_tasks.erase(redirectFile);

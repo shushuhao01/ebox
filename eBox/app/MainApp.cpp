@@ -22,12 +22,33 @@ namespace
 		MSG msg;
 		PeekMessageW(&msg, nullptr, WM_QUIT, WM_QUIT, PM_REMOVE);
 	}
+
+	// 进程存续期间持有单实例互斥句柄（防止再次启动的 eBox 抢占 RPC 端点）
+	HANDLE g_singleInstanceMutex{nullptr};
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
 	try
 	{
+		// 单实例保护：多个 eBox 并存会弹"eBox已经运行"框、争抢唯一 RPC 端点，导致环境进程 login 卡顿。
+		// 全局命名空间(Global\)需要 SeCreateGlobalPrivilege（默认仅管理员/服务拥有），
+		// 标准用户创建会失败；此时退化为会话级名称(Local\)，同一会话内仍可互斥。
+		{
+			HANDLE hMutex = CreateMutexW(nullptr, FALSE, L"Global\\eBox_SingleInstance");
+			if (!hMutex)
+			{
+				hMutex = CreateMutexW(nullptr, FALSE, L"eBox_SingleInstance");
+			}
+			if (hMutex && GetLastError() == ERROR_ALREADY_EXISTS)
+			{
+				MessageBoxW(nullptr, L"eBox 已在运行！\n请勿重复打开。", MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+				CloseHandle(hMutex);
+				return 0;
+			}
+			g_singleInstanceMutex = hMutex;
+		}
+
 		biz::init_system_version_info();
 
 		MainApp app{hInstance, lpCmdLine, nCmdShow};

@@ -12,6 +12,57 @@ import "sys_defs.hpp";
 
 namespace
 {
+	// 已确认存在的目录缓存：环境数据目录创建后不会消失，避免每次文件访问都做
+	// fs::create_directories（它会沿路径每一级做 stat 系统调用）。WXWork 高频文件
+	// 访问（切换聊天/加载图片/属性查询）时这是 UI 线程的显著开销来源。
+	// new + 永不析构：与 hook_cache 同一约定，避免短命中转进程（cmd）退出竞态。
+	class DirExistsCache
+	{
+	public:
+		bool contains(std::wstring_view dir) const
+		{
+			AcquireSRWLockShared(&m_lock);
+			const bool hit = m_dirs.find(std::wstring{dir}) != m_dirs.end();
+			ReleaseSRWLockShared(&m_lock);
+			return hit;
+		}
+
+		void insert(std::wstring_view dir)
+		{
+			AcquireSRWLockExclusive(&m_lock);
+			if (m_dirs.size() >= MaxEntries)
+			{
+				m_dirs.clear(); // 防无界增长；超限重建缓存，不影响正确性
+			}
+			m_dirs.emplace(dir);
+			ReleaseSRWLockExclusive(&m_lock);
+		}
+
+	private:
+		static constexpr std::size_t MaxEntries = 2048;
+		mutable SRWLOCK m_lock{SRWLOCK_INIT};
+		std::unordered_set<std::wstring> m_dirs;
+	};
+
+	DirExistsCache* g_dirExistsCachePtr = nullptr;
+
+	DirExistsCache& dir_exists_cache()
+	{
+		// 反射注入子进程下 magic static 的 _Init_thread_header 初始化机制不可靠
+		// （实测 WXWorkWeb 崩溃），与 hook_cache 同一约定：InterlockedCompareExchangePointer
+		// 一次性发布，无 CRT 依赖、反射注入安全、线程安全；永不析构由操作系统回收。
+		if (g_dirExistsCachePtr == nullptr)
+		{
+			DirExistsCache* fresh = new DirExistsCache;
+			if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&g_dirExistsCachePtr),
+			                                        fresh, nullptr) != nullptr)
+			{
+				delete fresh; // 其他线程抢先发布，释放本线程临时对象
+			}
+		}
+		return *g_dirExistsCachePtr;
+	}
+
 	// void InitConsole()
 	// {
 	// 	if (!AllocConsole())
@@ -93,6 +144,28 @@ namespace global
 
 	static constexpr std::wstring_view PREFIX_TO_CHECK(LR"(\??\)");
 
+	// 大小写不敏感子串匹配（避免对整条路径做 tolower 复制+逐字符转换）
+	bool contains_icase(std::wstring_view haystack, std::wstring_view needle)
+	{
+		if (needle.empty())
+		{
+			return true;
+		}
+		if (needle.length() > haystack.length())
+		{
+			return false;
+		}
+		const std::size_t lastStart = haystack.length() - needle.length();
+		for (std::size_t i = 0; i <= lastStart; ++i)
+		{
+			if (_wcsnicmp(haystack.data() + i, needle.data(), needle.length()) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
 	bool Data::isInKnownFolderPath(std::wstring_view path) const
 	{
 		if (m_knownFolders.empty())
@@ -105,46 +178,79 @@ namespace global
 			return false;
 		}
 
-		std::wstring_view pathToCheck = path.substr(PREFIX_TO_CHECK.length());
-		std::wstring lowerPath(pathToCheck);
-		std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), std::towlower);
+		const std::wstring_view pathToCheck = path.substr(PREFIX_TO_CHECK.length());
 
-		if (lowerPath.contains(L"microsoft")
-			|| lowerPath.contains(L"nvidia")
-			|| lowerPath.contains(L"amd")
-			|| lowerPath.contains(LR"(\ebox\env\)")
-			|| lowerPath.contains(LR"(\2box\env\)"))  // 兼容老版本路径
+		// 快速排除：含系统组件/自身数据目录关键字时绝不重定向（与原逻辑等价，大小写不敏感）
+		if (contains_icase(pathToCheck, L"microsoft")
+			|| contains_icase(pathToCheck, L"nvidia")
+			|| contains_icase(pathToCheck, L"amd")
+			|| contains_icase(pathToCheck, LR"(\ebox\env\)")
+			|| contains_icase(pathToCheck, LR"(\2box\env\)"))  // 兼容老版本路径
 		{
 			return false;
 		}
-		//auto toLowerIterNow = lowerPath.begin();
+
+		// 只对已知文件夹长度部分做大小写不敏感比较，避免整路径复制+tolower 的开销
 		for (const std::wstring& knownFolder : m_knownFolders)
 		{
-			if (knownFolder.length() > lowerPath.length())
+			if (knownFolder.length() > pathToCheck.length())
 			{
 				continue;
 			}
-			// if (const size_t alreadyToLowerCount = toLowerIterNow - lowerPath.begin();
-			// 	alreadyToLowerCount < knownFolder.length())
-			// {
-			// 	const size_t needToLowerCount = knownFolder.length() - alreadyToLowerCount;
-			// 	const auto last = toLowerIterNow + needToLowerCount;
-			// 	std::transform(toLowerIterNow, last, toLowerIterNow, std::towlower);
-			// 	toLowerIterNow = last;
-			// }
-			if (!lowerPath.starts_with(knownFolder))
+			if (_wcsnicmp(pathToCheck.data(), knownFolder.c_str(), knownFolder.length()) == 0)
 			{
-				continue;
+				return true;
 			}
-			return true;
 		}
 		return false;
+	}
+
+	bool Data::is_key_not_in_app_cache(std::wstring_view keyName) const
+	{
+		if (m_negKeySet.empty())
+		{
+			return false;
+		}
+		std::shared_lock lock(m_negKeyMutex);
+		return m_negKeySet.find(std::wstring{keyName}) != m_negKeySet.end();
+	}
+
+	void Data::mark_key_not_in_app_cache(std::wstring_view keyName) const
+	{
+		std::unique_lock lock(m_negKeyMutex);
+		if (m_negKeySet.size() >= 256)
+		{
+			m_negKeySet.clear(); // 简单防无界增长；超限重建缓存，不影响正确性
+		}
+		m_negKeySet.emplace(keyName);
+	}
+
+	void Data::clear_key_not_in_app_cache(std::wstring_view keyName) const
+	{
+		if (m_negKeySet.empty())
+		{
+			return;
+		}
+		std::unique_lock lock(m_negKeyMutex);
+		m_negKeySet.erase(std::wstring{keyName});
 	}
 
 	std::optional<std::wstring> Data::getRedirectPath(std::wstring_view knownFolderPath) const
 	{
 		static constexpr std::wstring_view driverMarker(LR"(:\)");
 
+		// 快速路径：缓存命中（源路径 → 重定向目标，环境运行期稳定，避免每次做 weakly_canonical 文件系统 I/O）
+		if (!m_redirectCache.empty())
+		{
+			std::shared_lock lock(m_redirectCacheMutex);
+			const auto it = m_redirectCache.find(std::wstring{knownFolderPath});
+			if (it != m_redirectCache.end())
+			{
+				return it->second;
+			}
+		}
+
+		std::optional<std::wstring> result;
 		try
 		{
 			namespace fs = std::filesystem;
@@ -153,13 +259,23 @@ namespace global
 				const fs::path indexPath{std::format(L"{}", m_envIndex)};
 				const fs::path relativePath{knownFolderPath.substr(driverPos + driverMarker.length())};
 				const fs::path redirectPath{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"Env"} / indexPath / relativePath)};
-				return std::format(L"{}{}", PREFIX_TO_CHECK, redirectPath.native());
+				result = std::format(L"{}{}", PREFIX_TO_CHECK, redirectPath.native());
 			}
 		}
 		catch (...)
 		{
 		}
-		return std::nullopt;
+
+		if (result)
+		{
+			std::unique_lock lock(m_redirectCacheMutex);
+			if (m_redirectCache.size() >= 512)
+			{
+				m_redirectCache.clear(); // 简单防无界增长；超限后重建缓存，不影响正确性
+			}
+			m_redirectCache.emplace(std::wstring{knownFolderPath}, *result);
+		}
+		return result;
 	}
 
 	void Data::initializePrivilegesAbout()
@@ -277,14 +393,16 @@ namespace global
 		{
 			namespace fs = std::filesystem;
 			const fs::path path{fullName};
-			if (bIsDir)
+			const fs::path dirPath = bIsDir ? path : path.parent_path();
+			// 目录存在性缓存：目录创建后不会消失，避免每次文件访问都做
+			// fs::create_directories（沿路径每一级 stat 系统调用）。WXWork 高频
+			// 文件访问（切换聊天/加载图片/属性查询）时这是 UI 线程显著开销。
+			if (dir_exists_cache().contains(dirPath.native()))
 			{
-				fs::create_directories(path);
+				return true;
 			}
-			else
-			{
-				fs::create_directories(path.parent_path());
-			}
+			fs::create_directories(dirPath);
+			dir_exists_cache().insert(dirPath.native());
 			return true;
 		}
 		catch (...)

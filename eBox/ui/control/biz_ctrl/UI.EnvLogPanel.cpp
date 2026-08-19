@@ -110,6 +110,9 @@ namespace ui
 	{
 		m_envIndex = envIndex;
 		m_hasEnv = true;
+		// 切换到新环境时强制重建日志行（版本号/条数缓存对不上旧环境）
+		m_lastAppendVersion = std::numeric_limits<std::uint64_t>::max();
+		m_lastLogCount = 0;
 		refreshLogs();
 		update();
 	}
@@ -126,6 +129,8 @@ namespace ui
 		m_envName.clear();
 		m_logs.clear();
 		m_logLines.clear();
+		m_lastAppendVersion = std::numeric_limits<std::uint64_t>::max();
+		m_lastLogCount = 0;
 		m_scrollBar.setTotalSize(0.f);
 		update();
 	}
@@ -170,7 +175,15 @@ namespace ui
 		{
 			return;
 		}
+		// 日志无新增（版本号未变且条数未变）时直接复用已格式化的行，避免每次绘制都 O(500) 重建
+		const std::uint64_t ver = biz::env_logger().appendVersion();
+		if (ver == m_lastAppendVersion && m_logs.size() == m_lastLogCount)
+		{
+			return;
+		}
+		m_lastAppendVersion = ver;
 		m_logs = biz::env_logger().getRecentLogs(m_envIndex);
+		m_lastLogCount = m_logs.size();
 		// 最新日志在最上面
 		std::reverse(m_logs.begin(), m_logs.end());
 		m_logLines.clear();

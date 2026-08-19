@@ -47,8 +47,22 @@ namespace global
 	public:
 		static Data& get()
 		{
-			static Data instance;
-			return instance;
+			// 反射注入子进程下 magic static 的 _Init_thread_header 初始化机制不可靠
+			// （实测 WXWorkWeb/crashpad 运行时崩溃，见 hook_cache 注释），且 Data 含
+			// unordered 容器/共享互斥量，若构造未完成即被并发访问会以野桶指针 c0000005
+			// 崩溃。改为 InterlockedCompareExchangePointer 一次性发布 + 永不析构：
+			// 无 CRT 依赖、反射注入安全、线程安全，由操作系统在进程退出时回收。
+			static Data* s_instance = nullptr; // 常量初始化，无 guard
+			if (s_instance == nullptr)
+			{
+				Data* fresh = new Data;
+				if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&s_instance),
+				                                        fresh, nullptr) != nullptr)
+				{
+					delete fresh; // 其他线程抢先发布，释放本线程临时对象
+				}
+			}
+			return *s_instance;
 		}
 
 	public:
@@ -75,6 +89,14 @@ namespace global
 
 		bool isInKnownFolderPath(std::wstring_view path) const;
 		std::optional<std::wstring> getRedirectPath(std::wstring_view knownFolderPath) const;
+
+		// 注册表虚拟化否定缓存：某 keyName 经探测不在 appKey 中（走真实注册表）。
+		// 用于避免 NtQueryValueKey 每次查询都做一次失败的 RegOpenKeyExW(appKey) 系统调用。
+		// 语义安全：appKey 是环境私有 hive，仅环境内进程经 NtSetValueKey hook 写入；
+		// 写入时 clear_key_not_in_app_cache 使缓存失效，保证查询结果始终正确。
+		bool is_key_not_in_app_cache(std::wstring_view keyName) const;
+		void mark_key_not_in_app_cache(std::wstring_view keyName) const;
+		void clear_key_not_in_app_cache(std::wstring_view keyName) const;
 
 	private:
 		Data() = default;
@@ -103,6 +125,14 @@ namespace global
 		RegKey m_appKey;
 		std::vector<std::wstring> m_knownFolders;
 		std::uint32_t m_inputSyncMsgId{0};
+
+		// 源路径 → 重定向目标路径 缓存（运行期稳定，避免每次文件操作都做 weakly_canonical 真实文件系统 I/O）
+		mutable std::shared_mutex m_redirectCacheMutex;
+		mutable std::unordered_map<std::wstring, std::wstring> m_redirectCache;
+
+		// 注册表虚拟化否定缓存（上限 256，超限整体清空重建）
+		mutable std::shared_mutex m_negKeyMutex;
+		mutable std::unordered_set<std::wstring> m_negKeySet;
 	};
 
 	export bool is_app_key_name(std::wstring_view fullName)

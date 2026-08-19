@@ -13,6 +13,13 @@ namespace
 	// 日志保留时长：24 小时
 	constexpr std::int64_t LOG_RETENTION_SECONDS = 24 * 60 * 60;
 
+	// 异步写：批量 flush 间隔（最多 500ms 合并一次磁盘写）
+	constexpr auto LOG_FLUSH_INTERVAL = std::chrono::milliseconds(500);
+	// 单个日志文件大小上限：超过自动重建，防日志无限增长
+	constexpr std::int64_t LOG_MAX_FILE_BYTES = 2 * 1024 * 1024;
+	// 写队列上限：写线程异常慢时丢弃最旧，防内存膨胀
+	constexpr std::size_t LOG_QUEUE_MAX_ITEMS = 4096;
+
 	std::int64_t now_unix_seconds()
 	{
 		return static_cast<std::int64_t>(std::chrono::duration_cast<std::chrono::seconds>(
@@ -38,7 +45,11 @@ namespace
 
 namespace biz
 {
-	EnvLogger::EnvLogger() = default;
+	EnvLogger::EnvLogger()
+	{
+		// 后台写线程：append 只入队，批量写盘在独立线程进行（不阻塞调用方）
+		m_writeThread = std::jthread([this](std::stop_token stopToken) { writerLoop(std::move(stopToken)); });
+	}
 
 	std::filesystem::path EnvLogger::logDirPath() const
 	{
@@ -81,28 +92,102 @@ namespace biz
 				data.entries.pop_front();
 			}
 		}
+		m_appendCount.fetch_add(1, std::memory_order_relaxed);
 
-		// 持久化：追加写入日志文件（离线后历史日志仍存在）
+		// 持久化：入队由后台线程批量写盘（避免每条日志同步 CreateFile/WriteFile/CloseHandle 的 I/O 尖峰）
 		// 行格式：[时间] [类型:0-4] [状态:0-2] 动作\t描述（\t 分隔动作与描述，描述可能含空格）
 		try
 		{
-			namespace fs = std::filesystem;
-			const fs::path dir = logDirPath();
-			std::error_code ec;
-			fs::create_directories(dir, ec);
 			const std::wstring line = std::format(L"[{}] [{}] [{}] {}\t{}\n",
 			                                      format_timestamp(entry.timestamp),
 			                                      static_cast<int>(entry.type),
 			                                      static_cast<int>(entry.status),
 			                                      entry.action, entry.detail);
-			HANDLE hFile = CreateFileW(logFilePath(envIndex).native().c_str(),
-			                           FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE,
-			                           nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-			if (hFile != INVALID_HANDLE_VALUE)
 			{
+				std::lock_guard wlock(m_writeMutex);
+				if (m_writeQueue.size() >= LOG_QUEUE_MAX_ITEMS)
+				{
+					m_writeQueue.pop_front(); // 丢弃最旧，防内存膨胀
+				}
+				m_writeQueue.push_back(PendingWrite{envIndex, std::move(line)});
+			}
+			m_writeCv.notify_one();
+		}
+		catch (...)
+		{
+		}
+	}
+
+	// 后台写线程：批量 flush，复用每环境文件句柄；停止时把剩余队列写空再退出
+	void EnvLogger::writerLoop(std::stop_token stopToken)
+	{
+		std::unique_lock lock(m_writeMutex);
+		while (true)
+		{
+			m_writeCv.wait_for(lock, LOG_FLUSH_INTERVAL, [this] { return !m_writeQueue.empty(); });
+			if (stopToken.stop_requested() && m_writeQueue.empty())
+			{
+				break;
+			}
+			flushPendingLocked();
+		}
+		// 析构 join 前把剩余队列写空，保证持久化一致
+		flushPendingLocked();
+		for (auto& [envIndex, h] : m_fileHandles)
+		{
+			if (h && h != INVALID_HANDLE_VALUE)
+			{
+				CloseHandle(h);
+			}
+		}
+		m_fileHandles.clear();
+	}
+
+	// 把当前队列全部写出；前提：已持有 m_writeMutex
+	void EnvLogger::flushPendingLocked()
+	{
+		if (m_writeQueue.empty())
+		{
+			return;
+		}
+		try
+		{
+			namespace fs = std::filesystem;
+			std::error_code ec;
+			fs::create_directories(logDirPath(), ec);
+			while (!m_writeQueue.empty())
+			{
+				PendingWrite item = std::move(m_writeQueue.front());
+				m_writeQueue.pop_front();
+
+				HANDLE& h = m_fileHandles[item.envIndex];
+				if (h == nullptr || h == INVALID_HANDLE_VALUE)
+				{
+					h = CreateFileW(logFilePath(item.envIndex).native().c_str(), FILE_APPEND_DATA,
+					                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+					                FILE_ATTRIBUTE_NORMAL, nullptr);
+				}
+				if (h == INVALID_HANDLE_VALUE)
+				{
+					continue; // 打开失败：跳过本条，下次 flush 重试
+				}
+				// 大小轮转：超过上限重建文件（丢弃最旧的历史，防日志无限增长）
+				LARGE_INTEGER fileSize{};
+				if (GetFileSizeEx(h, &fileSize) && fileSize.QuadPart > LOG_MAX_FILE_BYTES)
+				{
+					CloseHandle(h);
+					h = INVALID_HANDLE_VALUE;
+					fs::remove(logFilePath(item.envIndex), ec);
+					h = CreateFileW(logFilePath(item.envIndex).native().c_str(), FILE_APPEND_DATA,
+					                FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+					                FILE_ATTRIBUTE_NORMAL, nullptr);
+					if (h == INVALID_HANDLE_VALUE)
+					{
+						continue;
+					}
+				}
 				DWORD written = 0;
-				WriteFile(hFile, line.c_str(), static_cast<DWORD>(line.size() * sizeof(wchar_t)), &written, nullptr);
-				CloseHandle(hFile);
+				WriteFile(h, item.line.c_str(), static_cast<DWORD>(item.line.size() * sizeof(wchar_t)), &written, nullptr);
 			}
 		}
 		catch (...)
@@ -132,6 +217,22 @@ namespace biz
 			std::lock_guard lock(m_mutex);
 			m_logs.erase(envIndex);
 		}
+		// 内容已变，让 UI 感知变化（条数归零也会触发刷新，这里额外递增保证一致）
+		m_appendCount.fetch_add(1, std::memory_order_relaxed);
+		// 丢弃尚未写盘的条目并关闭文件句柄（先于删文件，避免句柄占用导致删除失败）
+		{
+			std::lock_guard wlock(m_writeMutex);
+			std::erase_if(m_writeQueue, [envIndex](const PendingWrite& p) { return p.envIndex == envIndex; });
+			const auto it = m_fileHandles.find(envIndex);
+			if (it != m_fileHandles.end())
+			{
+				if (it->second != INVALID_HANDLE_VALUE)
+				{
+					CloseHandle(it->second);
+				}
+				m_fileHandles.erase(it);
+			}
+		}
 		// 删除磁盘上的日志文件（失败静默，不影响 UI）
 		try
 		{
@@ -142,6 +243,11 @@ namespace biz
 		catch (...)
 		{
 		}
+	}
+
+	std::uint64_t EnvLogger::appendVersion() const
+	{
+		return m_appendCount.load(std::memory_order_relaxed);
 	}
 
 	void EnvLogger::loadFromDisk()

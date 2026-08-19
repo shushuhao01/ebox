@@ -43,8 +43,8 @@ namespace ui
 		virtual void onMouseLeave(const MouseEvent& e) override;
 
 	private:
-		// 采样周期（秒）与保留的历史点数
-		static constexpr std::chrono::seconds SAMPLE_INTERVAL{1};
+		// 采样周期（秒）与保留的历史点数（2s 采样：低配机器 + 多环境时降低 GetSystemTimes/PDH 采样开销）
+		static constexpr std::chrono::seconds SAMPLE_INTERVAL{2};
 		static constexpr size_t HISTORY_SIZE = 90;
 
 		std::stop_source m_timerStopSource;

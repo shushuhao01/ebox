@@ -54,91 +54,118 @@ void initialize_global_data(SystemVersionInfo versionInfo, unsigned long long en
 // 所以暂时不允许eBox退出。
 #define ALLOW_EBOX_EXIT 0
 
+struct BoxSimpleWatcher
+{
+	HANDLE quitEvent;
+	std::thread thread;
+
+	explicit BoxSimpleWatcher(HANDLE boxHandle)
+	{
+#if !ALLOW_EBOX_EXIT
+		if (boxHandle == nullptr)
+		{
+			TerminateProcess(GetCurrentProcess(), 0);
+		}
+#endif
+		quitEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+		if (!quitEvent)
+		{
+			throw std::runtime_error(std::format("CreateEvent failed: {}", GetLastError()));
+		}
+		thread = std::thread([this, boxHandle]
+		{
+			watchLoop(boxHandle);
+		});
+	}
+
+	~BoxSimpleWatcher()
+	{
+		if (thread.joinable())
+		{
+			if (SetEvent(quitEvent))
+			{
+				thread.join();
+			}
+			else
+			{
+				thread.detach();
+			}
+		}
+		CloseHandle(quitEvent);
+	}
+
+	void watchLoop(HANDLE boxHandle) const
+	{
+		while (true)
+		{
+			if (!boxHandle)
+			{
+				try
+				{
+					boxHandle = login_two_box();
+					if (boxHandle)
+					{
+						request_window_inspection();
+					}
+				}
+				catch (...)
+				{
+					TerminateProcess(GetCurrentProcess(), 0);
+				}
+			}
+			if (boxHandle)
+			{
+				std::vector handles{quitEvent, boxHandle};
+				DWORD index = WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE);
+				if (index >= handles.size())
+				{
+					TerminateProcess(GetCurrentProcess(), 0);
+				}
+				if (handles[index] == quitEvent)
+				{
+					break;
+				}
+				CloseHandle(boxHandle);
+				boxHandle = nullptr;
+			}
+#if !ALLOW_EBOX_EXIT
+			TerminateProcess(GetCurrentProcess(), 0);
+#endif
+			std::this_thread::sleep_for(std::chrono::seconds(1));
+		}
+	}
+};
+
 void initialize_rpc()
 {
-	struct BoxSimpleWatcher
+	// login 移出 DllMain: 在 DllMain(持有 loader lock) 里做同步 ncalrpc 调用,
+	// 宿主 RPC 繁忙/未就绪时会阻塞进程启动, 直接导致"企业微信未响应";
+	// 且 loader lock 下创建线程 + 线程内 RPC 初始化有死锁风险。
+	// 改为: 后台线程先短等 DllMain 返回(loader lock 释放)再 login。
+	// envFlag 由启动参数传入, hook 不依赖 login, 隔离语义不受影响。
+	static std::once_flag s_once;
+	std::call_once(s_once, []
 	{
-		HANDLE quitEvent;
-		std::thread thread;
-
-		explicit BoxSimpleWatcher(HANDLE boxHandle)
+		std::thread([]
 		{
-#if !ALLOW_EBOX_EXIT
-			if (boxHandle == nullptr)
+			// 避开 DllMain 的 loader lock 窗口(线程先跑不代表 loader lock 已释放)
+			::Sleep(100);
+			// 反射注入子进程下 magic static 的 _Init_thread_header 初始化机制不可靠，
+			// 且 BoxSimpleWatcher 析构会 join 后台线程，普通静态对象在进程退出时可能
+			// 与其他线程并发 use-after-free；改为 InterlockedCompareExchangePointer 一次性
+			// 发布 + 永不析构（与 hook_cache 同一约定）。
+			static BoxSimpleWatcher* s_watcher = nullptr; // 常量初始化，无 guard
+			if (s_watcher == nullptr)
 			{
-				TerminateProcess(GetCurrentProcess(), 0);
-			}
-#endif
-			quitEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-			if (!quitEvent)
-			{
-				throw std::runtime_error(std::format("CreateEvent failed: {}", GetLastError()));
-			}
-			thread = std::thread([this, boxHandle]
-			{
-				watchLoop(boxHandle);
-			});
-		}
-
-		~BoxSimpleWatcher()
-		{
-			if (thread.joinable())
-			{
-				if (SetEvent(quitEvent))
+				auto* fresh = new BoxSimpleWatcher{login_two_box()};
+				if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&s_watcher),
+				                                        fresh, nullptr) != nullptr)
 				{
-					thread.join();
-				}
-				else
-				{
-					thread.detach();
+					delete fresh; // 其他线程抢先发布，释放本线程临时对象
 				}
 			}
-			CloseHandle(quitEvent);
-		}
-
-		void watchLoop(HANDLE boxHandle) const
-		{
-			while (true)
-			{
-				if (!boxHandle)
-				{
-					try
-					{
-						boxHandle = login_two_box();
-						if (boxHandle)
-						{
-							request_window_inspection();
-						}
-					}
-					catch (...)
-					{
-						TerminateProcess(GetCurrentProcess(), 0);
-					}
-				}
-				if (boxHandle)
-				{
-					std::vector handles{quitEvent, boxHandle};
-					DWORD index = WaitForMultipleObjects(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE);
-					if (index >= handles.size())
-					{
-						TerminateProcess(GetCurrentProcess(), 0);
-					}
-					if (handles[index] == quitEvent)
-					{
-						break;
-					}
-					CloseHandle(boxHandle);
-					boxHandle = nullptr;
-				}
-#if !ALLOW_EBOX_EXIT
-				TerminateProcess(GetCurrentProcess(), 0);
-#endif
-				std::this_thread::sleep_for(std::chrono::seconds(1));
-			}
-		}
-	};
-
-	static BoxSimpleWatcher watcher{login_two_box()};
+		}).detach();
+	});
 }
 
 void initialize_hook()

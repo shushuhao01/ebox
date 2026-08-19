@@ -74,5 +74,8 @@ namespace ui
 		// 渲染用日志行缓存（展开时刷新）
 		std::vector<biz::EnvLogEntry> m_logs;
 		std::vector<std::wstring> m_logLines;
+		// 日志版本号与条数缓存：日志无新增时跳过 O(500) 的格式化重建（每秒心跳重绘不再重复拉日志）
+		std::uint64_t m_lastAppendVersion{std::numeric_limits<std::uint64_t>::max()};
+		std::size_t m_lastLogCount{0};
 	};
 }

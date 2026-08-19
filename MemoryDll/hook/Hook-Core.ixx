@@ -13,8 +13,20 @@ namespace hook
 	public:
 		static HookManager& instance()
 		{
-			static HookManager instance;
-			return instance;
+			// 反射注入子进程下 magic static 的 _Init_thread_header 初始化机制不可靠，
+			// 与 hook_cache/RedirectTimeoutCache 同一约定：InterlockedCompareExchangePointer
+			// 一次性发布 + 永不析构，无 CRT 依赖、反射注入安全、线程安全。
+			static HookManager* s_instance = nullptr; // 常量初始化，无 guard
+			if (s_instance == nullptr)
+			{
+				HookManager* fresh = new HookManager;
+				if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&s_instance),
+				                                        fresh, nullptr) != nullptr)
+				{
+					delete fresh; // 其他线程抢先发布，释放本线程临时对象
+				}
+			}
+			return *s_instance;
 		}
 
 		template <typename FuncPtrType>

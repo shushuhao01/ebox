@@ -1,6 +1,7 @@
 export module Hook:Advapi32;
 
 import "sys_defs.h";
+import "hook_proc.h";
 import std;
 import :Core;
 import GlobalData;
@@ -90,6 +91,8 @@ namespace hook
 		const BOOL bRet = inject_dll_to_process(lpProcessInformation);
 		if (bRet)
 		{
+			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
@@ -152,6 +155,8 @@ namespace hook
 		const BOOL bRet = inject_dll_to_process(lpProcessInformation);
 		if (bRet)
 		{
+			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
@@ -212,6 +217,8 @@ namespace hook
 		const BOOL bRet = inject_dll_to_process(lpProcessInformation);
 		if (bRet)
 		{
+			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
@@ -272,6 +279,8 @@ namespace hook
 		const BOOL bRet = inject_dll_to_process(lpProcessInformation);
 		if (bRet)
 		{
+			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);

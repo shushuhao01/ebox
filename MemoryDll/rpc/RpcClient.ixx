@@ -70,6 +70,10 @@ namespace rpc
 			{
 				throw std::runtime_error(std::format("RpcBindingFromStringBindingA failed, return status: {}", status));
 			}
+			// ncalrpc 调用加 5s 超时: 宿主 RPC 未就绪/繁忙时调用不再无限阻塞
+			// (原实现无超时, 注入 DLL 的 login 在宿主无响应时会永久卡住进程启动)
+			constexpr DWORD callTimeout = 5;
+			RpcBindingSetOption(m_hBindingHandle, RPC_C_OPT_CALL_TIMEOUT, static_cast<ULONG_PTR>(callTimeout));
 		}
 
 		ClientBindingHandle(const ClientBindingHandle& rhs)
@@ -136,8 +140,22 @@ namespace rpc
 
 	export const ClientBindingHandle& get_default_binding_info()
 	{
-		static ClientBindingHandle defaultBindingInfo(ClientAlpcBindingString{"{63B40BDA-A2D1-4516-BDBB-E1E2A960D31E}eBoxServer"});
-		return defaultBindingInfo;
+		// 反射注入子进程下 magic static 的 _Init_thread_header 初始化机制不可靠
+		// （实测 WXWorkWeb/crashpad 崩溃 fastfail(7)）；且 ClientBindingHandle 析构会
+		// RpcBindingFree，普通静态对象会在进程退出时与后台线程（hook_cache 刷新/RPC
+		// login 线程）并发 use-after-free。改为 InterlockedCompareExchangePointer 一次性
+		// 发布 + 永不析构，与 hook_cache 同一约定。
+		static ClientBindingHandle* s_bindingInfo = nullptr; // 常量初始化，无 guard
+		if (s_bindingInfo == nullptr)
+		{
+			auto* fresh = new ClientBindingHandle(ClientAlpcBindingString{"{63B40BDA-A2D1-4516-BDBB-E1E2A960D31E}eBoxServer"});
+			if (::InterlockedCompareExchangePointer(reinterpret_cast<void* volatile*>(&s_bindingInfo),
+			                                        fresh, nullptr) != nullptr)
+			{
+				delete fresh; // 其他线程抢先发布，释放本线程临时对象
+			}
+		}
+		return *s_bindingInfo;
 	}
 
 	// template <typename Func, typename... Args>

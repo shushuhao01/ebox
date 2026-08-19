@@ -1,6 +1,8 @@
 export module Hook:Kernel32;
 
 import "sys_defs.h";
+import "hook_cache.h";
+import "hook_proc.h";
 import :Core;
 import std;
 import GlobalData;
@@ -140,6 +142,8 @@ namespace hook
 		const BOOL bRet = inject_dll_to_process(lpProcessInformation);
 		if (bRet)
 		{
+			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
@@ -199,6 +203,8 @@ namespace hook
 		const BOOL bRet = inject_dll_to_process(lpProcessInformation);
 		if (bRet)
 		{
+			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
@@ -259,15 +265,9 @@ namespace hook
 
 	bool contains_process_id_in_other_env(DWORD dwProcessId)
 	{
-		try
-		{
-			const rpc::ClientDefault c;
-			return c.containsProcessIdExclude(dwProcessId, global::Data::get().envFlag());
-		}
-		catch (...)
-		{
-		}
-		return true;
+		// 走进程级 TTL 缓存(见 hook_cache.h): 避免每次 OpenProcess 都同步 RPC, 缓解多环境下的 RPC 瓶颈。
+		// 语义与原实现一致: 命中"其他环境进程"或查询失败时返回 true(拒绝打开)。
+		return hook_cache::process_other(dwProcessId);
 	}
 
 	template <auto Trampoline>

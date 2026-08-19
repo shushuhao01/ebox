@@ -260,57 +260,66 @@ namespace ui
 				}
 			}
 
-			if (hQuery)
+			// 无任何 GPU 计数器时跳过 collect（避免无独立 GPU 机器每周期白跑一次）
+			if (hQuery && (hGpuCounter || hVramCounter))
 			{
 				const PDH_STATUS collectStatus = PdhCollectQueryData(hQuery);
 				if (!firstCollect)
 				{
 					if (collectStatus == ERROR_SUCCESS && hGpuCounter)
 					{
-						DWORD bufferSize = 0;
+						// 复用静态缓冲：GPU 引擎数量运行期固定，首次探测后单次调用（去掉每次 NULL 探测）
+						static std::vector<std::byte> gpuBuffer;
+						DWORD bufferSize = static_cast<DWORD>(gpuBuffer.size());
 						DWORD itemCount = 0;
-						PDH_FMT_COUNTERVALUE_ITEM_W* items = nullptr;
-						if (PdhGetFormattedCounterArrayW(hGpuCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr) == PDH_MORE_DATA &&
-						    bufferSize > 0)
+						PDH_STATUS fmtStatus = PdhGetFormattedCounterArrayW(hGpuCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount,
+						                                                   reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(gpuBuffer.data()));
+						if (fmtStatus == PDH_MORE_DATA)
 						{
-							std::vector<std::byte> buffer(bufferSize);
-							items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buffer.data());
-							if (PdhGetFormattedCounterArrayW(hGpuCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items) == ERROR_SUCCESS)
+							gpuBuffer.resize(bufferSize);
+							fmtStatus = PdhGetFormattedCounterArrayW(hGpuCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount,
+							                                         reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(gpuBuffer.data()));
+						}
+						if (fmtStatus == ERROR_SUCCESS)
+						{
+							const auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(gpuBuffer.data());
+							double sum = 0.0;
+							for (DWORD i = 0; i < itemCount; ++i)
 							{
-								double sum = 0.0;
-								for (DWORD i = 0; i < itemCount; ++i)
+								if (items[i].FmtValue.CStatus == ERROR_SUCCESS)
 								{
-									if (items[i].FmtValue.CStatus == ERROR_SUCCESS)
-									{
-										sum += items[i].FmtValue.doubleValue;
-									}
+									sum += items[i].FmtValue.doubleValue;
 								}
-								// 多引擎求和可能超过 100，clamp 到 100 表示满载
-								m_gpuPercent = std::clamp(static_cast<float>(sum), 0.f, 100.f);
 							}
+							// 多引擎求和可能超过 100，clamp 到 100 表示满载
+							m_gpuPercent = std::clamp(static_cast<float>(sum), 0.f, 100.f);
 						}
 					}
 					if (collectStatus == ERROR_SUCCESS && hVramCounter)
 					{
-						DWORD bufferSize = 0;
+						static std::vector<std::byte> vramBuffer;
+						DWORD bufferSize = static_cast<DWORD>(vramBuffer.size());
 						DWORD itemCount = 0;
-						if (PdhGetFormattedCounterArrayW(hVramCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr) == PDH_MORE_DATA &&
-						    bufferSize > 0)
+						PDH_STATUS fmtStatus = PdhGetFormattedCounterArrayW(hVramCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount,
+						                                                    reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(vramBuffer.data()));
+						if (fmtStatus == PDH_MORE_DATA)
 						{
-							std::vector<std::byte> buffer(bufferSize);
-							auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buffer.data());
-							if (PdhGetFormattedCounterArrayW(hVramCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items) == ERROR_SUCCESS)
+							vramBuffer.resize(bufferSize);
+							fmtStatus = PdhGetFormattedCounterArrayW(hVramCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount,
+							                                         reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(vramBuffer.data()));
+						}
+						if (fmtStatus == ERROR_SUCCESS)
+						{
+							const auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(vramBuffer.data());
+							double sum = 0.0;
+							for (DWORD i = 0; i < itemCount; ++i)
 							{
-								double sum = 0.0;
-								for (DWORD i = 0; i < itemCount; ++i)
+								if (items[i].FmtValue.CStatus == ERROR_SUCCESS)
 								{
-									if (items[i].FmtValue.CStatus == ERROR_SUCCESS)
-									{
-										sum += items[i].FmtValue.doubleValue;
-									}
+									sum += items[i].FmtValue.doubleValue;
 								}
-								m_vramUsedBytes = static_cast<std::uint64_t>(sum);
 							}
+							m_vramUsedBytes = static_cast<std::uint64_t>(sum);
 						}
 					}
 				}
@@ -321,7 +330,7 @@ namespace ui
 			}
 
 			// 显存总量兜底：优先尝试 PDH “GPU Adapter Memory\Dedicated Usage” 读出预算
-			if (m_vramTotalBytes == 0 && hQuery)
+			if (m_vramTotalBytes == 0 && hQuery && (hGpuCounter || hVramCounter))
 			{
 				static HCOUNTER hVramTotalCounter = nullptr;
 				if (hVramTotalCounter == nullptr)
@@ -330,27 +339,31 @@ namespace ui
 				}
 				if (hVramTotalCounter)
 				{
-					DWORD bufferSize = 0;
+					static std::vector<std::byte> totalBuffer;
+					DWORD bufferSize = static_cast<DWORD>(totalBuffer.size());
 					DWORD itemCount = 0;
-					if (PdhGetFormattedCounterArrayW(hVramTotalCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, nullptr) == PDH_MORE_DATA &&
-					    bufferSize > 0)
+					PDH_STATUS fmtStatus = PdhGetFormattedCounterArrayW(hVramTotalCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount,
+					                                                    reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(totalBuffer.data()));
+					if (fmtStatus == PDH_MORE_DATA)
 					{
-						std::vector<std::byte> buffer(bufferSize);
-						auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(buffer.data());
-						if (PdhGetFormattedCounterArrayW(hVramTotalCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount, items) == ERROR_SUCCESS)
+						totalBuffer.resize(bufferSize);
+						fmtStatus = PdhGetFormattedCounterArrayW(hVramTotalCounter, PDH_FMT_DOUBLE, &bufferSize, &itemCount,
+						                                         reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(totalBuffer.data()));
+					}
+					if (fmtStatus == ERROR_SUCCESS)
+					{
+						const auto* items = reinterpret_cast<PDH_FMT_COUNTERVALUE_ITEM_W*>(totalBuffer.data());
+						double max = 0.0;
+						for (DWORD i = 0; i < itemCount; ++i)
 						{
-							double max = 0.0;
-							for (DWORD i = 0; i < itemCount; ++i)
+							if (items[i].FmtValue.CStatus == ERROR_SUCCESS)
 							{
-								if (items[i].FmtValue.CStatus == ERROR_SUCCESS)
-								{
-									max = std::max(max, items[i].FmtValue.doubleValue);
-								}
+								max = std::max(max, items[i].FmtValue.doubleValue);
 							}
-							if (max > 0)
-							{
-								m_vramTotalBytes = static_cast<std::uint64_t>(max);
-							}
+						}
+						if (max > 0)
+						{
+							m_vramTotalBytes = static_cast<std::uint64_t>(max);
 						}
 					}
 				}
