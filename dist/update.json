@@ -1,19 +1,11 @@
 {
-    "latestVersion": "v2.9.2",
-    "latestVersionCode": 20902,
-    "releaseDate": "2026/8/19",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.9.2/eBox.exe",
-    "downloadSha256": "e6b3a7b6cdca063eb2ec9faf3066ca52ad96ece9de5077ac90902d4b24060973",
-    "downloadSize": 2865664,
-    "changelog": [
-        "eBox v2.9.2",
-        "修复：多开环境进程（企业微信 WXWorkWeb / 崩溃上报进程）被注入后反复崩溃的问题（异常码 0xc0000005、0xc0000409），实测 3 个实例连续运行 9 分钟零崩溃",
-        "修复：窗口隔离判断逻辑错误导致部分窗口被误拦截、兄弟窗口遍历可能死循环的问题",
-        "优化：环境隔离查询改为进程内缓存异步刷新，多开 20+ 环境不再卡顿、不再出现窗口不响应",
-        "优化：进程登录上报移至后台线程，避免进程启动时卡死\"未响应\"",
-        "优化：大文件重定向拷贝改多线程异步、日志写盘改批量异步，界面不再卡顿",
-        "优化：企业微信 CEF 子进程自动降为低优先级，避免抢占前台资源"
-    ],
+    "latestVersion": "v2.9.3",
+    "latestVersionCode": 20903,
+    "releaseDate": "2026/8/24",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.9.3/eBox.exe",
+    "downloadSha256": "4146f5fee443ccc527ca8a0214d4fdde24ae4fbafbf75b3e389248e3a319f3ca",
+    "downloadSize": 2884096,
+    "changelog": [],
     "minSkipVersionCode": 0,
     "forceUpdate": false
 }
