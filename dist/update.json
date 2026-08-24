@@ -5,7 +5,18 @@
     "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v2.9.3/eBox.exe",
     "downloadSha256": "4146f5fee443ccc527ca8a0214d4fdde24ae4fbafbf75b3e389248e3a319f3ca",
     "downloadSize": 2884096,
-    "changelog": [],
+    "changelog": [
+        "eBox v2.9.3 发布",
+        "【修复】扫码登录 / 切换企业主体",
+        "修复扫码登录长时间等待、任务栏显示\"未响应\"的问题，登录速度与原生企业微信一致",
+        "修复切换企业主体需等待数秒、偶发卡顿未响应的问题，切换提速至秒级",
+        "修复首次登录/切换登录偶发提示\"本地数据加载异常，重启程序即可自动修复\"的问题",
+        "源机无数据的文件不再白白等待拷贝，登录、切换恢复顺畅",
+        "【优化】",
+        "修复关闭 eBox 时偶发卡住未响应的问题",
+        "移除调试日志插桩，运行更干净",
+        "升级说明：可直接通过应用内\"更新\"按钮自动升级，或下载 eBox.exe 覆盖安装（原数据不受影响）。"
+    ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
 }
