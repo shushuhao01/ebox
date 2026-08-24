@@ -258,7 +258,28 @@ namespace global
 			{
 				const fs::path indexPath{std::format(L"{}", m_envIndex)};
 				const fs::path relativePath{knownFolderPath.substr(driverPos + driverMarker.length())};
-				const fs::path redirectPath{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"Env"} / indexPath / relativePath)};
+				// 缓存 miss 时免 I/O：相对路径不含 "." / ".." 特殊段时直接拼接，
+				// 避免每次 miss 都做 weakly_canonical 文件系统探测。切换企业主体瞬间
+				// 大量新路径 miss（缓存上限已提高），I/O 累积会拖慢调用线程 → 卡顿/未响应；
+				// 仅当确含特殊段时才退化为 weakly_canonical 消除 "." / ".."。
+				fs::path redirectPath;
+				bool needCanonical = false;
+				for (const auto& seg : relativePath)
+				{
+					if (seg == L"." || seg == L"..")
+					{
+						needCanonical = true;
+						break;
+					}
+				}
+				if (needCanonical)
+				{
+					redirectPath = fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"Env"} / indexPath / relativePath);
+				}
+				else
+				{
+					redirectPath = fs::path{m_rootPath} / fs::path{L"Env"} / indexPath / relativePath;
+				}
 				result = std::format(L"{}{}", PREFIX_TO_CHECK, redirectPath.native());
 			}
 		}
@@ -269,9 +290,12 @@ namespace global
 		if (result)
 		{
 			std::unique_lock lock(m_redirectCacheMutex);
-			if (m_redirectCache.size() >= 512)
+			// 上限提高到 4096：切换主体瞬间大量新路径入缓存，512 会立刻被刷爆后整表清空，
+			// 老路径（正常运行高频访问）随之全部 miss 并重复做路径解析；4096 足以覆盖
+			// 一次切换产生的全部新路径，避免频繁整表重建。
+			if (m_redirectCache.size() >= 4096)
 			{
-				m_redirectCache.clear(); // 简单防无界增长；超限后重建缓存，不影响正确性
+				m_redirectCache.clear();
 			}
 			m_redirectCache.emplace(std::wstring{knownFolderPath}, *result);
 		}

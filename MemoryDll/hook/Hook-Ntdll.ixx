@@ -313,6 +313,35 @@ namespace hook
 			return m_timeouts.find(path) == m_timeouts.end();
 		}
 
+		// 继承请求是否已发出（TTL 内不重复发 RPC）：切换主体/扫码登录瞬间同一文件
+		// 会被多次访问，重复 RPC 只会让 ncalrpc 端点与宿主任务队列洪峰化
+		bool should_request(const std::wstring& path)
+		{
+			const ULONGLONG now = ::GetTickCount64();
+			std::lock_guard lock(m_mutex);
+			purge_locked(now);
+			return m_requests.find(path) == m_requests.end();
+		}
+
+		// 标记继承请求已发出（eBox 拷贝在途/排队中）
+		void mark_requested(const std::wstring& path)
+		{
+			const ULONGLONG now = ::GetTickCount64();
+			std::lock_guard lock(m_mutex);
+			purge_locked(now);
+			m_requests[path] = now;
+		}
+
+		// 是否"请求在途"（已发继承请求且未超时）：在途文件应给予更充分的等待窗口，
+		// 否则大量文件并发继承排队时 1200ms 不够用，过早超时产生空文件残留
+		bool is_inflight(const std::wstring& path)
+		{
+			const ULONGLONG now = ::GetTickCount64();
+			std::lock_guard lock(m_mutex);
+			purge_locked(now);
+			return m_timeouts.find(path) == m_timeouts.end() && m_requests.find(path) != m_requests.end();
+		}
+
 		void record_timeout(const std::wstring& path)
 		{
 			const ULONGLONG now = ::GetTickCount64();
@@ -342,10 +371,22 @@ namespace hook
 					++it;
 				}
 			}
+			for (auto it = m_requests.begin(); it != m_requests.end();)
+			{
+				if (now - it->second > TtlMs)
+				{
+					it = m_requests.erase(it);
+				}
+				else
+				{
+					++it;
+				}
+			}
 		}
 
 		std::mutex m_mutex;
 		std::unordered_map<std::wstring, ULONGLONG> m_timeouts;
+		std::unordered_map<std::wstring, ULONGLONG> m_requests;
 	};
 
 	// 单例指针：InterlockedCompareExchangePointer 一次性发布（无 magic static）。
@@ -367,12 +408,144 @@ namespace hook
 		return *g_redirectTimeoutCachePtr;
 	}
 
+	// 数据库家族（SQLite/LevelDB）文件：绝不排除，必须继承拷贝
+	bool is_db_file_lower(const std::wstring& lower)
+	{
+		return lower.ends_with(L".db") || lower.ends_with(L".db-wal") || lower.ends_with(L".db-journal")
+			|| lower.ends_with(L".sqlite") || lower.ends_with(L".sqlite3")
+			|| lower.ends_with(L".ldb") || lower.ends_with(L".manifest") || lower.ends_with(L".current");
+	}
+
+	// LevelDB 写日志：纯数字.log（000003.log）是数据库写日志（真数据），不是普通日志
+	bool is_leveldb_log(const std::wstring& lower)
+	{
+		const std::size_t dot = lower.rfind(L'.');
+		if (dot == std::wstring::npos || dot == 0)
+		{
+			return false;
+		}
+		if (lower.compare(dot, 4, L".log") != 0)
+		{
+			return false;
+		}
+		for (std::size_t i = 0; i < dot; ++i)
+		{
+			if (lower[i] < L'0' || lower[i] > L'9')
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	// 判断文件是否属于"运行时可再生的缓存/日志/临时"类，无需从源机继承拷贝。
+	// 源机运行中的 WXWork 会独占写这些文件（日志/缓存），继承拷贝必然冲突重试，
+	// 拖慢登录与切换；且这类文件在环境内自建即可，缺失不影响数据完整性。
+	// 注意：数据库家族（.db/.db-wal/.db-journal/.sqlite/.ldb/LevelDB 数字.log）优先
+	// 保护，绝不排除——排除会直接导致 WXWork "本地数据加载异常"。
+	bool is_no_inherit_file(std::wstring_view path)
+	{
+		std::wstring lower{path};
+		std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+		// Chromium/CEF 设备指纹 Local State（含 machine_id）：多环境共享同一指纹会被风控，
+		// 环境内自生成；宿主侧 is_skip_copy_file 同样排除，两端一致避免无谓等待。
+		if (lower.ends_with(L"local state"))
+		{
+			return true;
+		}
+		if (is_db_file_lower(lower))
+		{
+			return false;
+		}
+		if (is_leveldb_log(lower))
+		{
+			return false;
+		}
+		static constexpr std::wstring_view dirPatterns[] = {
+			L"graphitedawncache", L"shadercache", L"wxworkcefcache", L"cefcache",
+			L"gpucache", L"code cache", L"cachestorage",
+			L"\\cache", L"\\caches", L"\\log\\", L"\\logs\\", L"tmlog",
+			L"crashdump", L"segmentation_platform", L"\\cdn",
+			L"browsermetrics", L"\\update", L"\\.trash",
+		};
+		for (const std::wstring_view p : dirPatterns)
+		{
+			if (lower.find(p) != std::wstring::npos)
+			{
+				return true;
+			}
+		}
+		// Chromium 临时文件（~RFxxx.tmp 等）；.db-wal.NNNN.tmp 这类数据库写临时保留
+		if (lower.ends_with(L".tmp") && lower.find(L".db-") == std::wstring::npos)
+		{
+			return true;
+		}
+		return false;
+	}
+
+	// 发起文件继承请求 + 有界等待落盘。缓存/日志/临时类文件不请求、不等待，
+	// 直接在环境内自建，避免源文件独占导致的拷贝重试与超时等待。
+	bool wait_redirect_ready(std::wstring_view redirectPath); // 定义见下方
+
+	// 源机文件是否存在且有数据（>0 字节）。源机缺失/为空的文件（如 SQLite 空闲态的
+	// .db-wal、Chromium First Run 标记、LevelDB LOG.old 等）无可继承内容，直接跳过
+	// 请求与等待、由应用在环境内自建——避免每个这类文件白白等待 1~2 秒超时
+	//（实测占继承等待超时的 72%，是登录/切换卡顿的主因）。
+	bool source_file_has_data(std::wstring_view filePath)
+	{
+		std::wstring path{filePath};
+		if (path.starts_with(L"\\??\\"))
+		{
+			path = path.substr(4);
+		}
+		// 用 FindFirstFileW 查询源机文件大小：其内部走 NtQueryDirectoryFile（本 DLL 未 hook），
+		// 不会像 fs::file_size（内部走 NtQueryAttributesFile）那样再次进入本 DLL 的 hook
+		// 重定向逻辑，造成无限递归栈溢出（crashpad_handler 已实测异常码 0xc00000fd）。
+		WIN32_FIND_DATAW fd{};
+		const HANDLE hFind = ::FindFirstFileW(path.c_str(), &fd);
+		if (hFind == INVALID_HANDLE_VALUE)
+		{
+			return false; // 源机不存在
+		}
+		::FindClose(hFind);
+		if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		{
+			return false; // 目录：无可继承的"文件数据"，由文件访问按需继承
+		}
+		const ULONGLONG size = (static_cast<ULONGLONG>(fd.nFileSizeHigh) << 32) | fd.nFileSizeLow;
+		return size > 0;
+	}
+
+	void request_redirect_inherit(std::wstring_view filePath, std::wstring_view redirectPath)
+	{
+		if (is_no_inherit_file(filePath))
+		{
+			return;
+		}
+		// 源机无数据（缺失或 0 字节）→ 无可继承内容，跳过请求与等待，应用自建
+		if (!source_file_has_data(filePath))
+		{
+			return;
+		}
+		const std::wstring requestPath{filePath};
+		if (redirect_timeout_cache().should_request(requestPath))
+		{
+			redirect_timeout_cache().mark_requested(requestPath);
+			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, requestPath.c_str(), std::wstring{redirectPath}.c_str());
+		}
+		wait_redirect_ready(redirectPath);
+	}
+
 	// 有界等待重定向目标落盘。返回 true 表示已就绪。
 	// 宿主收到 createRedirectFile 请求后由工作池【异步】拷贝（原子 temp+rename 落盘）。
 	// ncalrpc 无调用超时（RPC_C_OPT_CALL_TIMEOUT 对 local RPC 无效），不能在调用线程内
-	// 同步等待宿主返回；这里以 10ms 粒度有界轮询（总 500ms），超时后记录到 TTL 去重表，
+	// 同步等待宿主返回；这里以 10ms 粒度有界轮询，超时后记录到 TTL 去重表，
 	// TTL 内再访问同一文件不再重复等待，由调用方回退到原有逻辑（如创建空文件）。
 	// 既杜绝无限阻塞，又避免高频访问缺失文件时反复等待造成的 UI 迟缓。
+	// 等待窗口分级：已发继承请求（在途，eBox 正在排队/拷贝）→ 总 3000ms，充分等待
+	// 保证数据就绪（切换主体/扫码登录瞬间大量文件并发继承，1200ms 常不够用，过早
+	// 超时产生空文件 → "本地数据加载异常"）；未请求过 → 常规 1200ms（调用方会先发
+	// 请求再进入本函数，正常场景多数 200ms 内落盘）。
 	bool wait_redirect_ready(std::wstring_view redirectPath)
 	{
 		const std::wstring path{redirectPath};
@@ -380,12 +553,13 @@ namespace hook
 		{
 			return true;
 		}
-		if (!redirect_timeout_cache().should_wait(path))
+		RedirectTimeoutCache& cache = redirect_timeout_cache();
+		if (!cache.should_wait(path))
 		{
 			return false; // 最近已超时过，不再重复等待
 		}
-		constexpr int MaxAttempts = 50; // 50 * 10ms = 500ms
-		for (int i = 0; i < MaxAttempts; ++i)
+		const int maxAttempts = cache.is_inflight(path) ? 300 : 120; // 300*10ms=3000ms / 120*10ms=1200ms
+		for (int i = 0; i < maxAttempts; ++i)
 		{
 			if (redirect_target_has_data(path))
 			{
@@ -393,7 +567,7 @@ namespace hook
 			}
 			Sleep(10);
 		}
-		redirect_timeout_cache().record_timeout(path);
+		cache.record_timeout(path);
 		return false;
 	}
 
@@ -464,8 +638,7 @@ namespace hook
 				if (NT_SUCCESS(srcRet))
 				{
 					NtClose(tempSrcHandle);
-					rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
-					wait_redirect_ready(redirectPath.value());
+					request_redirect_inherit(filePath, redirectPath.value());
 					const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
 					UNICODE_STRING newObjName;
 					newObjName.Buffer = redirectPath.value().data();
@@ -494,6 +667,43 @@ namespace hook
 			ObjectAttributes->ObjectName = pOldName;
 			if (NT_SUCCESS(ret) || CreateDisposition == FILE_CREATE)
 			{
+				// 继承超时残留补漏：打开成功但目标为 0 字节（非新建语义、非目录）且源机有同名
+				// 数据时，主动触发一次继承拷贝并重开——否则应用直接命中空文件初始化
+				// （Local Storage/LevelDB）→ "本地数据加载异常"。FILE_CREATE 已在上方继承
+				// 分支处理过（失败才回退到这里创建空文件），不再重复触发避免死循环。
+				if (CreateDisposition != FILE_CREATE && NT_SUCCESS(ret) && !bIsDir)
+				{
+					LARGE_INTEGER dstSize{};
+					const bool bIsEmpty = GetFileSizeEx(tempDstHandle, &dstSize) && dstSize.QuadPart == 0;
+					if (bIsEmpty)
+					{
+						NtClose(tempDstHandle);
+						tempDstHandle = nullptr;
+						HANDLE tempSrcHandle{nullptr};
+						IO_STATUS_BLOCK srcStatusBlock{};
+						const NTSTATUS srcRet = trampoline(&tempSrcHandle, DesiredAccess, ObjectAttributes,
+						                                   &srcStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+						                                   FILE_OPEN, CreateOptions, EaBuffer, EaLength);
+						if (NT_SUCCESS(srcRet))
+						{
+							NtClose(tempSrcHandle);
+							request_redirect_inherit(filePath, redirectPath.value());
+							ObjectAttributes->ObjectName = &newObjName;
+							const NTSTATUS ret2 = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+							                                 IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+							                                 CreateDisposition, CreateOptions, EaBuffer, EaLength);
+							ObjectAttributes->ObjectName = pOldName;
+							return ret2;
+						}
+						// 源机无同名数据：保持原行为，重新打开空文件目标返回
+						ObjectAttributes->ObjectName = &newObjName;
+						const NTSTATUS ret3 = trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+						                                 IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+						                                 CreateDisposition, CreateOptions, EaBuffer, EaLength);
+						ObjectAttributes->ObjectName = pOldName;
+						return ret3;
+					}
+				}
 				*FileHandle = tempDstHandle;
 				return ret;
 			}
@@ -528,8 +738,7 @@ namespace hook
 			// 到这里，重定向的文件不存在，但原始文件成功，请求eBox去copy源文件过来
 			// 为什么不直接在这里创建文件并copy?
 			// 因为要考虑多进程架构的软件可能同时都要访问同一个文件，在这里做并发限制比较困难，而且NtCreateFile还被hook了，用不了高阶接口。干脆用eBox做
-			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
-			wait_redirect_ready(redirectPath.value());
+			request_redirect_inherit(filePath, redirectPath.value());
 
 			// 最终再次尝试重定向位置
 			ObjectAttributes->ObjectName = &newObjName;
@@ -586,6 +795,34 @@ namespace hook
 			ObjectAttributes->ObjectName = pOldName;
 			if (NT_SUCCESS(ret))
 			{
+				// 继承超时残留补漏（同 NtCreateFile）：打开成功但目标为 0 字节且源机有同名
+				// 数据时，主动触发一次继承拷贝并重开，避免应用命中空文件 → "本地数据加载异常"。
+				if (!bIsDir)
+				{
+					LARGE_INTEGER dstSize{};
+					const bool bIsEmpty = GetFileSizeEx(tempDstHandle, &dstSize) && dstSize.QuadPart == 0;
+					if (bIsEmpty)
+					{
+						NtClose(tempDstHandle);
+						tempDstHandle = nullptr;
+						HANDLE tempSrcHandle{nullptr};
+						const NTSTATUS srcRet = trampoline(&tempSrcHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+						if (NT_SUCCESS(srcRet))
+						{
+							NtClose(tempSrcHandle);
+							request_redirect_inherit(filePath, redirectPath.value());
+							ObjectAttributes->ObjectName = &newObjName;
+							const NTSTATUS ret2 = trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+							ObjectAttributes->ObjectName = pOldName;
+							return ret2;
+						}
+						// 源机无同名数据：重新打开空文件目标返回
+						ObjectAttributes->ObjectName = &newObjName;
+						const NTSTATUS ret3 = trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+						ObjectAttributes->ObjectName = pOldName;
+						return ret3;
+					}
+				}
 				*FileHandle = tempDstHandle;
 				return ret;
 			}
@@ -610,8 +847,7 @@ namespace hook
 			}
 			NtClose(tempSrcHandle);
 
-			rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
-			wait_redirect_ready(redirectPath.value());
+			request_redirect_inherit(filePath, redirectPath.value());
 
 			// 最终再次尝试重定向位置
 			ObjectAttributes->ObjectName = &newObjName;
@@ -671,8 +907,7 @@ namespace hook
 			return ret;
 		}
 
-		rpc::default_call_ignore_error(&rpc::ClientDefault::createRedirectFile, std::wstring{filePath}.c_str(), redirectPath.value().c_str());
-		wait_redirect_ready(redirectPath.value());
+		request_redirect_inherit(filePath, redirectPath.value());
 
 		// 最终再次尝试重定向位置
 		ObjectAttributes->ObjectName = &newObjName;

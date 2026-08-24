@@ -1,12 +1,49 @@
+module;
+#include <windows.h>
 module FileRedirect;
 
 namespace
 {
-	// 指纹敏感文件：不继承原机数据，让应用在环境内自生成。
-	// 若把这些文件从原生目录拷贝到环境，所有环境将共享同一份设备指纹
-	// （machine_id / qimei 等），多环境同时登录多个账号会被风控判定为
-	// 同一台设备的批量行为，存在封号风险。
-	bool is_fingerprint_file(const std::wstring& redirectFile)
+	// 数据库家族（SQLite/LevelDB）文件：绝不排除，必须继承拷贝
+	bool is_db_file_lower(const std::wstring& lower)
+	{
+		return lower.ends_with(L".db") || lower.ends_with(L".db-wal") || lower.ends_with(L".db-journal")
+			|| lower.ends_with(L".sqlite") || lower.ends_with(L".sqlite3")
+			|| lower.ends_with(L".ldb") || lower.ends_with(L".manifest") || lower.ends_with(L".current");
+	}
+
+	// LevelDB 写日志：纯数字.log（000003.log）是数据库写日志（真数据），不是普通日志
+	bool is_leveldb_log(const std::wstring& lower)
+	{
+		const std::size_t dot = lower.rfind(L'.');
+		if (dot == std::wstring::npos || dot == 0)
+		{
+			return false;
+		}
+		if (lower.compare(dot, 4, L".log") != 0)
+		{
+			return false;
+		}
+		for (std::size_t i = 0; i < dot; ++i)
+		{
+			if (lower[i] < L'0' || lower[i] > L'9')
+			{
+				return false;
+			}
+		}
+		return true;
+	}
+
+	// 不拷贝清单：指纹敏感文件 + 运行时可再生的缓存/日志/临时文件。
+	// 1) 指纹文件（Local State / qimei）：不继承原机数据，让应用在环境内自生成，
+	//    否则所有环境共享同一份设备指纹（machine_id/qimei），多开多账号会被风控
+	//    判定为同一台设备，存在封号风险。
+	// 2) 缓存/日志/临时类：源机运行中的 WXWork 独占写这些文件（日志/缓存），继承
+	//    拷贝必然冲突重试（最长 ~1.5s/个），拖慢登录与切换；且缺失不影响数据完整性，
+	//    在环境内自建即可。
+	// 注意：数据库家族（.db/.db-wal/.db-journal/.sqlite/.ldb/LevelDB 数字.log）优先
+	// 保护，绝不排除——排除会直接导致 WXWork "本地数据加载异常"。
+	bool is_skip_copy_file(const std::wstring& redirectFile)
 	{
 		namespace fs = std::filesystem;
 		const fs::path filePath{redirectFile};
@@ -20,6 +57,34 @@ namespace
 		std::wstring lower = filePath.native();
 		std::transform(lower.begin(), lower.end(), lower.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
 		if (lower.find(L"tencent\\qimei") != std::wstring::npos)
+		{
+			return true;
+		}
+		if (is_db_file_lower(lower))
+		{
+			return false;
+		}
+		if (is_leveldb_log(lower))
+		{
+			return false;
+		}
+		// 缓存/日志/临时目录名单
+		static constexpr std::wstring_view dirPatterns[] = {
+			L"graphitedawncache", L"shadercache", L"wxworkcefcache", L"cefcache",
+			L"gpucache", L"code cache", L"cachestorage",
+			L"\\cache", L"\\caches", L"\\log\\", L"\\logs\\", L"tmlog",
+			L"crashdump", L"segmentation_platform", L"\\cdn",
+			L"browsermetrics", L"\\update", L"\\.trash",
+		};
+		for (const std::wstring_view p : dirPatterns)
+		{
+			if (lower.find(p) != std::wstring::npos)
+			{
+				return true;
+			}
+		}
+		// Chromium 临时文件；.db-wal.NNNN.tmp 这类数据库写临时保留
+		if (lower.ends_with(L".tmp") && lower.find(L".db-") == std::wstring::npos)
 		{
 			return true;
 		}
@@ -91,9 +156,22 @@ namespace
 			try
 			{
 				const fs::path dst{redirectFile};
-				if (fs::exists(dst))
 				{
-					return true; // 已存在（并发去重或上次已拷贝），直接视为成功
+					std::error_code existsEc;
+					const bool dstExists = fs::exists(dst, existsEc);
+					if (dstExists && !existsEc)
+					{
+						// 目标已存在：非空视为已有完整数据（上次拷贝完成或应用已写入新内容），跳过；
+						// 0 字节视为继承超时残留的空文件，删除后重新原子拷贝——否则源机数据永远
+						// 拷不进来，WXWork 基于空文件初始化（Local Storage/LevelDB）→ "本地数据加载异常"。
+						std::error_code sizeEc;
+						const auto dstSize = fs::file_size(dst, sizeEc);
+						if (!sizeEc && dstSize > 0)
+						{
+							return true;
+						}
+						fs::remove(dst, sizeEc);
+					}
 				}
 				const fs::path src{originalFile};
 				if (!fs::exists(src))
@@ -137,8 +215,8 @@ namespace
 	{
 		try
 		{
-			// 指纹文件不拷贝：环境首次启动时由应用自行生成全新指纹并持久化在环境内
-			if (is_fingerprint_file(redirectFile))
+			// 指纹/缓存/日志文件不拷贝：环境首次启动时由应用自行生成并持久化在环境内
+			if (is_skip_copy_file(redirectFile))
 			{
 				return;
 			}
@@ -156,11 +234,11 @@ namespace
 			for (const std::wstring& companionName : get_db_companion_file_names(originalFile))
 			{
 				const fs::path companionRedirect = redirectDir / companionName;
-				if (!fs::exists(companionRedirect))
-				{
-					copy_file_with_retry((fs::path{originalFile}.parent_path() / companionName).native(),
-					                     companionRedirect.native());
-				}
+				// 不做 exists 短路：由 copy_file_with_retry 内部"非空才跳过"接管，
+				// 0 字节残留（继承超时产生）会被源机数据覆盖，避免伴随文件与主库校验
+				// 不一致触发 SQLite "database disk image is malformed" → 本地数据加载异常。
+				copy_file_with_retry((fs::path{originalFile}.parent_path() / companionName).native(),
+				                     companionRedirect.native());
 			}
 		}
 		catch (...)
@@ -185,6 +263,9 @@ namespace biz
 		{
 			std::lock_guard lock(m_queueMutex);
 			m_stop = true;
+			// 停止后立即退出，丢弃队列中的积压任务（登录/切换瞬间可能堆积大量
+			// 继承拷贝请求；逐一处理会让析构 join 卡数秒到数分钟 → eBox 关闭未响应）
+			m_queue.clear();
 		}
 		m_queueCv.notify_all();
 		for (auto& worker : m_workers)
@@ -202,11 +283,10 @@ namespace biz
 		// 执行完毕后从 m_tasks 移除，后续请求可重试（如上次拷贝失败）。
 		{
 			std::lock_guard lock(m_mutex);
-			if (m_tasks.contains(redirectFile))
+			if (!m_tasks.contains(redirectFile))
 			{
-				return;
+				m_tasks.emplace(redirectFile, std::uint8_t{0});
 			}
-			m_tasks.emplace(redirectFile, std::uint8_t{0});
 		}
 		{
 			std::lock_guard lock(m_queueMutex);
@@ -230,8 +310,9 @@ namespace biz
 			{
 				std::unique_lock lock(m_queueMutex);
 				m_queueCv.wait(lock, [this] { return m_stop || !m_queue.empty(); });
-				if (m_stop && m_queue.empty())
+				if (m_stop)
 				{
+					// 停止后丢弃剩余任务直接退出，不再处理积压队列
 					break;
 				}
 				task = std::move(m_queue.front());
