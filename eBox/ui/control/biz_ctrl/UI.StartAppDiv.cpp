@@ -48,6 +48,8 @@ namespace ui
 		m_btnClear->setOnClick([this]
 		{
 			m_strExePath.clear();
+			// 同步清除"上次使用应用"记忆，下次点"启动新进程"重新弹出应用列表
+			ui::clear_last_app_path();
 			updateBoundsWhenPathChanged();
 		});
 
@@ -149,11 +151,20 @@ namespace ui
 			return;
 		}
 
-		const std::optional<std::wstring> fullPath = select_file(m_ownerWnd);
-		if (!fullPath.has_value())
+		// 有"上次使用应用"记忆且文件仍存在 → 直接启动
+		const std::wstring last = ui::get_last_app_path();
+		if (!last.empty() && std::filesystem::exists(std::filesystem::path{last}))
+		{
+			launchFile(last);
+			return;
+		}
+
+		// 否则弹出"选择要启动的应用"列表窗口（扫描系统应用，也可手动选择文件）
+		const std::optional<std::wstring> picked = ui::select_app_dialog(m_ownerWnd);
+		if (!picked.has_value())
 		{
 			return;
 		}
-		launchFile(fullPath.value());
+		launchFile(picked.value());
 	}
 }

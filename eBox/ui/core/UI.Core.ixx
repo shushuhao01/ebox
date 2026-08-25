@@ -665,4 +665,18 @@ namespace ui
 	// 授权信息对话框：显示激活状态/到期时间/本机指纹/解绑次数，提供“重新激活”“购买激活码”“联系客服”“解绑本机”入口。
 	// 返回用户的操作意图。
 	export LicenseInfoResult license_info_dialog(const WindowBase* owner);
+
+	// 常见问题对话框：左侧分类（常见问题 / 妙用小技巧），右侧手风琴式问题列表。
+	export void faq_dialog(const WindowBase* owner);
+
+	// 上次"启动新进程"所选应用的路径（注册表记忆），未设置或已清除时返回空串
+	export std::wstring get_last_app_path();
+
+	// 清除上次应用的记忆（配合应用选择器使用）
+	export void clear_last_app_path();
+
+	// 选择要启动的应用对话框：扫描系统已安装应用（注册表/开始菜单/常见安装目录），
+	// 列表展示序号/名称/路径，分页选择；选择后记忆为"上次使用"并返回该 exe 路径，
+	// 取消/关闭返回 nullopt。内部保留"手动选择文件"入口。
+	export std::optional<std::wstring> select_app_dialog(const WindowBase* owner);
 }

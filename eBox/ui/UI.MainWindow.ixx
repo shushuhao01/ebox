@@ -27,6 +27,7 @@ namespace ui
 		void drawToTryBtn(const RenderContext& renderCtx, Button::EState state) const;
 		void drawToLicenseBtn(const RenderContext& renderCtx, Button::EState state) const;
 		void drawToUpdateBtn(const RenderContext& renderCtx, Button::EState state) const;
+		void drawToHelpBtn(const RenderContext& renderCtx, Button::EState state) const;
 		virtual void onResize(float width, float height) override;
 		virtual void onActivate(WParam wParam, LParam lParam) override;
 		virtual bool onClose() override;
@@ -116,8 +117,10 @@ namespace ui
 		Button m_btnToTray{this};
 		Button m_btnLicense{this};
 		Button m_btnUpdate{this};
+		Button m_btnHelp{this};
 		HWND m_hLicenseTooltip{nullptr};
 		HWND m_hUpdateTooltip{nullptr};
+		HWND m_hHelpTooltip{nullptr};
 
 		// ===== 自动升级状态 =====
 		coro::AsyncScope m_updateScope;

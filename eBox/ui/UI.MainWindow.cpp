@@ -122,6 +122,24 @@ namespace ui
 			SendMessageW(m_hLicenseTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
 		}
 
+		// 右上角"帮助"按钮（更新按钮左侧）：点击弹出常见问题对话框
+		m_btnHelp.setBackgroundColor(D2D1::ColorF(0, 0.f), Button::EState::Normal);
+		m_btnHelp.setBackgroundColor(D2D1::ColorF(0, 0.102f), Button::EState::Hover);
+		m_btnHelp.setBackgroundColor(D2D1::ColorF(0, 0.208f), Button::EState::Active);
+		m_btnHelp.setOnClick([this] { ui::faq_dialog(this); });
+		m_btnHelp.setDrawCallback(std::bind(&MainWindow::drawToHelpBtn, this, std::placeholders::_1, std::placeholders::_2));
+		m_btnHelp.setDontDrawDefault(true);
+		// Win32 tooltip：悬浮帮助按钮
+		m_hHelpTooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr,
+		                                 WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+		                                 CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		                                 nativeHandle(), nullptr, GetModuleHandleW(nullptr), nullptr);
+		if (m_hHelpTooltip)
+		{
+			SendMessageW(m_hHelpTooltip, TTM_SETMAXTIPWIDTH, 0, 300);
+			SendMessageW(m_hHelpTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
+		}
+
 #if 0	// 暂时不使用反射注入，就不需要下载pdb了
 		initSymbols().detachAndStart();
 #else
@@ -234,10 +252,11 @@ namespace ui
 			const float captionHeight = m_margins.top - paddingTop;
 			const float titleIconSize = captionHeight * 0.618f;
 
-			// 授权按钮宽度：与最小化按钮等宽；更新按钮同宽
+			// 授权按钮宽度：与最小化按钮等宽；更新/帮助按钮同宽
 			const float licenseBtnWidth = toTrayBthWidth;
 			const float updateBtnWidth = toTrayBthWidth;
-			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - 8.f;
+			const float helpBtnWidth = toTrayBthWidth;
+			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - helpBtnWidth - 8.f;
 
 			if (ID2D1Bitmap* bitmap = getTitleIconBitmap(renderTarget))
 			{
@@ -289,6 +308,28 @@ namespace ui
 				SendMessageW(m_hUpdateTooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 				SendMessageW(m_hUpdateTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 				SendMessageW(m_hUpdateTooltip, TTM_UPDATE, 0, 0);
+			}
+			// 帮助按钮（更新按钮左侧）：点击查看常见问题
+			const float helpBtnXPos = updateBtnXPos - helpBtnWidth;
+			m_btnHelp.setBounds(D2D1::Rect(helpBtnXPos, paddingTop + 1.f, helpBtnXPos + helpBtnWidth, m_margins.top));
+			m_btnHelp.draw(renderCtx);
+			if (m_hHelpTooltip)
+			{
+				const float d2p = dpiInfo().deviceToPhysical;
+				RECT rcTool{
+					static_cast<LONG>(helpBtnXPos * d2p),
+					static_cast<LONG>((paddingTop + 1.f) * d2p),
+					static_cast<LONG>((helpBtnXPos + helpBtnWidth) * d2p),
+					static_cast<LONG>(m_margins.top * d2p)};
+				TOOLINFOW ti{};
+				ti.cbSize = sizeof(ti);
+				ti.uFlags = TTF_SUBCLASS;
+				ti.hwnd = nativeHandle();
+				ti.uId = 3;
+				ti.rect = rcTool;
+				ti.lpszText = const_cast<LPWSTR>(L"常见问题");
+				SendMessageW(m_hHelpTooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+				SendMessageW(m_hHelpTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
 			}
 			// 更新 tooltip 工具矩形（物理像素）
 			if (m_hLicenseTooltip)
@@ -531,6 +572,59 @@ namespace ui
 			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
 			DrawTextW(hdc, L"↓", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			SelectObject(hdc, hOld);
+			ReleaseDC(nativeHandle(), hdc);
+		}
+	}
+
+	void MainWindow::drawToHelpBtn(const RenderContext& renderCtx, Button::EState state) const
+	{
+		// draw() 已将坐标系平移到按钮原点，使用本地坐标 (0,0)-(width,height)
+		const float width = m_btnHelp.getBounds().right - m_btnHelp.getBounds().left;
+		const float height = m_btnHelp.getBounds().bottom - m_btnHelp.getBounds().top;
+		const bool hot = (state == Button::EState::Hover || state == Button::EState::Active);
+
+		if (isCompositionEnabled())
+		{
+			const UniqueComPtr<ID2D1HwndRenderTarget>& renderTarget = renderCtx.renderTarget;
+			const UniqueComPtr<ID2D1SolidColorBrush>& solidBrush = renderCtx.brush;
+			// 悬浮/按下时浅蓝高亮（与更新按钮一致）
+			if (hot)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 0.12f));
+				renderTarget->FillRoundedRectangle(
+					D2D1::RoundedRect(D2D1::RectF(0.f, 0.f, width, height), 4.f, 4.f),
+					solidBrush);
+			}
+			// 只画一个"?"：常态灰色、悬浮/按下主题蓝，无背景、无描边
+			solidBrush->SetColor(hot
+			                     ? D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 1.f)
+			                     : D2D1::ColorF(0.45f, 0.45f, 0.45f, 1.f));
+			IDWriteTextFormat* const tipsFmt = app().textFormat().pTipsFormat.get();
+			const auto oldAlign = tipsFmt->GetTextAlignment();
+			tipsFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			renderTarget->DrawTextW(L"?", 1,
+			                        tipsFmt,
+			                        D2D1::RectF(0.f, (height - 14.f) * 0.5f, width, (height - 14.f) * 0.5f + 14.f),
+			                        solidBrush);
+			tipsFmt->SetTextAlignment(oldAlign);
+		}
+		else
+		{
+			const D2D1_RECT_F& bounds = m_btnHelp.getBounds();
+			HDC hdc = GetWindowDC(nativeHandle());
+			const float deviceToPhysical = dpiInfo().deviceToPhysical;
+			D2D1_RECT_F physicalBounds = D2D1::RectF((bounds.left + m_margins.left) * deviceToPhysical,
+			                                         (bounds.top + m_margins.top) * deviceToPhysical,
+			                                         (bounds.right + m_margins.left) * deviceToPhysical,
+			                                         (bounds.bottom + m_margins.top) * deviceToPhysical);
+			RECT rc{static_cast<LONG>(physicalBounds.left), static_cast<LONG>(physicalBounds.top),
+			        static_cast<LONG>(physicalBounds.right), static_cast<LONG>(physicalBounds.bottom)};
+			SetBkMode(hdc, TRANSPARENT);
+			SetTextColor(hdc, hot ? RGB(0x00, 0x78, 0xd4) : RGB(0x80, 0x80, 0x80));
+			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
+			DrawTextW(hdc, L"?", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			SelectObject(hdc, hOld);
 			ReleaseDC(nativeHandle(), hdc);
 		}
@@ -817,6 +911,11 @@ namespace ui
 		m_btnUpdate.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc, 6 - m_margins.top, toTrayBthXPos - licenseBtnWidth, -2.f));
 		m_btnUpdate.setDontDrawDefault(true);
 		m_btnUpdate.drawImpl(renderContext());
+		// 帮助按钮（更新按钮左侧）
+		const float helpBtnWidthNc = toTrayBthWidth;
+		m_btnHelp.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc - helpBtnWidthNc, 6 - m_margins.top, toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc, -2.f));
+		m_btnHelp.setDontDrawDefault(true);
+		m_btnHelp.drawImpl(renderContext());
 	}
 
 	void MainWindow::onDropFiles(WParam wParam)
@@ -904,8 +1003,18 @@ namespace ui
 				}
 				else if (id == 2)
 				{
-					// 启动新进程：选择程序后在新环境打开
-					if (std::optional<std::wstring> path = ui::select_file(this))
+					// 启动新进程：有"上次使用应用"记忆 → 直接启动；否则弹出应用选择列表
+					const std::wstring last = ui::get_last_app_path();
+					std::optional<std::wstring> path;
+					if (!last.empty() && std::filesystem::exists(std::filesystem::path{last}))
+					{
+						path = last;
+					}
+					else
+					{
+						path = ui::select_app_dialog(this);
+					}
+					if (path.has_value())
 					{
 						getPage<HomePage>().getLeftSidebar()->getEnvBoxCardArea()->launchProcessInNewEnv(*path);
 					}
@@ -954,7 +1063,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v2.9.3   更新时间：2026/8/24   [到期：yyyy-MM-dd]
+		// 标题：eBox v2.9.4   更新时间：2026/8/25   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1152,7 +1261,7 @@ namespace ui
 		//这里的入参pt是相对于屏幕的
 		ScreenToClient(nativeHandle(), &pt);
 		const D2D1_POINT_2F local = D2D1::Point2F(pt.x * dpiInfo().physicalToDevice, pt.y * dpiInfo().physicalToDevice);
-		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local);
+		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local) || m_btnHelp.hitTest(local);
 	}
 
 	// ===== 自动升级实现 =====
