@@ -265,7 +265,7 @@
       <ScanSourceForModuleDependencies>
       </ScanSourceForModuleDependencies>
       <AdditionalOptions>/source-charset:utf-8 /execution-charset:utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <DebugInformationFormat>None</DebugInformationFormat>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)common\header_units\;$(SolutionDir)3rdparty\Detours\include;$(SolutionDir)idl\$(PlatformTarget)\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
     </ClCompile>
@@ -330,13 +330,13 @@
       <ScanSourceForModuleDependencies>
       </ScanSourceForModuleDependencies>
       <AdditionalOptions>/source-charset:utf-8 /execution-charset:utf-8 %(AdditionalOptions)</AdditionalOptions>
-      <DebugInformationFormat>None</DebugInformationFormat>
+      <DebugInformationFormat>ProgramDatabase</DebugInformationFormat>
       <AdditionalIncludeDirectories>$(ProjectDir);$(SolutionDir)common\header_units\;$(SolutionDir)3rdparty\Detours\include;$(SolutionDir)idl\$(PlatformTarget)\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <ExceptionHandling>Async</ExceptionHandling>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
-      <GenerateDebugInformation>false</GenerateDebugInformation>
+      <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalDependencies>d2d1.lib;dwrite.lib;Dwmapi.lib;dbghelp.lib;detours.lib;Rpcrt4.lib;psapi.lib;pdh.lib;dxgi.lib;bcrypt.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(SolutionDir)3rdparty\Detours\lib.X64\;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>

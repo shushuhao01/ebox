@@ -150,6 +150,8 @@ namespace ui
 			{
 				return;
 			}
+			// 记录最后操作，供 UI 卡死 watchdog 转储时提示定位
+			sched::hang_watchdog_mark(L"环境卡片-启动");
 			// 点击启动前先选中该环境，右侧进程区联动显示该环境
 			m_isSelected = true;
 			if (m_pfnOnSelect)

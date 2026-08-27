@@ -100,6 +100,7 @@ namespace ui
 
 	void EnvBoxCardArea::launchProcess(const std::wstring& procFullPath, std::wstring_view params /*= L""*/)
 	{
+		sched::hang_watchdog_mark(L"启动新进程(复用环境)");
 		if (const std::shared_ptr<biz::Env> suitableEnv = selectSuitableEnvAndSetItBusyTemp(procFullPath))
 		{
 			// 复用合适环境启动 → 选中该环境，右侧进程区联动显示
@@ -119,6 +120,7 @@ namespace ui
 	{
 		// 多开入口：每次启动都新建一个独立环境，登录态/数据与其他环境完全隔离。
 		// 新环境创建后自动选中（onEnvCountChange 里处理），右侧进程区直接显示该环境
+		sched::hang_watchdog_mark(L"启动新进程(新建环境)");
 		m_bAutoSelectNextNewEnv = true;
 		biz::launcher().runInNewEnv(procFullPath, params);
 	}
