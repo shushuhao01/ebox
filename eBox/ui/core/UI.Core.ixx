@@ -232,8 +232,9 @@ namespace ui
 		{
 		}
 
-	private:
-		bool hitTestInternal(D2D1_POINT_2F point) const
+	protected:
+		// 允许派生控件按自身状态（如空态）拦截命中，避免吞掉本应落到父控件的鼠标事件
+		virtual bool hitTestInternal(D2D1_POINT_2F point) const
 		{
 			return point.x >= m_boundsInOwner.left && point.x <= m_boundsInOwner.right &&
 				point.y >= m_boundsInOwner.top && point.y <= m_boundsInOwner.bottom;
@@ -461,18 +462,23 @@ namespace ui
 		// 全局悬浮提示：由任意控件在鼠标移动中调用，在窗口最上层绘制
 		void setTooltip(std::wstring_view text, D2D1_POINT_2F pos) noexcept
 		{
-			// 气泡画在脏区裁剪之外且位图保留上一帧内容：位置/文本变化时若不把旧气泡
-			// 矩形加入重绘区，旧气泡像素会残留在位图上形成残影。
-			const bool needErase = m_bTooltipHasRect &&
-				((!m_bTooltipVisible) || (m_tooltipText != text) ||
-				 m_tooltipPos.x != pos.x || m_tooltipPos.y != pos.y);
+			// 固定式提示（与标题栏原生 tooltip 观感一致）：出现后不跟随鼠标移动——
+			// 鼠标在提示区内微动时保持首次位置，避免反复擦除/重绘气泡产生残影；
+			// 文本变化（切换到另一提示区）时才重新定位，并擦除旧气泡矩形。
+			if (m_bTooltipVisible)
+			{
+				if (m_tooltipText == text)
+				{
+					return;
+				}
+				if (m_bTooltipHasRect)
+				{
+					invalidateRect(m_lastTooltipRect);
+				}
+			}
 			m_tooltipText.assign(text.data(), text.size());
 			m_tooltipPos = pos;
 			m_bTooltipVisible = true;
-			if (needErase)
-			{
-				invalidateRect(m_lastTooltipRect);
-			}
 		}
 
 		void clearTooltip() noexcept

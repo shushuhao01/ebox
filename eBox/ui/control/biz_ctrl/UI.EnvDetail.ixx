@@ -90,9 +90,19 @@ namespace ui
 	protected:
 		virtual void onResize(float width, float height) override;
 
+		// 空态（未选中环境）时详情卡片及其子面板均未绘制，不应参与命中：
+		// 否则会吞掉首页“使用事项”区域的悬停/滚轮事件，导致内容无法滚动
+		virtual bool hitTestInternal(D2D1_POINT_2F point) const override
+		{
+			if (!hasDetail())
+			{
+				return false;
+			}
+			return ControlBase::hitTestInternal(point);
+		}
+
 	private:
 		virtual void drawImpl(const RenderContext& renderCtx) override;
-
 	private:
 		void setProcPath(std::wstring_view path);
 		void onLaunchBtnClick();
