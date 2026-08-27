@@ -296,18 +296,81 @@ namespace sched
 		std::atomic<bool> g_dumped{false};
 		std::optional<std::jthread> g_watchdog{};
 
+		// 环境数据主目录：与主程序 envDataRoot() 保持一致。
+		// 该目录由 MainApp 持久化到注册表 HKCU\Software\eBox\DataDir（兼容旧键 Software\2Box），
+		// 默认为 C:\eBoxData 或 D:\eBoxData。这里从注册表读取，避免 common 层反向依赖 biz 层。
+		std::filesystem::path dataRootFromRegistry()
+		{
+			constexpr std::wstring_view regSubKey{L"Software\\eBox"};
+			constexpr std::wstring_view legacyRegSubKey{L"Software\\2Box"};
+			constexpr std::wstring_view regValueName{L"DataDir"};
+
+			const auto query = [&](std::wstring_view subKey) -> std::wstring
+			{
+				HKEY hKey = nullptr;
+				std::wstring out;
+				if (::RegOpenKeyExW(HKEY_CURRENT_USER, subKey.data(), 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+				{
+					wchar_t buf[MAX_PATH]{};
+					DWORD bufSize = sizeof(buf);
+					if (::RegQueryValueExW(hKey, regValueName.data(), nullptr, nullptr,
+					                       reinterpret_cast<LPBYTE>(buf), &bufSize) == ERROR_SUCCESS &&
+					    buf[0] != L'\0')
+					{
+						out = buf;
+					}
+					::RegCloseKey(hKey);
+				}
+				return out;
+			};
+
+			const std::wstring recorded = query(regSubKey);
+			if (!recorded.empty())
+			{
+				return std::filesystem::path(recorded);
+			}
+			const std::wstring legacy = query(legacyRegSubKey);
+			if (!legacy.empty())
+			{
+				return std::filesystem::path(legacy);
+			}
+			return {};
+		}
+
 		std::filesystem::path dumpDir()
 		{
+			// 转储放到环境数据主目录（C:\eBoxData 或 D:\eBoxData，见 MainApp::envDataRoot）下的
+			// 二级"记录文件夹" logs 中：用户机器在 eBoxData 里即可找到 .dmp/.txt。
+			if (const auto root = dataRootFromRegistry(); !root.empty())
+			{
+				std::error_code ec;
+				const auto dir = root / L"logs";
+				std::filesystem::create_directories(dir, ec);
+				if (!ec && std::filesystem::is_directory(dir, ec))
+				{
+					// 再写一个临时探测文件，确认该目录真的可写
+					const auto probe = dir / L".probe_write";
+					std::error_code ec2;
+					{ std::ofstream f(probe, std::ios::binary); }
+					std::filesystem::remove(probe, ec2);
+					if (!ec2)
+					{
+						return dir;
+					}
+				}
+			}
+
+			// 兜底：注册表不可用或主目录不可写时回退到 %LOCALAPPDATA%\eBox\logs
 			std::filesystem::path dir;
 			wchar_t buf[MAX_PATH]{};
 			const DWORD len = ::GetEnvironmentVariableW(L"LOCALAPPDATA", buf, MAX_PATH);
 			if (len > 0 && len < MAX_PATH)
 			{
-				dir = std::filesystem::path(buf) / L"eBox" / L"dumps";
+				dir = std::filesystem::path(buf) / L"eBox" / L"logs";
 			}
 			else
 			{
-				dir = std::filesystem::temp_directory_path() / L"eBox" / L"dumps";
+				dir = std::filesystem::temp_directory_path() / L"eBox" / L"logs";
 			}
 			std::error_code ec;
 			std::filesystem::create_directories(dir, ec);
