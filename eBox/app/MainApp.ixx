@@ -229,6 +229,15 @@ public:
 			return !ec;
 		};
 
+		// 判断某根目录下是否真的有环境数据（Env 子目录存在且非空）。
+		// 用于“记录目录被剪切/清空”时，识别实际数据所在的盘，避免在新的空目录里重建。
+		const auto hasEnvData = [](const std::wstring& root) -> bool
+		{
+			const fs::path env = fs::path{root} / fs::path{L"Env"};
+			std::error_code e;
+			return fs::exists(env, e) && !e && !fs::is_empty(env, e);
+		};
+
 		// 1) 注册表已有记录且可写 → 直接使用
 		//    优先读新键 Software\eBox；未命中则读旧键 Software\2Box（兼容老版本升级）
 		{
@@ -256,10 +265,36 @@ public:
 			if (st == ERROR_SUCCESS && buf[0] != L'\0')
 			{
 				const std::wstring recorded{buf};
-				if (tryDir(recorded))
+
+				if (hasEnvData(recorded))
 				{
-					save_env_data_root(recorded);  // 写入新键
-					return recorded;
+					// 记录目录确有数据 → 沿用
+					if (tryDir(recorded))
+					{
+						save_env_data_root(recorded);  // 写入新键
+						return recorded;
+					}
+				}
+				else
+				{
+					// 记录目录无数据（可能被整体剪切/清空，如用户把 C:\eBoxData 移到 D:\eBoxData）：
+					// 优先改用“其它盘上实际仍有数据”的目录，避免在新的空目录里重建。
+					std::array<std::wstring_view, 4> dataCands{L"D:\\eBoxData", L"C:\\eBoxData", L"D:\\2BoxData", L"C:\\2BoxData"};
+					for (const std::wstring_view cand : dataCands)
+					{
+						const std::wstring candStr{cand};
+						if (hasEnvData(candStr) && tryDir(candStr))
+						{
+							save_env_data_root(candStr);
+							return candStr;
+						}
+					}
+					// 其它盘都没有数据 → 沿用记录目录（重建）
+					if (tryDir(recorded))
+					{
+						save_env_data_root(recorded);
+						return recorded;
+					}
 				}
 			}
 		}
@@ -278,22 +313,8 @@ public:
 		}
 
 		// 3) 全新部署：固定盘 + 防误删提示文件
-		// 为避免环境数据（聊天记录/缓存）挤占系统盘导致 C 盘爆满卡顿，
-		// 优先放到剩余空间更大的盘（C/D 都可用时选剩余空间大的，再按顺序尝试）。
-		// 兼容老版本：若 C:\2BoxData 已存在 Env 数据，直接沿用旧目录。
-		const auto driveFreeBytes = [](std::wstring_view dataRoot) -> std::uint64_t
-		{
-			// 取盘根（如 C:\）查询该盘剩余空间；查询失败返回 0 使其排到最后
-			ULARGE_INTEGER freeBytes{};
-			const std::wstring root = std::wstring{dataRoot.substr(0, 2)} + L"\\";
-			if (GetDiskFreeSpaceExW(root.c_str(), &freeBytes, nullptr, nullptr))
-			{
-				return freeBytes.QuadPart;
-			}
-			return 0;
-		};
-
-		// 兼容老版本：旧目录 C:\2BoxData / D:\2BoxData 已有 Env 数据则沿用
+		// 用户偏好：优先把环境数据放到 D 盘（数据量较大，避免挤占系统盘）；仅当 D 不可用时才回退 C。
+		// 兼容老版本：若 C:\2BoxData / D:\2BoxData 已存在 Env 数据，直接沿用旧目录。
 		std::array<std::wstring_view, 2> legacyRoots{L"C:\\2BoxData", L"D:\\2BoxData"};
 		for (const std::wstring_view legacy : legacyRoots)
 		{
@@ -310,9 +331,8 @@ public:
 			}
 		}
 
-		std::array<std::wstring_view, 2> candidateRoots{L"C:\\eBoxData", L"D:\\eBoxData"};
-		std::sort(candidateRoots.begin(), candidateRoots.end(),
-		          [&](std::wstring_view a, std::wstring_view b) { return driveFreeBytes(a) > driveFreeBytes(b); });
+		// 优先 D 盘，其次 C 盘（D 不可写/不可用则回退 C）
+		std::array<std::wstring_view, 2> candidateRoots{L"D:\\eBoxData", L"C:\\eBoxData"};
 
 		for (const std::wstring_view root : candidateRoots)
 		{
