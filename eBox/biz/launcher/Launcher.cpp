@@ -163,6 +163,10 @@ namespace biz
 
 	coro::LazyTask<void> Launcher::launchWithPoll(std::shared_ptr<Env> env, std::wstring exePath, std::wstring params)
 	{
+		// 明确先切到独立工作线程（m_execCtx），确保本协程第一行起就绝不在 UI 线程执行——
+		// 即便 future 变更了 AsyncScope::spawn 的起始执行线程，也不会在 UI 线程运行任何
+		// 可能阻塞的启动逻辑（如注册表 hive 加载、进程注入）。
+		co_await sched::transfer_to(m_execCtx);
 		co_await launch(env, exePath, params);
 		// 只对轮询部分启用取消：应用退出（Launcher 析构）时立即终止轮询，
 		// 避免 join() 阻塞最多 60 秒、或超时弹窗挡住退出流程。

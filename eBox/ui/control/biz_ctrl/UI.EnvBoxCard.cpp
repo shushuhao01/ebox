@@ -681,6 +681,21 @@ namespace ui
 			return false;
 		}
 
+		// 激活前先探测目标窗口线程是否响应：AttachThreadInput / SetForegroundWindow /
+		// BringWindowToTop 作用于“未响应或繁忙”的外部进程窗口线程时，会让调用它的
+		// UI 线程一起阻塞（Windows 经典冻结源）。这里用 SendMessageTimeout(WM_NULL,
+		// SMTO_ABORTIFHUNG) 快速探测，超时（>=1 秒无响应）即视为挂死，放弃激活直接返回，
+		// 确保 UI 线程永不被远程窗口拖住。
+		{
+			DWORD_PTR lr = 0;
+			if (!::SendMessageTimeoutW(bestWnd, WM_NULL, 0, 0,
+			                           SMTO_NORMAL | SMTO_ABORTIFHUNG, 1000, &lr))
+			{
+				// 目标已挂死：不做任何可能阻塞的窗口操作，仅“识别到已有窗口”以阻止重复启动
+				return true;
+			}
+		}
+
 		if (::IsIconic(bestWnd))
 		{
 			::ShowWindow(bestWnd, SW_RESTORE);
