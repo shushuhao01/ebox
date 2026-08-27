@@ -37,5 +37,13 @@ namespace biz
 		// 退出时取消正在进行的启动轮询（pollTargetProcess），防止析构 join() 阻塞。
 		// 不能用 std::nostopstate：无共享状态时 request_stop() 是空操作，取消失效。
 		std::stop_source m_stopSource{};
+
+		// 启动护栏：避免快速连点「启动新进程」时在同一时刻堆积大量启动协程。
+		// 每次点击都会在单线程执行器 m_execCtx 上串行走「创建环境 -> 注入 -> resume 子进程」，
+		// 但被启动的子进程彼此并行运行，会同时向后端 RPC 刷新窗口/进程集合，
+		// 使全局共享锁/线程池发生护送（convoy），最终把 UI 线程拖进锁等待，心跳超时卡死。
+		// 这里用一次性互斥：启动流水线进行中（spin up 阶段未结束）时，后续点击直接忽略，
+		// 只有第一击真正启动，杜绝连点风暴；启动阶段完成后立即放行下一次正常启动。
+		std::atomic<bool> m_bLaunching{false};
 	};
 }

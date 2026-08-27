@@ -70,11 +70,21 @@ namespace biz
 	void Launcher::run(const std::shared_ptr<Env>& env, std::wstring_view exePath, std::wstring_view params /*= L""*/)
 	{
 		// UI 入口：启动成功后附带轮询兜底（慢电脑/注入失败时提示并可重试）
+		if (m_bLaunching.exchange(true, std::memory_order_acq_rel))
+		{
+			// 上一条启动流水线尚未走完（创建环境/注入/resume 阶段），忽略本次连点，避免启动风暴
+			return;
+		}
 		m_asyncScope.spawn(launchWithPoll(env, std::wstring{exePath}, std::wstring{params}));
 	}
 
 	void Launcher::runInNewEnv(std::wstring_view exePath, std::wstring_view params /*= L""*/)
 	{
+		if (m_bLaunching.exchange(true, std::memory_order_acq_rel))
+		{
+			// 上一条启动流水线尚未走完（创建环境/注入/resume 阶段），忽略本次连点，避免启动风暴
+			return;
+		}
 		m_asyncScope.spawn(launchWithPoll(std::shared_ptr<Env>{}, std::wstring{exePath}, std::wstring{params}));
 	}
 
@@ -168,6 +178,9 @@ namespace biz
 		// 可能阻塞的启动逻辑（如注册表 hive 加载、进程注入）。
 		co_await sched::transfer_to(m_execCtx);
 		co_await launch(env, exePath, params);
+		// 启动阶段（创建环境/注入/resume）结束，放行下一次正常启动；
+		// 轮询兜底阶段不阻塞其它启动，故在此释放。
+		m_bLaunching.store(false, std::memory_order_release);
 		// 只对轮询部分启用取消：应用退出（Launcher 析构）时立即终止轮询，
 		// 避免 join() 阻塞最多 60 秒、或超时弹窗挡住退出流程。
 		co_await coro::co_with_cancellation(pollTargetProcess(std::move(env), std::move(exePath), std::move(params)), m_stopSource.get_token());
