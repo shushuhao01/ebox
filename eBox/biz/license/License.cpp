@@ -64,7 +64,7 @@ namespace
 
 	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v2.8.4）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v2.9.7";
+	constexpr wchar_t kAppVersion[] = L"v2.9.8";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()
