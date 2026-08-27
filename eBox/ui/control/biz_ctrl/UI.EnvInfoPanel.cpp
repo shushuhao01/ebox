@@ -185,6 +185,12 @@ namespace
 
 namespace ui
 {
+	EnvInfoPanel::~EnvInfoPanel()
+	{
+		// 通知后台统计/清理线程：面板已销毁，回投结果不得再触碰 this
+		m_alive->store(false);
+	}
+
 	void EnvInfoPanel::initialize()
 	{
 		// 清理按钮：位于复制按钮左侧，点击弹窗选择清理范围
@@ -227,6 +233,8 @@ namespace ui
 	void EnvInfoPanel::setEnv(const std::shared_ptr<biz::Env>& env)
 	{
 		m_env = env;
+		// 切换环境后旧的重字段缓存不再适用：失效并立即后台重新统计
+		m_heavyValid = false;
 		refreshInfo();
 		update();
 	}
@@ -320,36 +328,25 @@ namespace ui
 			addField(L"进程内存占用", L"读取失败");
 		}
 
-		// 6. 环境数据大小：总大小 / 缓存 / 聊天记录（扫描目录，仅统计不删除）
+		// 6. 环境数据大小：总大小 / 缓存 / 聊天记录。
+		//    重字段（GB 级目录树递归）绝不能在 UI 线程同步扫描——那是点环境卡片/
+		//    启动按钮卡“未响应”的根因。这里展示缓存值或“统计中…”占位，
+		//    由 startHeavyScanAsync 后台统计完成后回填。
 		try
 		{
-			addField(L"环境数据总大小", format_size(m_env->getEnvDataSize()));
-			addField(L"环境缓存大小", format_size(m_env->getWxworkCacheSize()));
-			addField(L"聊天记录大小", format_size(m_env->getWxworkChatDataSize()));
+			addField(L"环境数据总大小", m_heavyValid ? format_size(m_hTotal) : std::wstring{L"统计中…"});
+			addField(L"环境缓存大小", m_heavyValid ? format_size(m_hCache) : std::wstring{L"统计中…"});
+			addField(L"聊天记录大小", m_heavyValid ? format_size(m_hChat) : std::wstring{L"统计中…"});
 		}
 		catch (...)
 		{
 			addField(L"环境数据大小", L"读取失败");
 		}
 
-		// 5. 设备码 machine_id（Local State，Chromium/CEF 设备指纹）
+		// 5. 设备码 machine_id（Local State，Chromium/CEF 设备指纹；文件查找/读取移至后台）
 		try
 		{
-			std::wstring machineId = L"未生成（启动后自动生成）";
-			if (const std::optional<fs::path> localState = find_file_by_name(envDir, L"Local State", MAX_SEARCH_DEPTH))
-			{
-				const std::string content = read_file_bytes(localState.value());
-				const std::wstring id = extract_json_string(content, "machine_id");
-				if (!id.empty())
-				{
-					machineId = id;
-				}
-				else
-				{
-					machineId = L"已生成但未找到 machine_id";
-				}
-			}
-			addField(L"设备码 machine_id", std::move(machineId));
+			addField(L"设备码 machine_id", m_heavyValid ? m_hMachineId : std::wstring{L"读取中…"});
 		}
 		catch (...)
 		{
@@ -378,12 +375,18 @@ namespace ui
 			addField(L"注册表 hive", L"读取失败");
 		}
 
-		// 7. 腾讯 qimei（设备标识）
+		// 7. 腾讯 qimei（设备标识；文件读取移至后台）
 		try
 		{
-			std::wstring qimei = read_qimei_value(envDir);
-			// qimei 由腾讯会议(WeMeet)生成，企微主程序不生成，不影响企微登录免验证码
-			addField(L"腾讯 qimei", qimei.empty() ? L"企微不生成（不影响登录）" : std::move(qimei));
+			if (m_heavyValid)
+			{
+				// qimei 由腾讯会议(WeMeet)生成，企微主程序不生成，不影响企微登录免验证码
+				addField(L"腾讯 qimei", m_hQimei.empty() ? std::wstring{L"企微不生成（不影响登录）"} : m_hQimei);
+			}
+			else
+			{
+				addField(L"腾讯 qimei", L"读取中…");
+			}
 		}
 		catch (...)
 		{
@@ -398,6 +401,112 @@ namespace ui
 			m_copyText.append(value);
 			m_copyText.push_back(L'\n');
 		}
+
+		// 后台统计重字段（大小/缓存/聊天记录/machine_id/qimei），完成后回填 UI
+		startHeavyScanAsync();
+	}
+
+	void EnvInfoPanel::startHeavyScanAsync()
+	{
+		if (!m_env)
+		{
+			return;
+		}
+		const std::uint32_t gen = ++m_scanGen;
+		namespace fs = std::filesystem;
+		const fs::path envDir = fs::path{app().envDataRoot()} / fs::path{L"Env"} / fs::path{std::format(L"{}", m_env->getIndex())};
+		// env 以 shared_ptr 保活：面板/环境销毁后扫描仍可安全读完（目录没了按 0 统计，error_code 兜底）
+		std::shared_ptr<biz::Env> env = m_env;
+		const auto alive = m_alive;
+		std::thread([this, alive, gen, env, envDir]()
+		{
+			std::uint64_t total = 0;
+			std::uint64_t cache = 0;
+			std::uint64_t chat = 0;
+			std::wstring machineId;
+			std::wstring qimei;
+			try
+			{
+				total = env->getEnvDataSize();
+			}
+			catch (...) {}
+			try
+			{
+				cache = env->getWxworkCacheSize();
+			}
+			catch (...) {}
+			try
+			{
+				chat = env->getWxworkChatDataSize();
+			}
+			catch (...) {}
+			try
+			{
+				machineId = L"未生成（启动后自动生成）";
+				if (const std::optional<fs::path> localState = find_file_by_name(envDir, L"Local State", MAX_SEARCH_DEPTH))
+				{
+					const std::string content = read_file_bytes(localState.value());
+					const std::wstring id = extract_json_string(content, "machine_id");
+					machineId = id.empty() ? std::wstring{L"已生成但未找到 machine_id"} : id;
+				}
+			}
+			catch (...) {}
+			try
+			{
+				qimei = read_qimei_value(envDir);
+			}
+			catch (...) {}
+
+			// 回到 UI 线程应用结果：alive 守卫防面板已销毁，gen 守卫丢弃过期扫描
+			app().get_scheduler().addTask([this, alive, gen, total, cache, chat,
+			                               machineId = std::move(machineId), qimei = std::move(qimei)]() mutable
+			{
+				if (!alive->load() || gen != m_scanGen)
+				{
+					return;
+				}
+				applyHeavyResult(total, cache, chat, std::move(machineId), std::move(qimei));
+			});
+		}).detach();
+	}
+
+	void EnvInfoPanel::applyHeavyResult(std::uint64_t total, std::uint64_t cache, std::uint64_t chat,
+	                                    std::wstring machineId, std::wstring qimei)
+	{
+		m_hTotal = total;
+		m_hCache = cache;
+		m_hChat = chat;
+		m_hMachineId = std::move(machineId);
+		m_hQimei = std::move(qimei);
+		m_heavyValid = true;
+		// 就地回填字段值（标签与 refreshInfo 保持一致），找不到则追加兜底
+		auto replaceField = [this](std::wstring_view label, const std::wstring& value)
+		{
+			for (auto& [l, v] : m_fields)
+			{
+				if (l == label)
+				{
+					v = value;
+					return;
+				}
+			}
+			m_fields.emplace_back(std::wstring{label}, value);
+		};
+		replaceField(L"环境数据总大小", format_size(m_hTotal));
+		replaceField(L"环境缓存大小", format_size(m_hCache));
+		replaceField(L"聊天记录大小", format_size(m_hChat));
+		replaceField(L"设备码 machine_id", m_hMachineId);
+		replaceField(L"腾讯 qimei", m_hQimei.empty() ? std::wstring{L"企微不生成（不影响登录）"} : m_hQimei);
+		// 重建复制文本，保证“复制”内容包含最新统计
+		m_copyText.clear();
+		for (const auto& [label, value] : m_fields)
+		{
+			m_copyText.append(label);
+			m_copyText.append(L": ");
+			m_copyText.append(value);
+			m_copyText.push_back(L'\n');
+		}
+		update();
 	}
 
 	bool EnvInfoPanel::copyInfo()
@@ -534,7 +643,7 @@ namespace ui
 
 	void EnvInfoPanel::onCleanBtnClick()
 	{
-		if (!m_env)
+		if (!m_env || m_cleaning)
 		{
 			return;
 		}
@@ -543,30 +652,54 @@ namespace ui
 		{
 			return;
 		}
-		std::uint64_t freedBytes = 0;
-		std::wstring_view what;
-		switch (option.value())
+		// 后台清理：GB 级缓存/聊天记录的遍历+删除绝不能阻塞 UI 线程（未响应）
+		const ECleanOption opt = option.value();
+		m_cleaning = true;
+		m_btnClean.setText(L"清理中…");
+		m_btnClean.update();
+		std::shared_ptr<biz::Env> env = m_env;
+		const auto alive = m_alive;
+		std::thread([this, alive, env, opt]()
 		{
-		case ECleanOption::Cache:
-			what = L"缓存";
-			freedBytes = m_env->cleanWxworkCache();
-			break;
-		case ECleanOption::ChatData:
-			what = L"聊天记录";
-			freedBytes = m_env->cleanWxworkChatData();
-			break;
-		case ECleanOption::Both:
-			what = L"缓存与聊天记录";
-			freedBytes = m_env->cleanWxworkCache() + m_env->cleanWxworkChatData();
-			break;
-		}
-		// 清理后刷新字段，展示最新大小
-		refreshInfo();
-		update();
-		biz::env_logger().append(m_env->getIndex(), biz::EnvLogType::Info, biz::EnvLogStatus::Success,
-		                         L"清理环境数据", std::format(L"已清理{}：{}字节", what, freedBytes));
-		MessageBoxW(owner()->nativeHandle(),
-		            std::format(L"已清理{}，释放空间 {:.1f} MB。\n\n（若环境正在运行，被占用的文件将保留，下次启动自动重建。）", what, freedBytes / 1024.0 / 1024.0).c_str(),
-		            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+			std::uint64_t freedBytes = 0;
+			std::wstring what;
+			switch (opt)
+			{
+			case ECleanOption::Cache:
+				what = L"缓存";
+				freedBytes = env->cleanWxworkCache();
+				break;
+			case ECleanOption::ChatData:
+				what = L"聊天记录";
+				freedBytes = env->cleanWxworkChatData();
+				break;
+			case ECleanOption::Both:
+				what = L"缓存与聊天记录";
+				freedBytes = env->cleanWxworkCache() + env->cleanWxworkChatData();
+				break;
+			}
+			// 回 UI 线程：刷新统计 + 提示（alive 守卫防面板已销毁）
+			app().get_scheduler().addTask([this, alive, env, what = std::move(what), freedBytes]() mutable
+			{
+				if (!alive->load())
+				{
+					return;
+				}
+				m_cleaning = false;
+				m_btnClean.setText(L"清理");
+				if (m_env == env)
+				{
+					// 数据已变化：失效缓存并重新统计（后台）
+					m_heavyValid = false;
+					refreshInfo();
+				}
+				update();
+				biz::env_logger().append(env->getIndex(), biz::EnvLogType::Info, biz::EnvLogStatus::Success,
+				                         L"清理环境数据", std::format(L"已清理{}：{}字节", what, freedBytes));
+				MessageBoxW(owner()->nativeHandle(),
+				            std::format(L"已清理{}，释放空间 {:.1f} MB。\n\n（若环境正在运行，被占用的文件将保留，下次启动自动重建。）", what, freedBytes / 1024.0 / 1024.0).c_str(),
+				            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+			});
+		}).detach();
 	}
 }

@@ -258,6 +258,9 @@ namespace ui
 
 		const D2D1_ROUNDED_RECT roundedRect = D2D1::RoundedRect(
 			D2D1::RectF(x, y, x + tipWidth, y + tipHeight), 4.f, 4.f);
+		// 记录气泡矩形（逻辑像素）：setTooltip/clearTooltip 依此擦除，防止位图残留残影
+		m_lastTooltipRect = roundedRect.rect;
+		m_bTooltipHasRect = true;
 		solidBrush->SetColor(D2D1::ColorF(0xffffff, 0.95f));
 		renderTarget->FillRoundedRectangle(roundedRect, solidBrush);
 		solidBrush->SetColor(D2D1::ColorF(0xbbbbbb));

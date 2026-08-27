@@ -312,6 +312,13 @@ namespace ui
 			{
 				processEvent(m_currentPressed, &ControlBase::onMouseMove, e, false);
 			}
+			else if (m_currentHovered)
+			{
+				// 未按下时把移动派发给悬停控件，驱动悬停高亮/悬浮提示等交互；
+				// （原实现未按下时不派发任何 onMouseMove，导致磁盘卡"全盘垃圾清理"提示永不出现）
+				// 按下时保持原语义：仅派发给被按下的控件，拖拽不受干扰
+				processEvent(m_currentHovered, &ControlBase::onMouseMove, e, false);
+			}
 		}
 
 		void onMouseDown(const MouseEvent& e)
@@ -454,15 +461,30 @@ namespace ui
 		// 全局悬浮提示：由任意控件在鼠标移动中调用，在窗口最上层绘制
 		void setTooltip(std::wstring_view text, D2D1_POINT_2F pos) noexcept
 		{
+			// 气泡画在脏区裁剪之外且位图保留上一帧内容：位置/文本变化时若不把旧气泡
+			// 矩形加入重绘区，旧气泡像素会残留在位图上形成残影。
+			const bool needErase = m_bTooltipHasRect &&
+				((!m_bTooltipVisible) || (m_tooltipText != text) ||
+				 m_tooltipPos.x != pos.x || m_tooltipPos.y != pos.y);
 			m_tooltipText.assign(text.data(), text.size());
 			m_tooltipPos = pos;
 			m_bTooltipVisible = true;
+			if (needErase)
+			{
+				invalidateRect(m_lastTooltipRect);
+			}
 		}
 
 		void clearTooltip() noexcept
 		{
+			// 清除时必须重绘旧气泡矩形，否则气泡残留在位图上（残影）
+			if (m_bTooltipVisible && m_bTooltipHasRect)
+			{
+				invalidateRect(m_lastTooltipRect);
+			}
 			m_bTooltipVisible = false;
 			m_tooltipText.clear();
+			m_bTooltipHasRect = false;
 		}
 
 		bool isCompositionEnabled() const { return m_bIsCompositionEnabled ? true : false; }
@@ -551,6 +573,8 @@ namespace ui
 		std::wstring m_tooltipText;
 		D2D1_POINT_2F m_tooltipPos{};
 		bool m_bTooltipVisible{false};
+		D2D1_RECT_F m_lastTooltipRect{};   // 上一帧气泡矩形（逻辑像素），用于状态变化时擦除
+		bool m_bTooltipHasRect{false};
 	};
 
 	ControlBase::ControlBase(WindowBase* owner) noexcept

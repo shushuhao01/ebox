@@ -10,6 +10,12 @@ namespace ui
 {
 	void ScrollBarThumb::onMouseMove(const MouseEvent& e)
 	{
+		// 仅按住拖动时跟随鼠标。现在未按下悬停时 ControlManager 也会派发 onMouseMove
+		// （用于驱动悬停提示等交互），必须防御，否则鼠标扫过滑块就会误拖动。
+		if (!m_isPressed)
+		{
+			return;
+		}
 		const float yDelta = e.point.y - m_lastMousePos.y;
 		ScrollBar* bar = static_cast<ScrollBar*>(parent());
 		bar->moveThumb(yDelta);

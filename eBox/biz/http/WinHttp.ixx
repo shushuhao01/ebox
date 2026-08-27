@@ -339,7 +339,7 @@ namespace ms
 			case WINHTTP_CALLBACK_STATUS_REQUEST_ERROR: // any error
 				{
 					WINHTTP_ASYNC_RESULT* res = static_cast<WINHTTP_ASYNC_RESULT*>(lpvStatusInformation);
-					reqCtx->errorCode = reqCtx->errorCode;
+					reqCtx->errorCode = static_cast<DWORD>(res->dwError); // 修复原自赋值 bug：错误码丢失
 					reqCtx->errorMessage = std::format("{} failed, error code: {}", mapAnyAsyncErrorToFunctionName(res->dwResult), reqCtx->errorCode);
 					reqCtx->bSucceeded.store(false, std::memory_order_release);
 					reqCtx->hRequest = nullptr;

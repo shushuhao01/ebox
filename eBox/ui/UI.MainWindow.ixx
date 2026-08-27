@@ -121,6 +121,11 @@ namespace ui
 		HWND m_hLicenseTooltip{nullptr};
 		HWND m_hUpdateTooltip{nullptr};
 		HWND m_hHelpTooltip{nullptr};
+		// tooltip 状态缓存：仅在矩形/文字变化时才更新工具（原实现每帧 DELTOOL+ADDTOOL
+		// 会重置 tooltip 弹出计时器，主窗口持续渲染时悬浮提示永远弹不出来）
+		RECT m_lastLicenseTipRect{};  bool m_licenseTipAdded{false};  std::wstring m_lastLicenseTipText;
+		RECT m_lastUpdateTipRect{};   bool m_updateTipAdded{false};  std::wstring m_lastUpdateTipText;
+		RECT m_lastHelpTipRect{};     bool m_helpTipAdded{false};     std::wstring m_lastHelpTipText;
 
 		// ===== 自动升级状态 =====
 		coro::AsyncScope m_updateScope;

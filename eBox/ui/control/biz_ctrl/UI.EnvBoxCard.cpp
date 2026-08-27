@@ -224,7 +224,20 @@ namespace ui
 				                     std::format(L"删除环境将会把数据和登录记录等一并删除，之后将无法再通过该环境登录，请谨慎操作。\n\n是否确认删除【{}】环境？", m_env->getName()).c_str(),
 				                     MainApp::appName.data(), MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES)
 				{
-					biz::env_mgr().deleteEnv(m_env);
+					// 后台删除：cmd rd 大目录可达数十秒，同步等待会让 UI 线程冻结（未响应）。
+					// UI 刷新由 removeEnv 内的 envChangeNotify 回调驱动，与同步版本行为一致；
+					// env 以 shared_ptr 保活，卡片先销毁也不影响删除流程继续。
+					std::thread([env = m_env]()
+					{
+						try
+						{
+							biz::env_mgr().deleteEnv(env);
+						}
+						catch (...)
+						{
+							// 防御：并发重复删除等场景 removeEnv 会抛异常，吞掉避免终止进程
+						}
+					}).detach();
 				}
 			}
 		});
@@ -588,10 +601,12 @@ namespace ui
 		while (twinkleCount > 0)
 		{
 			m_isBright = true;
-			updateWholeWnd();
+			// 只重绘卡片自身区域：updateWholeWnd 会让整个主窗口重建绘制，
+			// 闪烁 800ms 内 8 次全窗重绘纯属浪费（多卡片时拖慢整体渲染）
+			update();
 			co_await sched::transfer_after(std::chrono::milliseconds{200}, app().get_scheduler());
 			m_isBright = false;
-			updateWholeWnd();
+			update();
 			co_await sched::transfer_after(std::chrono::milliseconds{200}, app().get_scheduler());
 			twinkleCount--;
 		}

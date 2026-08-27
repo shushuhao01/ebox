@@ -20,7 +20,7 @@ exit /b
 #PSCODE
 # ==================== 以下为 PowerShell 主程序(由上方批处理引导执行) ====================
 $ErrorActionPreference = 'Continue'
-try { $Host.UI.RawUI.WindowTitle = '全盘垃圾清理工具 v2.2' } catch {}
+try { $Host.UI.RawUI.WindowTitle = '全盘垃圾清理工具 v2.3' } catch {}
 
 # ---------------- 工具函数 (全部兼容 PowerShell 2.0) ----------------
 function Format-Size {
@@ -31,11 +31,41 @@ function Format-Size {
     return ('{0:N0} B' -f $b)
 }
 
-function Pad-Cjk {
+function Width-Cjk {
+    # 计算字符串在控制台的显示宽度(中文等全角字符按 2 列, ASCII 按 1 列)。
+    # 这是修复"重影"的关键: 控制台按显示宽折行, 若按字符数截断/补齐, 含中文的行
+    # 实际显示宽会超过窗口宽 → 折行 → 光标定位行号错位 → 重绘残留叠加(重影)。
+    param([string]$s)
+    if (-not $s) { return 0 }
+    $w = 0
+    foreach ($ch in $s.ToCharArray()) { if ([int]$ch -gt 255) { $w += 2 } else { $w += 1 } }
+    return $w
+}
+
+function Fit-Cjk {
+    # 按显示宽截断字符串到 $w 列(超宽时截断并加 ".." 占位), 保证恰好占 1 物理行不折行。
     param([string]$s, [int]$w)
     if (-not $s) { $s = '' }
-    $len = 0
-    foreach ($ch in $s.ToCharArray()) { if ([int]$ch -gt 255) { $len += 2 } else { $len += 1 } }
+    if ((Width-Cjk $s) -le $w) { return $s }
+    if ($w -le 2) { return ('.' * [Math]::Max(0, $w)) }
+    $acc = 0
+    $sb = New-Object System.Text.StringBuilder
+    foreach ($ch in $s.ToCharArray()) {
+        $cw = 2; if ([int]$ch -le 255) { $cw = 1 }
+        if (($acc + $cw) -gt ($w - 2)) { break }   # 预留 2 列给省略号
+        [void]$sb.Append($ch)
+        $acc += $cw
+    }
+    [void]$sb.Append('..')
+    return $sb.ToString()
+}
+
+function Pad-Cjk {
+    # 按显示宽右侧补空格到 $w 列; 超宽时截断(Fit-Cjk), 保证输出恰好占 $w 显示列。
+    param([string]$s, [int]$w)
+    if (-not $s) { $s = '' }
+    $s = Fit-Cjk $s $w
+    $len = Width-Cjk $s
     if ($len -ge $w) { return $s }
     return ($s + (' ' * ($w - $len)))
 }
@@ -103,7 +133,12 @@ function Draw-ProgressBars {
             $cur = [string]$s.Current
             if ($cur.Length -gt 44) { $cur = '..' + $cur.Substring($cur.Length - 42) }
             if ($bar) { $bar = $bar + ' ' }
-            [void]$lines.Add(('  [{0}] {1}{2} | 已处理 {3} | 发现 {4} | {5}' -f $s.Label, $bar, $pctTxt, $s.Count, $s.Found, $cur))
+            if (($null -ne $s.Mode) -and ($s.Mode -eq 'size')) {
+                # 统计大小型槽: Found=已统计 MB, 显示当前扫描路径
+                [void]$lines.Add(('  [{0}] {1}{2} | 已统计 {3} MB | {4}' -f $s.Label, $bar, $pctTxt, $s.Found, $cur))
+            } else {
+                [void]$lines.Add(('  [{0}] {1}{2} | 已处理 {3} | 发现 {4} | {5}' -f $s.Label, $bar, $pctTxt, $s.Count, $s.Found, $cur))
+            }
             $totProc += [int]$s.Count
             $shown++
         }
@@ -125,10 +160,11 @@ function Draw-ProgressBars {
     } catch {}
     $y = $row
     foreach ($ln in $lines) {
-        $s = [string]$ln
-        if ($s.Length -gt $w) { $s = $s.Substring(0, $w) }
+        # 按显示宽截断+补空格到 $w 列(中文占 2 列), 确保每行恰好 1 物理行不折行;
+        # 否则含中文的行显示宽超窗口 → 折行 → 行号错位 → 重绘残留叠加(重影)。
+        $s = Fit-Cjk ([string]$ln) $w
         try { [Console]::SetCursorPosition(0, $y) } catch { break }
-        Write-Host ($s.PadRight($w)) -NoNewline
+        Write-Host ($s + (' ' * ([Math]::Max(0, $w - (Width-Cjk $s))))) -NoNewline
         $y++
     }
     $script:ProgressLastLines = $lines.Count
@@ -147,19 +183,17 @@ function Set-Progress {
     if ($w -lt 40) { $w = 40 }
     $row = [int]$script:ProgressTop
     if ($Title) {
-        $t = '  ' + $Title
-        if ($t.Length -gt $w) { $t = $t.Substring(0, $w) }
+        # 按显示宽截断/补齐(中文占 2 列), 防止含中文的行折行导致光标行号错位(重影)
+        $t = Fit-Cjk ('  ' + $Title) $w
         try { [Console]::SetCursorPosition(0, $row) } catch {}
-        Write-Host ($t.PadRight($w)) -NoNewline
+        Write-Host ($t + (' ' * ([Math]::Max(0, $w - (Width-Cjk $t))))) -NoNewline
         $row++
     }
     $bar = Draw-Bar $Percent 20
     $st = [string]$Status
-    if ($st.Length -gt 30) { $st = $st.Substring(0, 30) }
-    $line = ('  {0} {1,3}%  {2}' -f $bar, $Percent, $st)
-    if ($line.Length -gt $w) { $line = $line.Substring(0, $w) }
+    $line = Fit-Cjk ('  {0} {1,3}%  {2}' -f $bar, $Percent, $st) $w
     try { [Console]::SetCursorPosition(0, $row) } catch {}
-    Write-Host ($line.PadRight($w)) -NoNewline
+    Write-Host ($line + (' ' * ([Math]::Max(0, $w - (Width-Cjk $line))))) -NoNewline
     $script:ProgressEnd = $row
 }
 
@@ -280,12 +314,17 @@ function Invoke-Parallel {
 }
 
 function Get-DirSize {
-    param([string]$p)
+    # 可选 $Slot: 传入进度槽(hashtable)时,每遍历 200 个目录节流刷新槽的 Current(当前路径),
+    # 让"正在统计大小"这类长耗时阶段画面持续有动静,避免被误判为卡死。不传时行为与旧版一致。
+    param([string]$p, $Slot = $null)
     $sum = [double]0
+    $n = 0
     $stack = New-Object System.Collections.Stack
     $stack.Push($p)
     while ($stack.Count -gt 0) {
         $d = [string]$stack.Pop()
+        $n++
+        if (($null -ne $Slot) -and (($n % 200) -eq 0)) { $Slot.Current = $d }
         $di = $null
         try { $di = New-Object System.IO.DirectoryInfo($d) } catch { continue }
         try {
@@ -1019,6 +1058,46 @@ function Add-EnvWxworkCaches {
     }
 }
 
+function Invoke-RegWithTimeout {
+    # 带超时执行 reg.exe 子命令, 防止 hive 被占用/杀软拦截时 reg.exe 挂起导致整个扫描"卡死"。
+    # 返回: @{ ExitCode; Output(行数组,仅查询时有值) }; 超时强杀进程并返回 ExitCode=-1。
+    # (原实现 & reg.exe 同步等待无超时; PowerShell 对挂起的外部进程无法解除等待)
+    param([string]$ArgumentLine, [int]$TimeoutMs = 15000, [bool]$Capture = $false)
+    $outFile = $null; $errFile = $null
+    $p = $null
+    try {
+        if ($Capture) {
+            $outFile = [IO.Path]::GetTempFileName()
+            $errFile = [IO.Path]::GetTempFileName()
+            $p = Start-Process -FilePath 'reg.exe' -ArgumentList $ArgumentLine -NoNewWindow -PassThru `
+                -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        } else {
+            $p = Start-Process -FilePath 'reg.exe' -ArgumentList $ArgumentLine -NoNewWindow -PassThru
+        }
+        try { $null = $p.Handle } catch {}
+        # 关键: 立即缓存进程句柄。否则进程快速退出后句柄未建立, WaitForExit 返回 true 但 ExitCode 读出为空,
+        # load 会被误判失败(环境名全部降级)。已实测 PS5.1 复现并验证此修复。
+        if (-not $p.WaitForExit($TimeoutMs)) {
+            try { $p.Kill() } catch {}
+            try { $p.WaitForExit(3000) } catch {}
+            return @{ ExitCode = -1; Output = @() }   # -1 = 超时
+        }
+        $code = $p.ExitCode
+        $lines = @()
+        if ($Capture -and (Test-Path -LiteralPath $outFile)) {
+            # 控制台代码页 65001 下 reg.exe 重定向输出为 UTF-8, 与原 [Console]::OutputEncoding 方案一致
+            try { $lines = @(Get-Content -LiteralPath $outFile -Encoding UTF8 -ErrorAction SilentlyContinue) } catch { $lines = @() }
+        }
+        return @{ ExitCode = $code; Output = $lines }
+    } catch {
+        return @{ ExitCode = -2; Output = @() }
+    } finally {
+        if ($null -ne $p) { try { $p.Dispose() } catch {} }
+        if ($outFile) { Remove-Item -LiteralPath $outFile -Force -ErrorAction SilentlyContinue }
+        if ($errFile) { Remove-Item -LiteralPath $errFile -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 function Get-EBoxEnvNameMap {
     # 读取 eBox 环境注册表 hive 文件(<Env>\data\eBox 或 eBox_<用户名>), 建立 目录index -> 显示名 映射。
     # eBox 改名只改显示名(Name REG_SZ), 环境目录名(index)不变; hive 内 Env\<flagName>\Index(REG_DWORD) 与目录名一致。
@@ -1035,17 +1114,20 @@ function Get-EBoxEnvNameMap {
         if ($cands.Count -gt 0) { $hive = $cands[0].FullName } else { return $map }
     }
     $mount = 'eBoxClean' + ([Guid]::NewGuid().ToString('N').Substring(0, 8))
-    try { & reg.exe delete "HKU\$mount" /f 2>$null | Out-Null } catch {}
+    try { [void](Invoke-RegWithTimeout -ArgumentLine ('delete "HKU\' + $mount + '" /f') -TimeoutMs 5000) } catch {}
     $loaded = $false
     try {
-        & reg.exe load "HKU\$mount" "$hive" 2>$null | Out-Null
-        $loaded = ($LASTEXITCODE -eq 0)
+        # load 挂载带超时(15s): eBox 正在运行占用 hive 时正常立即失败; 杀软拦截/损坏 hive 挂起时超时跳过
+        $r = Invoke-RegWithTimeout -ArgumentLine ('load "HKU\' + $mount + '" "' + $hive + '"') -TimeoutMs 15000
+        $loaded = ($r.ExitCode -eq 0)
     } catch {}
     if (-not $loaded) { $global:EBoxEnvNameReadFailed = $true; return $map }
-    # 用 reg.exe query 读取(独立进程,不占用本进程注册表句柄,保证 unload 成功、不残留挂载)
+    # 用 reg.exe query 读取(独立进程,不占用本进程注册表句柄,保证 unload 成功、不残留挂载);
+    # query 带超时(60s): 超大/损坏 hive 挂起时强杀并放弃读取(降级用目录名,不影响后续清理)
     try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } catch {}
     try {
-        $out = @(& reg.exe query "HKU\$mount\Env" /s 2>$null)
+        $r = Invoke-RegWithTimeout -ArgumentLine ('query "HKU\' + $mount + '\Env" /s') -TimeoutMs 60000 -Capture $true
+        $out = @($r.Output)
         $curIdx = -1
         foreach ($line in $out) {
             $s = [string]$line
@@ -1075,7 +1157,18 @@ function Get-EBoxEnvNameMap {
         if (($curIdx -ge 0) -and (-not $map.ContainsKey($curIdx))) { $map[$curIdx] = '' }
     } catch {}
     finally {
-        if ($loaded) { try { & reg.exe unload "HKU\$mount" 2>$null | Out-Null } catch {} }
+        # unload 带超时+重试: 句柄延迟释放导致偶发失败, 重试 2 次仍失败时强制删除残留挂载键, 防止 hive 挂载残留
+        if ($loaded) {
+            $unloaded = $false
+            for ($try = 0; $try -lt 3; $try++) {
+                try { Start-Sleep -Milliseconds 400 } catch {}
+                $r = Invoke-RegWithTimeout -ArgumentLine ('unload "HKU\' + $mount + '"') -TimeoutMs 10000
+                if ($r.ExitCode -eq 0) { $unloaded = $true; break }
+            }
+            if (-not $unloaded) {
+                try { [void](Invoke-RegWithTimeout -ArgumentLine ('delete "HKU\' + $mount + '" /f') -TimeoutMs 5000) } catch {}
+            }
+        }
     }
     $script:EnvNameMapCache[$key] = $map
     return $map
@@ -1085,6 +1178,21 @@ function Collect-EBoxEnvData {
     # 每个环境目录生成一条记录 @{Display;Name;Dir;Base;CacheDirs;ChatDirs;Size}; 无垃圾目录的环境自动跳过。
     # 目录名=index; 显示名优先取 hive 中的 Name(改名后的名称), 读不到时用"环境{index}";
     # Display 形如"环境 3"或"环境 工作号A (目录 3)"; 仅处理数字目录, 跳过 data 目录与 *_to_delete 残留。
+    # 进度显示: 环境内是企业微信完整数据(可达数万目录), 遍历需数秒~数分钟;
+    # 原版此阶段无任何输出, 控制台停留在上一阶段清单 → 用户误以为卡死。现按环境+目录计数节流刷新进度。
+    # 先统计总环境数(仅枚举一级数字目录, 开销可忽略)
+    $totalEnvs = 0
+    foreach ($base in $global:EBoxEnvBases) {
+        if (-not (Test-Path -LiteralPath $base)) { continue }
+        try {
+            foreach ($d in (New-Object System.IO.DirectoryInfo($base)).GetDirectories()) {
+                $dn = $d.Name
+                if (($dn -ne 'data') -and (-not $dn.EndsWith('_to_delete')) -and ($dn -match '^\d+$')) { $totalEnvs++ }
+            }
+        } catch {}
+    }
+    if ($totalEnvs -eq 0) { return }
+    $envNo = 0
     foreach ($base in $global:EBoxEnvBases) {
         if (-not (Test-Path -LiteralPath $base)) { continue }
         $nameMap = Get-EBoxEnvNameMap -DataDir (Join-Path $base 'data')
@@ -1095,6 +1203,8 @@ function Collect-EBoxEnvData {
             if ($dirName -eq 'data') { continue }
             if ($dirName.EndsWith('_to_delete')) { continue }
             if (-not ($dirName -match '^\d+$')) { continue }
+            $envNo++
+            Set-Progress -Title '正在收集 eBox 环境垃圾目录(环境内文件多时需几分钟)' -Status ('第 {0}/{1} 个环境(目录 {2})...' -f $envNo, $totalEnvs, $dirName) -Percent ([int](100 * ($envNo - 1) / $totalEnvs))
             $index = [int]$dirName
             $displayName = $null
             if ($nameMap.ContainsKey($index)) { $displayName = $nameMap[$index] }
@@ -1105,8 +1215,14 @@ function Collect-EBoxEnvData {
             $chatOut = New-Object System.Collections.ArrayList
             $stack = New-Object System.Collections.Stack
             $stack.Push($envDir.FullName)
+            $walked = 0
             while ($stack.Count -gt 0) {
                 $dir = [string]$stack.Pop()
+                $walked++
+                if (($walked % 200) -eq 0) {
+                    # 遍历进行中节流刷新(让进度区持续有动静, 避免大环境长时间无输出被误判卡死)
+                    Set-Progress -Title '正在收集 eBox 环境垃圾目录(环境内文件多时需几分钟)' -Status ('第 {0}/{1} 个环境(目录 {2}), 已遍历 {3} 个目录...' -f $envNo, $totalEnvs, $dirName, $walked) -Percent ([int](100 * ($envNo - 1) / $totalEnvs))
+                }
                 $subs = $null
                 try { $subs = (New-Object System.IO.DirectoryInfo($dir)).GetDirectories() } catch { continue }
                 foreach ($s in $subs) {
@@ -1120,6 +1236,7 @@ function Collect-EBoxEnvData {
             }
         }
     }
+    Clear-Progress
 }
 Collect-EBoxEnvData
 
@@ -1130,8 +1247,30 @@ if ($global:EBXEnvList.Count -gt 0) {
     if ($global:EBoxEnvNameReadFailed) {
         Write-Host '    提示: 未能读取环境显示名(eBox 可能正在运行), 已按目录序号显示。' -ForegroundColor DarkGray
     }
-    $envSizeWorker = { param($e) $s = [double]0; foreach ($p in $e['CacheDirs']) { $s += Get-DirSize $p }; foreach ($p in $e['ChatDirs']) { $s += Get-DirSize $p }; return @{ Size = $s } }
-    $envSizes = @(Invoke-Parallel -InputObjects @($global:EBXEnvList) -ScriptBlock $envSizeWorker -FunctionNames @('Get-DirSize') -Throttle $parallelDegree -ProgressActivity '正在统计环境垃圾大小')
+    # 每个环境一个进度槽: 实时显示"已统计 N MB + 当前路径"。环境内聊天数据常达 GB 级,
+    # 单环境统计需 30 秒~1 分钟, 原版只显示 0/26 计数不动 → 用户误判卡死。
+    $envSlots = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $global:EBXEnvList.Count; $i++) {
+        [void]$envSlots.Add(@{ Label = [string]$global:EBXEnvList[$i].Display; Mode = 'size'; Count = 0; Found = 0; Current = '排队中...'; Done = $false; DoneFlags = $null; Total = 0 })
+        $global:EBXEnvList[$i]['Slot'] = $envSlots[$i]
+    }
+    $envSizeWorker = {
+        param($e)
+        $s = [double]0
+        $slot = $null
+        if ($e.ContainsKey('Slot')) { $slot = $e['Slot'] }
+        foreach ($p in $e['CacheDirs']) {
+            $s += Get-DirSize $p $slot
+            if ($null -ne $slot) { $slot.Found = [int]($s / 1MB); $slot.Current = $p }
+        }
+        foreach ($p in $e['ChatDirs']) {
+            $s += Get-DirSize $p $slot
+            if ($null -ne $slot) { $slot.Found = [int]($s / 1MB); $slot.Current = $p }
+        }
+        if ($null -ne $slot) { $slot.Done = $true; $slot.Current = '' }
+        return @{ Size = $s }
+    }
+    $envSizes = @(Invoke-Parallel -InputObjects @($global:EBXEnvList) -ScriptBlock $envSizeWorker -FunctionNames @('Get-DirSize') -Throttle $parallelDegree -ProgressActivity '正在统计环境垃圾大小(数据大时单环境需 30 秒~1 分钟)' -ProgressSlots @($envSlots))
     for ($i = 0; $i -lt $global:EBXEnvList.Count; $i++) { $global:EBXEnvList[$i].Size = $envSizes[$i]['Size'] }
     foreach ($e in $global:EBXEnvList) {
         if ($e.Size -gt 0) {
@@ -1338,8 +1477,27 @@ Write-Host ''
 Write-Host '  [3/3] 正在统计各项目大小(内容多时需几分钟,请耐心等待)...' -ForegroundColor Cyan
 $toSize = @($targets | Where-Object { $_.Size -le 0 })
 if ($toSize.Count -gt 0) {
-    $sizeWorker = { param($t) $s = [double]0; foreach ($p in $t.Paths) { $s += Get-DirSize $p }; foreach ($f in $t.Files) { try { $s += $f.Length } catch {} }; return @{ Size = $s } }
-    $sizes = @(Invoke-Parallel -InputObjects $toSize -ScriptBlock $sizeWorker -FunctionNames @('Get-DirSize') -Throttle $parallelDegree -ProgressActivity '正在统计大小')
+    # 每个待统计目标一个进度槽(同环境统计): 实时显示已统计 MB 与当前路径, 避免大目标长时间无动静被误判卡死
+    $tgtSlots = New-Object System.Collections.ArrayList
+    $sizeTasks = New-Object System.Collections.ArrayList
+    foreach ($t in $toSize) {
+        [void]$tgtSlots.Add(@{ Label = ([string]$t.Group + '·' + [string]$t.Name); Mode = 'size'; Count = 0; Found = 0; Current = '排队中...'; Done = $false; DoneFlags = $null; Total = 0 })
+    }
+    for ($i = 0; $i -lt $toSize.Count; $i++) { [void]$sizeTasks.Add(@{ T = $toSize[$i]; Slot = $tgtSlots[$i] }) }
+    $sizeWorker = {
+        param($task)
+        $t = $task['T']
+        $slot = $task['Slot']
+        $s = [double]0
+        foreach ($p in $t.Paths) {
+            $s += Get-DirSize $p $slot
+            if ($null -ne $slot) { $slot.Found = [int]($s / 1MB); $slot.Current = $p }
+        }
+        foreach ($f in $t.Files) { try { $s += $f.Length } catch {} }
+        if ($null -ne $slot) { $slot.Done = $true; $slot.Current = '' }
+        return @{ Size = $s }
+    }
+    $sizes = @(Invoke-Parallel -InputObjects @($sizeTasks) -ScriptBlock $sizeWorker -FunctionNames @('Get-DirSize') -Throttle $parallelDegree -ProgressActivity '正在统计大小' -ProgressSlots @($tgtSlots))
     for ($i = 0; $i -lt $toSize.Count; $i++) { $toSize[$i].Size = $sizes[$i]['Size'] }
 }
 $targets = @($targets | Where-Object { $_.Size -gt 0 })
@@ -1361,6 +1519,10 @@ Write-Host ('  ' + ('-' * 92)) -ForegroundColor DarkGray
 $i = 0
 $selSum = [double]0
 $allSum = [double]0
+try { $tw = [Console]::WindowWidth - 1 } catch { $tw = 79 }
+if ($tw -lt 40) { $tw = 40 }
+$noteW = $tw - 61   # 说明列可用显示宽 = 行宽 - (编号8+分类10+项目30+大小10+间隔3)
+if ($noteW -lt 8) { $noteW = 8 }
 foreach ($t in $targets) {
     $i++
     $allSum += $t.Size
@@ -1369,7 +1531,8 @@ foreach ($t in $targets) {
     Write-Host -NoNewline (Pad-Cjk $t.Group 10)
     Write-Host -NoNewline (Pad-Cjk $t.Name 30)
     Write-Host -NoNewline ('{0,10}' -f (Format-Size $t.Size))
-    Write-Host ('   ' + $t.Note) -ForegroundColor DarkGray
+    # 说明列按剩余显示宽截断: 超宽行在控制台折行,会与下一行视觉叠错(用户反馈的"重影")
+    Write-Host ('   ' + (Fit-Cjk ([string]$t.Note) $noteW)) -ForegroundColor DarkGray
 }
 Write-Host ('  ' + ('-' * 92)) -ForegroundColor DarkGray
 Write-Host ('  将清理: ' + (Format-Size $selSum) + '  /  可清理总计: ' + (Format-Size $allSum)) -ForegroundColor Cyan
@@ -1534,7 +1697,7 @@ Write-Host '  ==================== 清理结果汇总 ====================' -For
 foreach ($r in ($report | Sort-Object Freed -Descending)) {
     $line = '  ' + (Pad-Cjk ('[' + $r.Group + '] ' + $r.Name) 42) + ('{0,12}' -f (Format-Size $r.Freed))
     if ($r.Fail -gt 0) { $line += ('   (' + $r.Fail + ' 项被占用)') }
-    Write-Host $line
+    Write-Host (Fit-Cjk $line ($tw - 1))   # 整行按显示宽截断,防折行叠错
 }
 Write-Host ('  ' + ('-' * 60)) -ForegroundColor DarkGray
 Write-Host ('  本次共释放空间: ' + (Format-Size $totalFreed)) -ForegroundColor Green

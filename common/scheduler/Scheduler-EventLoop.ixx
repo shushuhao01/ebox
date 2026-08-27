@@ -119,7 +119,7 @@ namespace sched
 
 		void run()
 		{
-			MSG msg;
+			MSG msg{}; // 显式零初始化，避免首次 PeekMessageW 前读到未初始化成员（UB）
 			TaskList tasks;
 			// 只能通过WM_QUIT窗口消息来结束run
 			while (true)

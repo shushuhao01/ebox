@@ -36,6 +36,45 @@ namespace ui
 	static constexpr UINT WM_UPDATE_CHECK_DONE = WM_USER + 9528;
 	// 心跳线程收到服务端系统公告 → 刷新公告栏（与 biz.License 的 WM_APP_LICENSENOTICE 一致）
 	static constexpr UINT WM_APP_LICENSENOTICE = WM_USER + 9529;
+	// 心跳线程发现授权被服务端锁定 → 请求 UI 线程弹窗（lParam=堆上 std::wstring*，UI 侧接管释放；
+	// 与 biz.License 的 WM_APP_LICENSEINVALID 一致）
+	static constexpr UINT WM_APP_LICENSEINVALID = WM_USER + 9530;
+
+	// 同步悬浮提示工具：首次注册；之后仅矩形/文字变化时才发消息更新。
+	// 不能每帧 DELTOOL+ADDTOOL——那会重置 tooltip 弹出计时器，持续渲染的主窗口提示永远弹不出来。
+	static void sync_tooltip(HWND hTip, UINT id, HWND owner, const RECT& rc, const wchar_t* text,
+	                         bool& added, RECT& lastRc, std::wstring& lastText)
+	{
+		if (!hTip)
+		{
+			return;
+		}
+		TOOLINFOW ti{};
+		ti.cbSize = sizeof(ti);
+		ti.uFlags = TTF_SUBCLASS;
+		ti.hwnd = owner;
+		ti.uId = id;
+		ti.rect = rc;
+		ti.lpszText = const_cast<LPWSTR>(text);
+		if (!added)
+		{
+			SendMessageW(hTip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+			added = true;
+		}
+		else
+		{
+			if (memcmp(&rc, &lastRc, sizeof(RECT)) != 0)
+			{
+				SendMessageW(hTip, TTM_NEWTOOLRECTW, 0, reinterpret_cast<LPARAM>(&ti));
+			}
+			if (lastText != text)
+			{
+				SendMessageW(hTip, TTM_UPDATETIPTEXTW, 0, reinterpret_cast<LPARAM>(&ti));
+			}
+		}
+		lastRc = rc;
+		lastText = text;
+	}
 
 	MainWindow::MainWindow() : WindowBase({MainApp::appName})
 	{
@@ -298,16 +337,9 @@ namespace ui
 					static_cast<LONG>((paddingTop + 1.f) * d2p),
 					static_cast<LONG>((updateBtnXPos + updateBtnWidth) * d2p),
 					static_cast<LONG>(m_margins.top * d2p)};
-				TOOLINFOW ti{};
-				ti.cbSize = sizeof(ti);
-				ti.uFlags = TTF_SUBCLASS;
-				ti.hwnd = nativeHandle();
-				ti.uId = 2;
-				ti.rect = rcTool;
-				ti.lpszText = const_cast<LPWSTR>(m_hasUpdate ? L"发现新版本，点击更新" : L"检查更新");
-				SendMessageW(m_hUpdateTooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-				SendMessageW(m_hUpdateTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-				SendMessageW(m_hUpdateTooltip, TTM_UPDATE, 0, 0);
+				sync_tooltip(m_hUpdateTooltip, 2, nativeHandle(), rcTool,
+				             m_hasUpdate ? L"发现新版本，点击更新" : L"检查更新",
+				             m_updateTipAdded, m_lastUpdateTipRect, m_lastUpdateTipText);
 			}
 			// 帮助按钮（更新按钮左侧）：点击查看常见问题
 			const float helpBtnXPos = updateBtnXPos - helpBtnWidth;
@@ -321,15 +353,8 @@ namespace ui
 					static_cast<LONG>((paddingTop + 1.f) * d2p),
 					static_cast<LONG>((helpBtnXPos + helpBtnWidth) * d2p),
 					static_cast<LONG>(m_margins.top * d2p)};
-				TOOLINFOW ti{};
-				ti.cbSize = sizeof(ti);
-				ti.uFlags = TTF_SUBCLASS;
-				ti.hwnd = nativeHandle();
-				ti.uId = 3;
-				ti.rect = rcTool;
-				ti.lpszText = const_cast<LPWSTR>(L"常见问题");
-				SendMessageW(m_hHelpTooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-				SendMessageW(m_hHelpTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+				sync_tooltip(m_hHelpTooltip, 3, nativeHandle(), rcTool, L"常见问题",
+				             m_helpTipAdded, m_lastHelpTipRect, m_lastHelpTipText);
 			}
 			// 更新 tooltip 工具矩形（物理像素）
 			if (m_hLicenseTooltip)
@@ -340,15 +365,8 @@ namespace ui
 					static_cast<LONG>((paddingTop + 1.f) * d2p),
 					static_cast<LONG>((licenseBtnXPos + licenseBtnWidth) * d2p),
 					static_cast<LONG>(m_margins.top * d2p)};
-				TOOLINFOW ti{};
-				ti.cbSize = sizeof(ti);
-				ti.uFlags = TTF_SUBCLASS;
-				ti.hwnd = nativeHandle();
-				ti.uId = 1;
-				ti.rect = rcTool;
-				ti.lpszText = const_cast<LPWSTR>(L"授权信息");
-				SendMessageW(m_hLicenseTooltip, TTM_DELTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
-				SendMessageW(m_hLicenseTooltip, TTM_ADDTOOLW, 0, reinterpret_cast<LPARAM>(&ti));
+				sync_tooltip(m_hLicenseTooltip, 1, nativeHandle(), rcTool, L"授权信息",
+				             m_licenseTipAdded, m_lastLicenseTipRect, m_lastLicenseTipText);
 			}
 			renderTarget->PopAxisAlignedClip();
 		}
@@ -1041,6 +1059,16 @@ namespace ui
 				getPage<HomePage>().getRightContent()->refreshNotice();
 			}
 		}
+		else if (message == WM_APP_LICENSEINVALID)
+		{
+			// 心跳线程发现授权被服务端锁定：在 UI 线程弹窗（工作线程不直接弹窗抢焦点）
+			std::unique_ptr<std::wstring> pMsg(reinterpret_cast<std::wstring*>(lParam));
+			if (pMsg && !pMsg->empty())
+			{
+				MessageBoxW(nativeHandle(), pMsg->c_str(), L"eBox 授权失效",
+				            MB_OK | MB_ICONWARNING | MB_TASKMODAL);
+			}
+		}
 	}
 
 	void MainWindow::initWindow()
@@ -1063,7 +1091,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v2.9.4   更新时间：2026/8/25   [到期：yyyy-MM-dd]
+		// 标题：eBox v2.9.5   更新时间：2026/8/27   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",

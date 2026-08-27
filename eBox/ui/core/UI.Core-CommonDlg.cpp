@@ -736,6 +736,15 @@ namespace ui
 		constexpr int ACT_BUY_ID = 3007;
 		constexpr int ACT_DLG_WIDTH = 480;
 		constexpr int ACT_DLG_HEIGHT = 300;
+		constexpr UINT ACT_WM_DONE = WM_APP + 0x32; // 后台激活完成（线程消息，结果经 ActShared 交接，消息不携带指针）
+
+		// 后台激活共享结果：工作线程与 UI 交接数据，消息本身不携带指针，杜绝悬垂/泄漏
+		struct ActShared
+		{
+			bool ok{false};
+			std::wstring reason; // 失败原因（成功为空）
+			std::atomic_bool ready{false};
+		};
 
 		struct ActivateDialogData
 		{
@@ -755,6 +764,8 @@ namespace ui
 			bool errorMode{false};      // false=灰色提示词 true=红色错误提示（互斥显示）
 			bool done{false};
 			bool activated{false};
+			bool activating{false};     // 后台激活校验进行中（防重入）
+			std::shared_ptr<ActShared> actShared; // 与工作线程共享的激活结果块
 		};
 
 		// 默认提示词（灰字，贴近输入框下方，自动换行）
@@ -989,6 +1000,10 @@ namespace ui
 				}
 				if (id == ACT_OK_ID)
 				{
+					if (data->activating)
+					{
+						return 0; // 校验进行中，防重入
+					}
 					wchar_t buf[1024]{};
 					GetWindowTextW(data->hEdit, buf, 1024);
 					const std::wstring code = buf;
@@ -997,19 +1012,27 @@ namespace ui
 						activate_dlg_show_error(*data, L"请输入激活码");
 						return 0;
 					}
-					if (biz::license::tryActivate(code))
+					// 后台执行 tryActivate（内部可能同步联网，服务端不可达时最坏 40s，
+					// 原实现会令 UI 线程未响应）→ 立即反馈"验证中"，完成后经线程消息回 UI
+					data->activating = true;
+					data->actShared = std::make_shared<ActShared>();
+					data->errorMode = false;
+					SetWindowTextW(data->hError, L"正在验证激活码，请稍候…");
+					InvalidateRect(data->hError, nullptr, TRUE);
+					EnableWindow(data->hOk, FALSE);
+					SetWindowTextW(data->hOk, L"验证中…");
+					auto shared = data->actShared; // 与工作线程共享生命周期
+					const DWORD uiThreadId = GetCurrentThreadId();
+					std::thread([shared, uiThreadId, code]()
 					{
-						data->activated = true;
-						DestroyWindow(hwnd);
-					}
-					else
-					{
-						// 优先展示具体失败原因（作废/过期/已绑定其他机器/强制在线等）
-						const std::wstring reason = biz::license::lastActivateError();
-						activate_dlg_show_error(*data, reason.empty() ? L"激活码无效，请重新输入" : reason);
-						SetFocus(data->hEdit);
-						SendMessageW(data->hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
-					}
+						shared->ok = biz::license::tryActivate(code);
+						if (!shared->ok)
+						{
+							shared->reason = biz::license::lastActivateError();
+						}
+						shared->ready.store(true, std::memory_order_release);
+						PostThreadMessageW(uiThreadId, ACT_WM_DONE, 0, 0);
+					}).detach();
 					return 0;
 				}
 				if (id == ACT_CANCEL_ID)
@@ -1103,6 +1126,32 @@ namespace ui
 		MSG msg{};
 		while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
 		{
+			// 后台激活完成（线程消息，hwnd 为空）：从共享块取结果并收尾
+			if (msg.message == ACT_WM_DONE && msg.hwnd == nullptr)
+			{
+				if (data.actShared && data.actShared->ready.load(std::memory_order_acquire))
+				{
+					const bool ok = data.actShared->ok;
+					const std::wstring reason = data.actShared->reason;
+					data.actShared.reset();
+					data.activating = false;
+					EnableWindow(data.hOk, TRUE);
+					SetWindowTextW(data.hOk, L"激  活");
+					if (ok)
+					{
+						data.activated = true;
+						DestroyWindow(hDlg);
+					}
+					else
+					{
+						// 优先展示具体失败原因（作废/过期/已绑定其他机器/强制在线等）
+						activate_dlg_show_error(data, reason.empty() ? L"激活码无效，请重新输入" : reason);
+						SetFocus(data.hEdit);
+						SendMessageW(data.hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
+					}
+				}
+				continue;
+			}
 			if (IsDialogMessageW(hDlg, &msg))
 			{
 				continue;
@@ -1132,6 +1181,14 @@ namespace ui
 		constexpr int INFO_COPY_CODE_ID = 4006;
 		constexpr int INFO_DLG_WIDTH = 520;
 		constexpr int INFO_DLG_HEIGHT = 360;
+		constexpr UINT INFO_WM_UNBIND_DONE = WM_APP + 0x33; // 后台解绑完成（线程消息，结果经 UnbindShared 交接，消息不携带指针）
+
+		// 后台解绑共享结果：工作线程与 UI 交接数据，消息本身不携带指针，杜绝悬垂/泄漏
+		struct UnbindShared
+		{
+			biz::license::UnbindOutcome outcome;
+			std::atomic_bool ready{false};
+		};
 
 		struct LicenseInfoDialogData
 		{
@@ -1140,12 +1197,15 @@ namespace ui
 			HFONT hFontBody{nullptr};
 			HFONT hFontSmall{nullptr};
 			HFONT hFontHint{nullptr};
+			HWND hUnbind{nullptr};      // 解绑按钮（后台解绑期间禁用并改文案）
 			bool done{false};
 			LicenseInfoResult result{LicenseInfoResult::None};
 			bool activated{false};
 			bool isBound{false};
 			int unbindCount{0};
 			int unbindMax{0};
+			bool unbinding{false};      // 后台解绑进行中（防重入）
+			std::shared_ptr<UnbindShared> unbindShared; // 与工作线程共享的解绑结果块
 			std::wstring expireText;
 			std::wstring fp;
 			std::wstring version;
@@ -1210,7 +1270,7 @@ namespace ui
 					createBtn(INFO_SERVICE_ID, L"联系客服", 290, 96);
 					createBtn(INFO_CLOSE_ID, L"关闭", 408, 88);
 					// 解绑按钮放在"解绑次数"行内（rowTop=230，与值文本等高）
-					CreateWindowExW(0, L"BUTTON", L"解绑本机",
+					data->hUnbind = CreateWindowExW(0, L"BUTTON", L"解绑本机",
 					                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 					                396, 229, 88, 28, hwnd,
 					                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_UNBIND_ID)),
@@ -1461,53 +1521,29 @@ namespace ui
 					{
 						return 0;
 					}
-					const biz::license::UnbindOutcome outcome = biz::license::unbindForSwitch();
-					switch (outcome.result)
+					if (data->unbinding)
 					{
-					case biz::license::UnbindResult::Success:
-						if (!outcome.newCode.empty())
-						{
-							// 服务端换机：换机码继承剩余时长，复制到剪贴板供新电脑激活
-							if (OpenClipboard(hwnd))
-							{
-								EmptyClipboard();
-								const std::size_t bytes = (outcome.newCode.size() + 1) * sizeof(wchar_t);
-								if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes))
-								{
-									if (wchar_t* p = static_cast<wchar_t*>(GlobalLock(hMem)))
-									{
-										memcpy(p, outcome.newCode.c_str(), bytes);
-										GlobalUnlock(hMem);
-										SetClipboardData(CF_UNICODETEXT, hMem);
-									}
-								}
-								CloseClipboard();
-							}
-							const std::wstring msg = L"解绑成功！已生成换机激活码并复制到剪贴板：\n\n" +
-								outcome.newCode +
-								L"\n\n请在新电脑上粘贴此激活码完成激活（剩余时长将自动继承）。\n本机将退出授权，应用即将关闭。";
-							MessageBoxW(hwnd, msg.c_str(), L"解绑本机 · 换机成功", MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
-						}
-						else
-						{
-							MessageBoxW(hwnd, L"解绑成功！本机已退出授权，应用即将关闭。", L"解绑本机", MB_OK | MB_ICONINFORMATION);
-						}
-						data->result = LicenseInfoResult::Unbound;
-						DestroyWindow(hwnd);
-						return 0;
-					case biz::license::UnbindResult::OtherInstancesRunning:
-						MessageBoxW(hwnd, L"检测到其他 eBox 进程正在运行。\n请先关闭所有 eBox 窗口和进程后再解绑。", L"解绑本机", MB_OK | MB_ICONWARNING);
-						return 0;
-					case biz::license::UnbindResult::ExceededLimit:
-						MessageBoxW(hwnd,
-							(data->unbindMax == 0
-								? L"该激活码已设置禁止解绑。"
-								: std::format(L"本月解绑次数已达上限（{} 次），请下月再试。", data->unbindMax).c_str()),
-							L"解绑本机", MB_OK | MB_ICONWARNING);
-						return 0;
-					default:
-						return 0;
+						return 0; // 解绑进行中，防重入
 					}
+					// 后台执行 unbindForSwitch（内部可能同步联网，服务端不可达时最坏 40s，
+					// 原实现会令 UI 线程未响应）→ 按钮切"解绑中…"，完成后经线程消息回 UI
+					data->unbinding = true;
+					data->unbindShared = std::make_shared<UnbindShared>();
+					if (data->hUnbind)
+					{
+						EnableWindow(data->hUnbind, FALSE);
+						SetWindowTextW(data->hUnbind, L"解绑中…");
+						InvalidateRect(data->hUnbind, nullptr, TRUE);
+					}
+					auto shared = data->unbindShared; // 与工作线程共享生命周期
+					const DWORD uiThreadId = GetCurrentThreadId();
+					std::thread([shared, uiThreadId]()
+					{
+						shared->outcome = biz::license::unbindForSwitch();
+						shared->ready.store(true, std::memory_order_release);
+						PostThreadMessageW(uiThreadId, INFO_WM_UNBIND_DONE, 0, 0);
+					}).detach();
+					return 0;
 				}
 				if (id == INFO_BUY_ID)
 				{
@@ -1616,6 +1652,69 @@ namespace ui
 		MSG msg{};
 		while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
 		{
+			// 后台解绑完成（线程消息，hwnd 为空）：从共享块取结果并按结果分支提示
+			if (msg.message == INFO_WM_UNBIND_DONE && msg.hwnd == nullptr)
+			{
+				if (data.unbindShared && data.unbindShared->ready.load(std::memory_order_acquire))
+				{
+					const biz::license::UnbindOutcome outcome = data.unbindShared->outcome;
+					data.unbindShared.reset();
+					data.unbinding = false;
+					if (data.hUnbind)
+					{
+						EnableWindow(data.hUnbind, TRUE);
+						SetWindowTextW(data.hUnbind, L"解绑本机");
+						InvalidateRect(data.hUnbind, nullptr, TRUE);
+					}
+					switch (outcome.result)
+					{
+					case biz::license::UnbindResult::Success:
+						if (!outcome.newCode.empty())
+						{
+							// 服务端换机：换机码继承剩余时长，复制到剪贴板供新电脑激活
+							if (OpenClipboard(hDlg))
+							{
+								EmptyClipboard();
+								const std::size_t bytes = (outcome.newCode.size() + 1) * sizeof(wchar_t);
+								if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes))
+								{
+									if (wchar_t* p = static_cast<wchar_t*>(GlobalLock(hMem)))
+									{
+										memcpy(p, outcome.newCode.c_str(), bytes);
+										GlobalUnlock(hMem);
+										SetClipboardData(CF_UNICODETEXT, hMem);
+									}
+								}
+								CloseClipboard();
+							}
+							const std::wstring unbindMsg = L"解绑成功！已生成换机激活码并复制到剪贴板：\n\n" +
+								outcome.newCode +
+								L"\n\n请在新电脑上粘贴此激活码完成激活（剩余时长将自动继承）。\n本机将退出授权，应用即将关闭。";
+							MessageBoxW(hDlg, unbindMsg.c_str(), L"解绑本机 · 换机成功", MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+						}
+						else
+						{
+							MessageBoxW(hDlg, L"解绑成功！本机已退出授权，应用即将关闭。", L"解绑本机", MB_OK | MB_ICONINFORMATION);
+						}
+						data.result = LicenseInfoResult::Unbound;
+						DestroyWindow(hDlg);
+						break;
+					case biz::license::UnbindResult::OtherInstancesRunning:
+						MessageBoxW(hDlg, L"检测到其他 eBox 进程正在运行。\n请先关闭所有 eBox 窗口和进程后再解绑。", L"解绑本机", MB_OK | MB_ICONWARNING);
+						break;
+					case biz::license::UnbindResult::ExceededLimit:
+						MessageBoxW(hDlg,
+							(data.unbindMax == 0
+								? L"该激活码已设置禁止解绑。"
+								: std::format(L"本月解绑次数已达上限（{} 次），请下月再试。", data.unbindMax).c_str()),
+							L"解绑本机", MB_OK | MB_ICONWARNING);
+						break;
+					default:
+						break;
+					}
+				}
+				continue;
+			}
 			if (IsDialogMessageW(hDlg, &msg))
 			{
 				continue;
@@ -2367,6 +2466,7 @@ namespace ui
 		constexpr int APP_SEARCH_ID = 6007;   // 综合搜索框（EDIT）
 		constexpr int APP_SEARCH_HINT_ID = 6008; // 搜索框占位提示（STATIC）
 		constexpr UINT_PTR APP_REFRESH_TIMER = 1; // 刷新动画定时器
+		constexpr UINT APP_WM_SCAN_DONE = WM_APP + 0x31; // 后台扫描完成（线程消息，结果经 AppScanShared 交接，消息不携带指针）
 		constexpr int APP_DLG_WIDTH = 700;
 		constexpr int APP_DLG_HEIGHT = 560;
 		constexpr int APP_PAGE_SIZE = 6;      // 每页 6 条
@@ -3097,6 +3197,13 @@ namespace ui
 			DeleteObject(hOff);
 		}
 
+		// 后台扫描共享结果：工作线程与 UI 通过它交接数据，消息本身不携带指针，杜绝悬垂/泄漏
+		struct AppScanShared
+		{
+			std::vector<AppEntry> apps;
+			std::atomic_bool ready{false};
+		};
+
 		struct AppPickData
 		{
 			HWND hwnd{nullptr};
@@ -3105,6 +3212,8 @@ namespace ui
 			int page{0};
 			bool refreshing{false};  // 正在刷新（显示动画）
 			int refreshTick{0};      // 动画帧计数
+			bool scanning{false};    // 后台扫描进行中（防重入）
+			std::shared_ptr<AppScanShared> scanResult; // 与工作线程共享的扫描结果块
 			std::wstring searchText; // 搜索关键字
 			HWND hSearch{nullptr};   // 搜索框
 			HWND hSearchHint{nullptr}; // 搜索框占位提示
@@ -3145,6 +3254,39 @@ namespace ui
 			{
 				data.page = std::max(0, pc - 1);
 			}
+		}
+
+		// 启动后台扫描系统应用：立即显示 spinner 动画，扫描在工作线程执行，
+		// 完成后以线程消息通知 UI（消息不携带指针，结果经 AppScanShared 共享块交接），
+		// 全程不阻塞 UI 线程（修复开窗/刷新时列表长时间冻结）
+		void app_start_scan(HWND hwnd, AppPickData* data)
+		{
+			if (data->scanning)
+			{
+				return; // 已在扫描，防重入
+			}
+			data->scanning = true;
+			data->scanResult = std::make_shared<AppScanShared>();
+			data->refreshing = true;
+			data->refreshTick = 0;
+			SetTimer(hwnd, APP_REFRESH_TIMER, 100, nullptr);
+			InvalidateRect(hwnd, nullptr, FALSE);
+
+			auto shared = data->scanResult; // 与工作线程共享生命周期
+			const DWORD uiThreadId = GetCurrentThreadId();
+			std::thread([shared, uiThreadId]()
+			{
+				try
+				{
+					shared->apps = scan_system_apps();
+				}
+				catch (...)
+				{
+					shared->apps.clear(); // 扫描异常按空列表处理，不影响 UI
+				}
+				shared->ready.store(true, std::memory_order_release);
+				PostThreadMessageW(uiThreadId, APP_WM_SCAN_DONE, 0, 0);
+			}).detach();
 		}
 
 		LRESULT CALLBACK app_pick_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -3266,7 +3408,8 @@ namespace ui
 					SelectObject(hdc, data->hFontName);
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					RECT rcEmpty{24, APP_ROWS_TOP + 40, APP_LIST_RIGHT, APP_ROWS_TOP + 90};
-					DrawTextW(hdc, L"未扫描到可用应用，请点击右下角[手动选择文件]选择程序", -1, &rcEmpty, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					DrawTextW(hdc, data->scanning ? L"正在扫描系统应用…" : L"未扫描到可用应用，请点击右下角[手动选择文件]选择程序",
+					          -1, &rcEmpty, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 				}
 				else
 				{
@@ -3484,11 +3627,7 @@ namespace ui
 				}
 				if (id == APP_REFRESH_ID)
 				{
-					// 先显示"正在刷新"动画（定时器驱动），约 500ms 后执行重新扫描
-					data->refreshing = true;
-					data->refreshTick = 0;
-					SetTimer(hwnd, APP_REFRESH_TIMER, 100, nullptr);
-					InvalidateRect(hwnd, nullptr, FALSE);
+					app_start_scan(hwnd, data); // 后台扫描（内部防重入），动画立即反馈，UI 不冻结
 					return 0;
 				}
 				return 0;
@@ -3496,15 +3635,7 @@ namespace ui
 			case WM_TIMER:
 				if (wParam == APP_REFRESH_TIMER)
 				{
-					++data->refreshTick;
-					if (data->refreshTick >= 5) // 动画播 ~500ms 后执行扫描并收尾
-					{
-						KillTimer(hwnd, APP_REFRESH_TIMER);
-						data->allApps = scan_system_apps();
-						data->page = 0;
-						data->refreshing = false;
-						app_apply_search(*data); // 保持当前搜索过滤
-					}
+					++data->refreshTick; // 仅推进动画帧；扫描收尾由 APP_WM_SCAN_DONE 处理
 					InvalidateRect(hwnd, nullptr, FALSE);
 					return 0;
 				}
@@ -3633,9 +3764,7 @@ namespace ui
 		}();
 		(void)classRegistered;
 
-		AppPickData data;
-		data.allApps = scan_system_apps();
-		data.apps = data.allApps;
+		AppPickData data; // 列表由 app_start_scan 后台填充，弹窗立即可交互
 
 		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
 		const int dlgWndWidth = APP_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
@@ -3660,6 +3789,7 @@ namespace ui
 			return std::nullopt;
 		}
 		ShowWindow(hDlg, SW_SHOW);
+		app_start_scan(hDlg, &data); // 后台扫描系统应用（spinner 提示加载中），UI 立即可交互
 
 		if (hOwner && IsWindow(hOwner))
 		{
@@ -3669,6 +3799,22 @@ namespace ui
 		MSG msg{};
 		while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
 		{
+			// 后台扫描完成（线程消息，hwnd 为空）：从共享块取结果并收尾刷新
+			if (msg.message == APP_WM_SCAN_DONE && msg.hwnd == nullptr)
+			{
+				if (data.scanResult && data.scanResult->ready.load(std::memory_order_acquire))
+				{
+					data.allApps = std::move(data.scanResult->apps);
+					data.scanResult.reset();
+					data.page = 0;
+					data.scanning = false;
+					data.refreshing = false;
+					KillTimer(hDlg, APP_REFRESH_TIMER);
+					app_apply_search(data); // 保持当前搜索过滤
+					InvalidateRect(hDlg, nullptr, FALSE);
+				}
+				continue;
+			}
 			if (IsDialogMessageW(hDlg, &msg))
 			{
 				continue;

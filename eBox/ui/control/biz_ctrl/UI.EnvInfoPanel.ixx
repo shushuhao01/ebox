@@ -23,6 +23,8 @@ namespace ui
 			initialize();
 		}
 
+		~EnvInfoPanel() override;
+
 	public:
 		void setEnv(const std::shared_ptr<biz::Env>& env);
 		void clearEnv();
@@ -49,6 +51,11 @@ namespace ui
 		void toggleExpand();
 		bool copyInfo();
 		void refreshInfo();
+		// 后台线程统计重字段（环境大小/缓存/聊天记录/machine_id/qimei），
+		// 完成后经 UI 调度器回投结果，避免 GB 级目录遍历阻塞 UI 线程（未响应）
+		void startHeavyScanAsync();
+		void applyHeavyResult(std::uint64_t total, std::uint64_t cache, std::uint64_t chat,
+		                      std::wstring machineId, std::wstring qimei);
 		void onCleanBtnClick();
 
 	private:
@@ -64,5 +71,16 @@ namespace ui
 		// 待展示字段：{标签, 值}
 		std::vector<std::pair<std::wstring, std::wstring>> m_fields;
 		std::wstring m_copyText;
+		// ===== 异步统计（防 UI 卡顿）=====
+		// 面板存活标记：后台线程回投结果前检查，面板销毁后不得触碰 this
+		std::shared_ptr<std::atomic_bool> m_alive{std::make_shared<std::atomic_bool>(true)};
+		std::uint32_t m_scanGen{0};   // 扫描代次：仅应用最新一次扫描结果，过期结果丢弃
+		bool m_heavyValid{false};     // 已有缓存的重字段值（复制/展示直接复用）
+		std::uint64_t m_hTotal{0};
+		std::uint64_t m_hCache{0};
+		std::uint64_t m_hChat{0};
+		std::wstring m_hMachineId;
+		std::wstring m_hQimei;
+		bool m_cleaning{false};       // 清理进行中（防重入）
 	};
 }
