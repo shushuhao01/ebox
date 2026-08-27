@@ -48,9 +48,12 @@ namespace ui
 {
 	EnvBoxCard::~EnvBoxCard()
 	{
-		// 1. 先解除通知回调：setProcCountChangeNotify 与通知回调在 Env 的锁上互斥，
-		//    返回后不会再 spawn 任何新的 onProcessCountChange（其首个挂起点是
-		//    transfer_to(UI调度器)，若在 UI 线程阻塞于 join() 时仍在队列中会死锁）。
+		// 1. 先解除通知回调。注意：addProcessInternal/removeProcessInternal 已在锁外
+		//    执行回调（避免在 env 共享锁上跑回调阻塞读者），故此处置空后仍可能有
+		//    一个已捕获旧回调副本的 in-flight 通知在稍后 spawn 协程。该协程由
+		//    m_lifeStopSource 包裹，下面 request_stop 会同步取消它（首个挂起点
+		//    transfer_to(UI调度器) 被停时立即收尾）并触发 onWorkFinished，因此
+		//    join() 不会被队列中残留的 UI 任务拖死。
 		m_env->setProcCountChangeNotify(nullptr);
 		// 2. 再请求取消：此前已 spawn 的协程（挂在 transfer_to/transfer_after 上）
 		//    由 stop_callback 在当前线程同步恢复并抛取消异常，干净结束协程，

@@ -44,6 +44,10 @@ debug-*.md
 /2BoxData/   # 兼容老版本数据目录
 /Env/
 **/Env/
+# 例外：eBox/biz/env/ 是核心源码目录（Env 环境管理），不是运行时数据；
+# Windows 下 core.ignorecase=true 使 **/Env/ 误伤该目录，必须显式恢复跟踪。
+!eBox/biz/env/
+!eBox/biz/env/**
 *.bak
 eBox.exe.bak
 2Box.exe.bak          # 兼容老版本备份
