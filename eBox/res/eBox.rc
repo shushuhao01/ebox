@@ -90,12 +90,12 @@ BEGIN
         BEGIN
             VALUE "CompanyName", "Wei"
             VALUE "FileDescription", "eBox"
-            VALUE "FileVersion", "3.0.0"
+            VALUE "FileVersion", "3.0.1"
             VALUE "InternalName", "eBox.exe"
             VALUE "LegalCopyright", "Copyright (C) 2026 Wei.All Rights Reserved."
             VALUE "OriginalFilename", "eBox.exe"
             VALUE "ProductName", "eBox"
-            VALUE "ProductVersion", "3.0.0"
+            VALUE "ProductVersion", "3.0.1"
         END
     END
     BLOCK "VarFileInfo"

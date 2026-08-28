@@ -39,6 +39,8 @@ namespace ui
 	// 心跳线程发现授权被服务端锁定 → 请求 UI 线程弹窗（lParam=堆上 std::wstring*，UI 侧接管释放；
 	// 与 biz.License 的 WM_APP_LICENSEINVALID 一致）
 	static constexpr UINT WM_APP_LICENSEINVALID = WM_USER + 9530;
+	// 退出清理（后台线程）已完成 → UI 线程销毁窗口并退出（保证进程终止先于应用退出）
+	static constexpr UINT WM_APP_EXIT_AFTER_KILL = WM_USER + 9531;
 
 	// 同步悬浮提示工具：首次注册；之后仅矩形/文字变化时才发消息更新。
 	// 不能每帧 DELTOOL+ADDTOOL——那会重置 tooltip 弹出计时器，持续渲染的主窗口提示永远弹不出来。
@@ -680,6 +682,11 @@ namespace ui
 
 	bool MainWindow::onClose()
 	{
+		// 已进入退出清理流程：阻断重复关闭（避免再次弹确认框/重复杀进程）
+		if (m_bExitStarted)
+		{
+			return true;
+		}
 		const bool hasProc = isPage<HomePage>() && getPage<HomePage>().getLeftSidebar()->getEnvBoxCardArea()->hasAnyProcesses();
 
 		TASKDIALOGCONFIG cfg{};
@@ -711,12 +718,38 @@ namespace ui
 		}
 		if (result == 101)
 		{
-			// 退出应用：先结束所有环境中的进程，再销毁窗口退出
-			killAllEnvProcesses();
-			return false;
+			// 退出应用：先结束所有环境中的进程，再销毁窗口退出。
+			// 进程清理放到后台线程：本函数（以及它所在的进程树遍历）涉及多轮系统进程快照、
+			// 逐个进程查 exe、终止进程并反复等待，若是同步执行会把 UI 线程饿死导致主窗口"未响应"。
+			// 清理完成后再由 WM_APP_EXIT_AFTER_KILL 通知 UI 线程销毁窗口并退出。
+			startExitCleanup();
+			// 阻止本次关闭：先保持窗口存活，待后台清理完成后统一销毁窗口退出。
+			return true;
 		}
 		// 取消或直接关闭对话框
 		return true;
+	}
+
+	void MainWindow::startExitCleanup()
+	{
+		if (m_bExitStarted)
+		{
+			// 已进入退出清理流程：忽略重复触发（防止重复点击关闭/重复杀进程/重复弹窗）
+			return;
+		}
+		m_bExitStarted = true;
+		const HWND hWnd = nativeHandle();
+		// 进程清理放到后台线程，避免阻塞 UI 线程导致主窗口"未响应"。
+		// 清理完成后投递消息回 UI 线程，由 UI 线程统一销毁窗口并退出（保证进程终止先于应用退出）。
+		std::thread(
+			[this, hWnd]
+			{
+				// killAllEnvProcesses 为 const 方法、且只用局部变量与 RPC/env 锁，不触碰本对象可变成员，
+				// 后台线程调用是安全的；PostMessageW 使用按值捕获的 hWnd，不依赖 this。
+				killAllEnvProcesses();
+				PostMessageW(hWnd, WM_APP_EXIT_AFTER_KILL, 0, 0);
+			})
+			.detach();
 	}
 
 	void MainWindow::killAllEnvProcesses() const
@@ -1038,12 +1071,18 @@ namespace ui
 					}
 				}
 				else if (id == 3)
-			{
-				// 退出：结束所有环境中的进程并退出
-				killAllEnvProcesses();
-				destroyWindow();
-			}
+		{
+			// 退出：结束所有环境中的进程并退出。
+			// 进程清理放到后台线程，避免阻塞 UI 线程导致"未响应"；清理完成后
+			// 由 WM_APP_EXIT_AFTER_KILL 通知 UI 线程销毁窗口并退出。
+			startExitCleanup();
 		}
+		}
+		}
+		else if (message == WM_APP_EXIT_AFTER_KILL)
+		{
+			// 后台线程已完成进程清理：由 UI 线程销毁窗口并退出（触发 onBeforeWindowDestroy 清理托盘等）
+			destroyWindow();
 		}
 		else if (message == WM_UPDATE_CHECK_DONE)
 		{
@@ -1091,7 +1130,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.0.0   更新时间：2026/8/28   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.0.1   更新时间：2026/8/28   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",

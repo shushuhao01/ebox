@@ -47,6 +47,7 @@ namespace ui
 		void initTray() const;
 		void destroyTray() const;
 		void killAllEnvProcesses() const;
+		void startExitCleanup();
 		ID2D1Bitmap* getTitleIconBitmap(ID2D1HwndRenderTarget* renderTarget);
 		// coro::LazyTask<void> initSymbols();
 		bool ncBtnHitTest(POINT pt) const;
@@ -142,6 +143,9 @@ namespace ui
 		std::atomic<std::uint64_t> m_dlTotal{0};
 		std::atomic<int> m_dlState{0};   // 0=进行中 1=成功 2=失败 3=用户取消
 		std::optional<biz::update::DownloadOutcome> m_dlOutcome;  // 下载完成结果（主线程读）
+
+		// ===== 退出清理（进程终止）在后台线程执行，避免阻塞 UI 线程 =====
+		bool m_bExitStarted{false};  // 仅 UI 线程读写
 	};
 
 	export MainWindow* g_main_wnd{nullptr};
