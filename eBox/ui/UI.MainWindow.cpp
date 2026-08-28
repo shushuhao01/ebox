@@ -1201,11 +1201,18 @@ namespace ui
 		const float desiredWidth = std::min(DESIRED_WIDTH, width);
 		const float desiredHeight = std::min(DESIRED_HEIGHT, height);
 
-		const float diffWidth = width - desiredWidth;
-		const float diffHeight = height - desiredHeight;
+		// 把窗口居中到所在显示器的工作区（排除任务栏），而不是沿用创建时的默认位置。
+		// 旧逻辑基于"当前窗口 rect"收缩尺寸并保留其 left/top，导致首窗永远偏左上而非屏幕居中。
+		MONITORINFO mi{sizeof(mi)};
+		const HMONITOR mon = MonitorFromWindow(nativeHandle(), MONITOR_DEFAULTTONEAREST);
+		GetMonitorInfoW(mon, &mi);
+		const float workX = static_cast<float>(mi.rcWork.left);
+		const float workY = static_cast<float>(mi.rcWork.top);
+		const float workW = static_cast<float>(mi.rcWork.right - mi.rcWork.left);
+		const float workH = static_cast<float>(mi.rcWork.bottom - mi.rcWork.top);
 
-		const float desiredX = rc.left + diffWidth * 0.5f;
-		const float desiredY = rc.top + diffHeight * 0.5f;
+		const float desiredX = workX + (workW - desiredWidth) * 0.5f;
+		const float desiredY = workY + (workH - desiredHeight) * 0.5f;
 
 		setRect(D2D1::RectF(
 			        desiredX,
