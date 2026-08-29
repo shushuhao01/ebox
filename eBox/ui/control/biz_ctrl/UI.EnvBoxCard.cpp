@@ -638,6 +638,77 @@ namespace ui
 		co_return;
 	}
 
+	coro::LazyTask<void> EnvBoxCard::activateHiddenWhenVisible(HWND wnd)
+	{
+		// “隐藏到托盘/关闭主界面”(SW_HIDE、任务栏不可见)的主窗，**绝不能外部强显**。
+		// 实测任何外部显示（SW_SHOWNORMAL / SW_SHOW 都一样）都会让 WXWork 自绘主窗渲染
+		// 成一团黑，再拖拽黑框还会触发其内部空指针崩溃（0xC0000005；这是 v3.0.2 引入
+		// SW_SHOWNORMAL 后才出现的黑屏）。这里采用：先等一小段（1.5s），WXWork 自行显示
+		// （登录完成/自身恢复，渲染状态正常）则仅置前——不黑屏；若 1.5s 后仍隐藏，则判定
+		// 为已缩到托盘/关闭界面，不强显，改为提示用户手动打开（托盘图标 / 显示快捷键 /
+		// 停止进程再启动）。
+		const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds{1500};
+		while (std::chrono::steady_clock::now() < deadline)
+		{
+			co_await sched::transfer_after(std::chrono::milliseconds{200}, app().get_scheduler());
+			if (!::IsWindow(wnd))
+			{
+				co_return; // 窗口已销毁，无需再置前
+			}
+			if (::IsIconic(wnd))
+			{
+				// 若等待期间被最小化，还原到正常状态（最小化是自身正常状态，SW_RESTORE 安全）
+				::ShowWindow(wnd, SW_RESTORE);
+			}
+			if (!::IsWindowVisible(wnd))
+			{
+				continue; // 仍未显示，继续等 WXWork 自行显示
+			}
+			// WXWork 已自行显示，此时渲染状态正常，仅置前（不强显、不触碰可见性）
+			const HWND fg = ::GetForegroundWindow();
+			const DWORD fgThread = fg ? ::GetWindowThreadProcessId(fg, nullptr) : 0;
+			const DWORD targetThread = ::GetWindowThreadProcessId(wnd, nullptr);
+			if (fgThread && fgThread != targetThread)
+			{
+				::AttachThreadInput(fgThread, targetThread, TRUE);
+				::BringWindowToTop(wnd);
+				::SetForegroundWindow(wnd);
+				::AttachThreadInput(fgThread, targetThread, FALSE);
+			}
+			else
+			{
+				::BringWindowToTop(wnd);
+				::SetForegroundWindow(wnd);
+			}
+			{
+				DWORD pid = 0;
+				::GetWindowThreadProcessId(wnd, &pid);
+				biz::env_logger().append(m_env->getIndex(), biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+				                         std::format(L"{}：窗口已由应用自行显示，已置前 [pid={}]", m_env->getName(), pid));
+			}
+			co_return;
+		}
+		// 1.5s 内 WXWork 仍未自行显示 → 判定为已缩到托盘/关闭主界面（任务栏不可见）。
+		// 实测外部强显（SW_SHOWNORMAL / SW_SHOW 都一样）会让 WXWork 自绘主窗渲染成一团黑，
+		// 再拖拽黑框还会触发其内部空指针崩溃（0xC0000005）。因此**绝不强显**，改为弹窗提示
+		// 用户手动打开界面（托盘图标 / 显示快捷键 / 关闭进程后再启动企业微信）。
+		if (!::IsWindow(wnd))
+		{
+			co_return;
+		}
+		DWORD pid = 0;
+		::GetWindowThreadProcessId(wnd, &pid);
+		biz::env_logger().append(m_env->getIndex(), biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+		                         std::format(L"{}：隐藏窗口 1.5s 未自显(任务栏不可见)，不强显避免黑屏，改为提示用户手动打开 [pid={}]", m_env->getName(), pid));
+		const std::wstring msg = std::format(
+			L"企业微信「{}」已隐藏到托盘（任务栏不可见），eBox 不会强显以免黑屏。\n\n"
+			L"请选择以下方式手动打开：\n"
+			L"① 点击系统托盘/任务栏右侧的企微图标重新打开主面板；\n"
+			L"② 在「企业微信-设置-快捷键」中设置“显示主面板”快捷键后直接呼出；\n"
+			L"③ 关闭该环境进程后再点【启动】企业微信。", m_env->getName());
+		::MessageBoxW(m_ownerWnd ? m_ownerWnd->nativeHandle() : nullptr, msg.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+	}
+
 	bool EnvBoxCard::activateEnvWindows()
 	{
 		if (!m_env)
@@ -645,15 +716,38 @@ namespace ui
 			return false;
 		}
 		const std::vector<void*> allWnds = m_env->getAllToplevelWindows();
+		const std::uint32_t envIdx = m_env->getIndex();
+		int titleWinCount = 0;
+		// 记录一次“点启动”的反馈：选窗依据/选中窗口详情/执行的操作全部写入环境日志，
+		// 便于诊断“点了第二个号变黑”这类选错窗口或置前异常。
+		auto wndInfo = [](HWND h) -> std::wstring
+		{
+			DWORD pid = 0;
+			::GetWindowThreadProcessId(h, &pid);
+			wchar_t cls[128]{}; ::GetClassNameW(h, cls, 128);
+			wchar_t title[128]{}; ::GetWindowTextW(h, title, 128);
+			RECT rc{}; ::GetWindowRect(h, &rc);
+			return std::format(L"pid={} class='{}' title='{}' rect={}x{} visible={} iconic={}",
+			                   pid, cls, title, rc.right - rc.left, rc.bottom - rc.top,
+			                   ::IsWindowVisible(h) ? L"Y" : L"N", ::IsIconic(h) ? L"Y" : L"N");
+		};
 
 		// 选“主窗口”：优先取标题含“企业微信”的窗口，再在其中挑面积最大者。
 		// 原因：企业微信窗口结构里存在一个比主窗口更大的“无标题背景/蒙版窗”
 		// （实测如 1022x784 的黑边框），若只看面积会优先误选它，导致点启动后
 		// 弹出黑色空框而非真正的主界面。主窗口固定是标题为“企业微信”的那个，
-		// 故必须按标题筛选。另一注意点：不能要求“可见+非最小化”，否则当企业微信
-		// 被最小化或隐藏到托盘（多开隐藏后任务栏不再显示）时会落到错误兜底分支。
+		// 故必须按标题筛选。
+		//
+		// 另一注意点：在“标题命中”里也要**优先可见**的主窗。若不区分可见性仅按
+		// 面积挑，可能选中面积更大但被 SW_HIDE 隐藏的主窗（可见=N），点启动就会落
+		// 到隐藏还原分支而“无反应”；而真正正在显示（任务栏有、仅不在台前）的可见
+		// 窗口反而被比下去。最小化窗口 IsWindowVisible 仍为 TRUE，会被优先挑中并走
+		// 正常的 SW_RESTORE 分支，符合预期。
 		HWND bestWnd = nullptr;
 		long bestArea = -1;
+		HWND bestVisibleWnd = nullptr;   // 标题命中且可见的主窗
+		long bestVisibleArea = -1;
+		int titleVisibleCount = 0;       // 标题命中且可见的窗口个数
 		for (void* raw : allWnds)
 		{
 			const HWND hWnd = static_cast<HWND>(raw);
@@ -666,6 +760,7 @@ namespace ui
 			{
 				continue;
 			}
+			++titleWinCount;
 			RECT rc{};
 			if (!::GetWindowRect(hWnd, &rc))
 			{
@@ -677,8 +772,33 @@ namespace ui
 				bestArea = area;
 				bestWnd = hWnd;
 			}
+			if (::IsWindowVisible(hWnd))
+			{
+				++titleVisibleCount;
+				if (area > bestVisibleArea)
+				{
+					bestVisibleArea = area;
+					bestVisibleWnd = hWnd;
+				}
+			}
+		}
+		// 优先级：标题命中且可见 > 标题命中（含隐藏/最小化）> 全量面积兜底。
+		if (bestVisibleWnd)
+		{
+			bestWnd = bestVisibleWnd;
 		}
 		// 找不到标题为“企业微信”的窗口时，退化为所有有效窗口里面积最大者。
+		if (bestWnd)
+		{
+			biz::env_logger().append(envIdx, biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+			                         std::format(L"{}：标题命中 {} 个(可见 {} 个)，选取{}", m_env->getName(), titleWinCount, titleVisibleCount,
+			                                    bestVisibleWnd ? L"其中面积最大且可见的主窗" : L"标题命中中面积最大者(无可见主窗)"));
+		}
+		else
+		{
+			biz::env_logger().append(envIdx, biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+			                         std::format(L"{}：未找到标题含『企业微信』的窗口，共 {} 个顶层窗口，转入『面积最大』兜底", m_env->getName(), allWnds.size()));
+		}
 		if (!bestWnd)
 		{
 			for (void* raw : allWnds)
@@ -705,6 +825,8 @@ namespace ui
 		{
 			return false;
 		}
+		biz::env_logger().append(envIdx, biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+		                         std::format(L"{}：选中主窗口 [{}]", m_env->getName(), wndInfo(bestWnd)));
 
 		// 激活前先探测目标窗口线程是否响应：AttachThreadInput / SetForegroundWindow /
 		// BringWindowToTop 作用于“未响应或繁忙”的外部进程窗口线程时，会让调用它的
@@ -717,22 +839,40 @@ namespace ui
 			                           SMTO_NORMAL | SMTO_ABORTIFHUNG, 1000, &lr))
 			{
 				// 目标已挂死：不做任何可能阻塞的窗口操作，仅“识别到已有窗口”以阻止重复启动
+				biz::env_logger().append(envIdx, biz::EnvLogType::Message, biz::EnvLogStatus::Fail, L"窗口激活",
+				                         std::format(L"{}：目标窗口无响应(>1s)，已放弃置前，仅阻止重复启动 [{}]", m_env->getName(), wndInfo(bestWnd)));
 				return true;
 			}
 		}
 
-		// 窗口可能处于“最小化”或“隐藏到右下角托盘”状态（多开时每个号隐藏后任务栏
-		// 不再显示）：必须先恢复可见，否则后续 BringWindowToTop / SetForegroundWindow
-		// 无法把隐藏窗口带到前台，用户会以为“点了启动没反应”。
-		// 最小化用 SW_RESTORE；隐藏（SW_HIDE，托盘常驻）用 SW_SHOWNORMAL —— 后者会同时
-		// 激活并还原该窗口原本的尺寸与位置，最贴合“把该号界面调出来”的语义。
+		// 窗口恢复：只处理“最小化”这一种状态 —— 最小化是窗口自身的正常状态，用
+		// SW_RESTORE 交回 Windows 还原即可，不会破坏 WXWork 自绘渲染。
+		//
+		// 特别注意：**绝不能对“隐藏到托盘”(SW_HIDE / !IsWindowVisible) 的主窗口强显
+		// SW_SHOWNORMAL**。企业微信的自绘主窗依赖它自己维护的激活与渲染状态，外部强显
+		// 会绕过其内部初始化流程，导致窗口一片黑；用户再拖拽该黑框还会触发 WXWork 内部
+		// 空指针崩溃（0xC0000005）。这正是 v3.0.2 引入 SW_SHOWNORMAL 之后才出现的
+		// “点第二个号变黑”的根源（用户明确反馈：未加该逻辑的旧版只偶尔点击无反应，
+		// 从无黑框）。
+		// 因此对隐藏窗口：不走下方“仅置前”（那对已隐藏窗口不会真的显示它），而是交由
+		// activateHiddenWhenVisible 两段式处理——先等 WXWork 自行显示（不黑屏），1.5s 仍
+		// 隐藏（托盘常驻）则不强显、改为弹窗提示用户手动打开（托盘图标/显示快捷键/关闭
+		// 进程后再启动企业微信）。既不会黑屏，也不会在用户未察觉时强弹黑框。
 		if (::IsIconic(bestWnd))
 		{
 			::ShowWindow(bestWnd, SW_RESTORE);
+			biz::env_logger().append(envIdx, biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+			                         std::format(L"{}：最小化窗口 SW_RESTORE 还原 [{}]", m_env->getName(), wndInfo(bestWnd)));
 		}
 		else if (!::IsWindowVisible(bestWnd))
 		{
-			::ShowWindow(bestWnd, SW_SHOWNORMAL);
+			// 隐藏到托盘：不强显 SW_SHOWNORMAL / SW_SHOW（→ 黑屏 + 拖拽崩溃），改为两段式——
+			// 先等 WXWork 自行显示，1.5s 仍隐藏则不强显，改为弹窗提示用户手动打开；本环境已有
+			// 窗口，返回 true 阻止重复启动。
+			biz::env_logger().append(envIdx, biz::EnvLogType::Message, biz::EnvLogStatus::Info, L"窗口激活",
+			                         std::format(L"{}：隐藏窗口 两段式——先等自显，1.5s 仍隐藏则不强显改为提示手动打开 [{}]", m_env->getName(), wndInfo(bestWnd)));
+			m_asyncScope.spawn(coro::co_with_cancellation(activateHiddenWhenVisible(bestWnd), m_stopSource.get_token()));
+			return true;
 		}
 		// 绕过 Windows 前台锁：把前台线程输入临时附加到目标窗口线程再置前
 		const HWND fg = ::GetForegroundWindow();

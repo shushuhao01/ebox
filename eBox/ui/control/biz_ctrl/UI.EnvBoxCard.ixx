@@ -85,6 +85,9 @@ namespace ui
 		// 将本环境已运行应用的主窗口置前（多环境多实例时可区分每个环境的窗口）；
 		// 找到有效窗口并成功置前返回 true，否则返回 false（此时应走启动流程）
 		bool activateEnvWindows();
+		// 针对“隐藏到托盘(SW_HIDE)”的主窗口：不强制显示（避免触发 WXWork 自绘黑屏），
+		// 而是等待 WXWork 自行把主窗显示出来后立即置前；限时未显示则放弃（保持不黑屏）。
+		coro::LazyTask<void> activateHiddenWhenVisible(HWND wnd);
 
 	private:
 		std::unique_ptr<Button> m_btnStart;
