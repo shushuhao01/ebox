@@ -1,15 +1,15 @@
 {
-    "latestVersion": "v3.0.2",
-    "latestVersionCode": 30002,
+    "latestVersion": "v3.0.3",
+    "latestVersionCode": 30003,
     "releaseDate": "2026/8/29",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.2/eBox.exe",
-    "downloadSha256": "67c1c32dc1a8271cfc965a4499b672bba2d7a1742f8320ede0281edd2c701063",
-    "downloadSize": 3041792,
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.3/eBox.exe",
+    "downloadSha256": "8ada39c2d3b7c5edda6c84ce4fcd53fd0776ef5a7e3a15b9f54dc6abf01718b6",
+    "downloadSize": 3042304,
     "changelog": [
-        "v3.0.2 修复：环境卡片【启动】可激活隐藏到右下角托盘的窗口",
-        "1) 多开多账号时任务栏图标无法区分——点对应卡片的【启动】，即可把该号窗口快速调到前台。",
-        "2) 登录后点关闭隐藏到右下角托盘的账号（任务栏不显示、进程仍在）——点【启动】也能把界面调出来并置顶。",
-        "3) 4 处版本号同步到 v3.0.2（内部计版本号 30002）。"
+        "优化：环境卡片【启动】激活位置正确选中标题含「企业微信」的主窗口，避免误选更大的无标题蒙版窗而弹出黑色空框。",
+        "多开多账号时，点对应卡片的【启动】即可把该号窗口快速调到前台；登录后隐藏到右下角托盘（任务栏不显示、进程仍在）的账号，点【启动】也能把界面调出来并置顶。",
+        "使用手册补充「唤醒隐藏到托盘的账号」使用技巧。",
+        "版本号同步到 v3.0.3（内部计版本号 30003）。"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
