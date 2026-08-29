@@ -646,13 +646,23 @@ namespace ui
 		}
 		const std::vector<void*> allWnds = m_env->getAllToplevelWindows();
 
-		// 优先选“主窗口”：可见、非最小化、面积最大（企业微信登录/主窗口最大）
+		// 选“主窗口”：优先取标题含“企业微信”的窗口，再在其中挑面积最大者。
+		// 原因：企业微信窗口结构里存在一个比主窗口更大的“无标题背景/蒙版窗”
+		// （实测如 1022x784 的黑边框），若只看面积会优先误选它，导致点启动后
+		// 弹出黑色空框而非真正的主界面。主窗口固定是标题为“企业微信”的那个，
+		// 故必须按标题筛选。另一注意点：不能要求“可见+非最小化”，否则当企业微信
+		// 被最小化或隐藏到托盘（多开隐藏后任务栏不再显示）时会落到错误兜底分支。
 		HWND bestWnd = nullptr;
 		long bestArea = -1;
 		for (void* raw : allWnds)
 		{
 			const HWND hWnd = static_cast<HWND>(raw);
-			if (!::IsWindow(hWnd) || !::IsWindowVisible(hWnd) || ::IsIconic(hWnd))
+			if (!::IsWindow(hWnd))
+			{
+				continue;
+			}
+			wchar_t title[128]{};
+			if (::GetWindowTextW(hWnd, title, 128) <= 0 || !wcsstr(title, L"企业微信"))
 			{
 				continue;
 			}
@@ -668,16 +678,26 @@ namespace ui
 				bestWnd = hWnd;
 			}
 		}
-		// 没有可见窗口时退而取任意一个有效窗口（如最小化/隐藏的应用）
+		// 找不到标题为“企业微信”的窗口时，退化为所有有效窗口里面积最大者。
 		if (!bestWnd)
 		{
 			for (void* raw : allWnds)
 			{
 				const HWND hWnd = static_cast<HWND>(raw);
-				if (::IsWindow(hWnd))
+				if (!::IsWindow(hWnd))
 				{
+					continue;
+				}
+				RECT rc{};
+				if (!::GetWindowRect(hWnd, &rc))
+				{
+					continue;
+				}
+				const long area = (rc.right - rc.left) * (rc.bottom - rc.top);
+				if (area > bestArea)
+				{
+					bestArea = area;
 					bestWnd = hWnd;
-					break;
 				}
 			}
 		}
