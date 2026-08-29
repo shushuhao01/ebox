@@ -1,16 +1,15 @@
 {
-    "latestVersion": "v3.0.1",
-    "latestVersionCode": 30001,
-    "releaseDate": "2026/8/28",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.1/eBox.exe",
-    "downloadSha256": "2798b28da82db1d6e411ba0a369e00fb9f98d42d86f147ba5bd6b9015c447ab4",
+    "latestVersion": "v3.0.2",
+    "latestVersionCode": 30002,
+    "releaseDate": "2026/8/29",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.2/eBox.exe",
+    "downloadSha256": "67c1c32dc1a8271cfc965a4499b672bba2d7a1742f8320ede0281edd2c701063",
     "downloadSize": 3041792,
     "changelog": [
-        "重要修复：关闭应用时主窗口“未响应”",
-        "根因：退出应用时 UI 线程同步执行进程清理（多轮进程快照/逐进程查询/终止/Sleep），饿死消息泵。",
-        "修复：进程清理改到后台线程执行，完成后再回到 UI 线程退出；新增防重复关闭保护。",
-        "修复：主窗口启动时不再偏左上，改为在所在显示器工作区居中显示。",
-        "建议所有用户升级：本版本解决关闭卡顿与窗口位置问题。"
+        "v3.0.2 修复：环境卡片【启动】可激活隐藏到右下角托盘的窗口",
+        "1) 多开多账号时任务栏图标无法区分——点对应卡片的【启动】，即可把该号窗口快速调到前台。",
+        "2) 登录后点关闭隐藏到右下角托盘的账号（任务栏不显示、进程仍在）——点【启动】也能把界面调出来并置顶。",
+        "3) 4 处版本号同步到 v3.0.2（内部计版本号 30002）。"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
