@@ -701,9 +701,18 @@ namespace ui
 			}
 		}
 
+		// 窗口可能处于“最小化”或“隐藏到右下角托盘”状态（多开时每个号隐藏后任务栏
+		// 不再显示）：必须先恢复可见，否则后续 BringWindowToTop / SetForegroundWindow
+		// 无法把隐藏窗口带到前台，用户会以为“点了启动没反应”。
+		// 最小化用 SW_RESTORE；隐藏（SW_HIDE，托盘常驻）用 SW_SHOWNORMAL —— 后者会同时
+		// 激活并还原该窗口原本的尺寸与位置，最贴合“把该号界面调出来”的语义。
 		if (::IsIconic(bestWnd))
 		{
 			::ShowWindow(bestWnd, SW_RESTORE);
+		}
+		else if (!::IsWindowVisible(bestWnd))
+		{
+			::ShowWindow(bestWnd, SW_SHOWNORMAL);
 		}
 		// 绕过 Windows 前台锁：把前台线程输入临时附加到目标窗口线程再置前
 		const HWND fg = ::GetForegroundWindow();
