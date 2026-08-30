@@ -124,6 +124,8 @@ namespace ui
 				{
 					reinitWindow(); // 刷新标题栏的到期时间
 					MessageBoxW(nativeHandle(), L"续期成功，感谢支持！", L"激活成功", MB_OK | MB_ICONINFORMATION);
+					// 重新打开授权信息弹窗：续期（尤其更换新激活码）后，授权页需同步刷新解绑次数/可解绑次数与到期时间
+					ui::license_info_dialog(this);
 				}
 			}
 			else if (infoResult == ui::LicenseInfoResult::Unbound)
@@ -1130,7 +1132,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.0.4   更新时间：2026/8/29   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.0.5   更新时间：2026/8/30   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",

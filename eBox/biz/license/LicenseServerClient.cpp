@@ -801,6 +801,12 @@ namespace biz
 			result.exceeded = data->boolValue("exceeded");
 			result.serverTime = data->numberValue("serverTime");
 			result.graceUntil = data->numberValue("graceUntil");
+			// 服务端权威解绑次数（整条换机链本月已用次数）：仅当字段真实存在才认为有效，用于换机码继承链计数
+			if (const Json* uc = data->find("unbindCount"); uc && uc->type == Json::Type::Number)
+			{
+				result.hasUnbindCount = true;
+				result.unbindCount = static_cast<int>(uc->num);
+			}
 			// 授权策略随激活响应下发：同步写入本地注册表，下一次心跳/激活即生效
 			if (const Json* hb = data->find("heartbeatIntervalHours"); hb && hb->type == Json::Type::Number)
 			{
@@ -895,6 +901,12 @@ namespace biz
 			}
 			result.ok = true;
 			result.newCode = utf8ToWide(data->stringValue("newCode"));
+			result.unbindMax = static_cast<int>(data->numberValue("unbindMax"));
+			// 服务端权威解绑次数（换机链本月已用次数，含本次）：仅当字段存在才认为有效
+			if (const Json* uc = data->find("unbindCount"); uc && uc->type == Json::Type::Number)
+			{
+				result.unbindCount = static_cast<int>(uc->num);
+			}
 			if (!data->boolValue("online"))
 			{
 				result.offlineCode = true;  // 未登记码：服务器不托管解绑

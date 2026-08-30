@@ -62,9 +62,9 @@ namespace
 	// 换机/续期场景由发码工具生成，到期 = 原码剩余时间对应的日期，且新旧客户端均兼容
 	constexpr BYTE kLegacyFormatMinor = 7;
 
-	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v2.8.4）
+	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.0.5）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v2.9.8";
+	constexpr wchar_t kAppVersion[] = L"v3.0.5";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()
@@ -343,10 +343,13 @@ namespace
 
 	// ---------------------------------------------------------------------------
 	// 解绑次数持久化：HKCU\Software\2Box\UnbindMonth(REG_SZ "yyyyMM") + UnbindCount(REG_DWORD)
+	//                   + UnbindKey(REG_SZ 当前激活码身份)
 	// 跨月自动重置：读取时发现月份与当前不一致，计数按 0 处理
+	// 换新激活码后本地计次归零：每个激活码的解绑次数独立，互不影响（全新购买的码不能继承旧码计数）
 	// ---------------------------------------------------------------------------
 	constexpr wchar_t kRegUnbindMonth[] = L"UnbindMonth";
 	constexpr wchar_t kRegUnbindCount[] = L"UnbindCount";
+	constexpr wchar_t kRegUnbindKey[] = L"UnbindKey";  // 该计次所属激活码身份（用于换新码时归零）
 	constexpr wchar_t kRegBoundFp[] = L"BoundFp";  // 首次激活时绑定的机器指纹（十六进制字符串）
 	constexpr wchar_t kRegActivatedAt[] = L"ActivatedAt";  // 时长制：首次激活时间戳（REG_QWORD，Unix 秒）
 	constexpr wchar_t kRegActivatedCode[] = L"ActivatedCode";  // 与 ActivatedAt 配套：该时间对应的激活码身份（判断是否同一码）
@@ -519,7 +522,12 @@ namespace
 
 	int loadUnbindCount(); // 前向声明：incrementUnbindCount 需要读取当前次数后递增
 
-	void incrementUnbindCount()
+	// 以"权威计数"形式写入本机解绑次数状态：
+	//   count 为整条换机链本月累计已用次数（服务端下发，含本地兜底递增）。
+	//   codeId 为该计数所属的激活码身份（建议用激活码的规范化 ID），
+	//   用于 loadUnbindCount() 判断当前码是否与计数同源：同一激活码/同一换机链不归零，
+	//   只有换了"全新的、非换机链的激活码"才从零重新计次。
+	void storeUnbindCountState(const std::wstring& codeId, int count)
 	{
 		HKEY hKey = nullptr;
 		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
@@ -528,11 +536,20 @@ namespace
 			RegSetValueExW(hKey, kRegUnbindMonth, 0, REG_SZ,
 			               reinterpret_cast<const BYTE*>(month.c_str()),
 			               static_cast<DWORD>((month.size() + 1) * sizeof(wchar_t)));
-			DWORD count = static_cast<DWORD>(loadUnbindCount()) + 1;
+			RegSetValueExW(hKey, kRegUnbindKey, 0, REG_SZ,
+			               reinterpret_cast<const BYTE*>(codeId.c_str()),
+			               static_cast<DWORD>((codeId.size() + 1) * sizeof(wchar_t)));
 			RegSetValueExW(hKey, kRegUnbindCount, 0, REG_DWORD,
 			               reinterpret_cast<const BYTE*>(&count), sizeof(count));
 			RegCloseKey(hKey);
 		}
+	}
+
+	void incrementUnbindCount()
+	{
+		// 本地兜底递增（仅离线/未登记码使用）：当前激活码属于换机链时，loadUnbindCount() 已继承链上计数，
+		// 在此 +1 即正确累计；当前码为非换机链新码时，loadUnbindCount() 会自动归零后 +1，各码独立。
+		storeUnbindCountState(activationCodeId(loadStoredCode()), loadUnbindCount() + 1);
 	}
 
 	int loadUnbindCount()
@@ -540,6 +557,8 @@ namespace
 		HKEY hKey = nullptr;
 		wchar_t month[16]{};
 		DWORD monthSize = sizeof(month);
+		wchar_t keyId[512]{};
+		DWORD keySize = sizeof(keyId);
 		DWORD count = 0;
 		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
 		{
@@ -552,9 +571,18 @@ namespace
 				{
 					count = 0;
 				}
-				// 跨月自动重置
 				if (month != currentMonthKey())
 				{
+					// 跨月自动重置
+					count = 0;
+				}
+				else if (RegQueryValueExW(hKey, kRegUnbindKey, nullptr, nullptr,
+				                          reinterpret_cast<LPBYTE>(keyId), &keySize) == ERROR_SUCCESS
+				         && activationCodeId(keyId) != activationCodeId(loadStoredCode()))
+				{
+					// 当前激活码与计次所属码不一致：
+					//   - 属于"全新的、非换机链的激活码" → 次数独立，归零；
+					//   - 同一激活码/同一换机链（换机码继承链上计数）→ 不归零。
 					count = 0;
 				}
 			}
@@ -813,6 +841,13 @@ namespace biz
 				}
 			}
 			storeCode(code);
+			// 在线托管码：服务端按整条换机链统计本月已用解绑次数并下发，客户端以其为权威写入本地计数。
+			// 这样换机码会继承链上已用次数（而不是被当作全新码归零），授权页解绑次数展示与离线兜底
+			// 拦截判断都与当前码的真实链历史一致；真正"全新的非换机链激活码"则由服务端下发 0 从零计次。
+			if (ar.ok && ar.online && ar.hasUnbindCount && !ar.revoked && !ar.expired && !ar.exceeded)
+			{
+				storeUnbindCountState(activationCodeId(code), ar.unbindCount);
+			}
 			return true;
 		}
 
@@ -996,9 +1031,9 @@ namespace biz
 			{
 				return {UnbindResult::OtherInstancesRunning, {}, {}};
 			}
-			// ===== 服务端解绑换机（联网授权版）=====
-			// 已登记码：服务端校验月度次数并签发换机码（继承剩余时长），换机码自动复制给用户
-			// 未登记码/服务器不可达：回退本地解绑（双轨并存）
+			// ===== 1) 服务端优先（权威判定，跨机器有效）=====
+			// 已登记码：服务端按整条换机链统计本月解绑次数并签发换机码（继承剩余时长）。
+			// 服务端返回 exceeded(1006) 即达上限，直接阻止——无论本机还是换机到新机都有效。
 			const licenseserver::UnbindResult sr = licenseserver::unbind(code, machineFingerprint(), kAppVersion);
 			if (sr.exceed)
 			{
@@ -1006,8 +1041,12 @@ namespace biz
 			}
 			if (sr.ok && !sr.offlineCode && !sr.newCode.empty())
 			{
-				// 服务端签发换机码成功：记录本次解绑并清空本机（换机码在新机激活）
-				incrementUnbindCount();
+				// 服务端签发换机码成功：记录本次解绑并清空本机（换机码在新机激活）。
+				// 用服务端返回的权威链计数（含本次）写入本地，并记录"换机码"为计数所属，
+				// 使换机码在后续本地展示/离线兜底时继承整条换机链的已用次数，而非被当作新码归零。
+				// 旧服务端未下发 unbindCount 时退回本地递增，保证至少 +1。
+				const int chainCount = sr.unbindCount > 0 ? sr.unbindCount : (loadUnbindCount() + 1);
+				storeUnbindCountState(activationCodeId(sr.newCode), chainCount);
 				clearStoredCode();
 				clearBoundFp();
 				clearActivatedAt();
@@ -1015,7 +1054,8 @@ namespace biz
 				licenseserver::storeServerStatus({});
 				return {UnbindResult::Success, sr.newCode, L"解绑成功！已生成换机激活码，请复制并在新电脑激活。"};
 			}
-			// 未登记码（offlineCode）或服务器不可达：走本地解绑（不影响纯离线用户）
+			// ===== 2) 服务端不可达 / 未登记码（offlineCode）→ 本地兜底 =====
+			// 仅离线时用本机计数尽力约束（无法联网时做不了跨机器统计，属离线场景的下限）
 			if (parsed.unbindMax != -1)
 			{
 				if (parsed.unbindMax == 0 || loadUnbindCount() >= parsed.unbindMax)

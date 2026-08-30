@@ -34,6 +34,8 @@ export namespace biz
 			bool revoked{false};   // 已作废
 			bool expired{false};   // 已过期
 			bool exceeded{false};  // 绑定码已绑定其他设备
+			bool hasUnbindCount{false}; // 服务端是否下发了权威解绑次数（旧服务端可能缺失）
+			int unbindCount{0};    // 整条换机链本月累计已解绑次数（服务端权威计数）
 			std::wstring msg;
 			std::int64_t serverTime{0};
 			std::int64_t graceUntil{0};  // 授权真实到期（服务端下发）：离线可用到该时刻
@@ -64,6 +66,8 @@ export namespace biz
 			bool exceed{false};        // 本月解绑次数已达上限
 			bool offlineCode{false};   // 未登记码（服务器不托管）
 			std::wstring newCode;      // 服务端签发的新换机码
+			int unbindCount{0};        // 服务端统计的换机链本月已用次数（含本次）
+			int unbindMax{0};          // 服务端统计的换机链本月上限
 		};
 		export UnbindResult unbind(const std::wstring& code, const std::wstring& machineFp,
 		                           const std::wstring& appVersion);

@@ -1169,6 +1169,439 @@ namespace ui
 		return data.activated;
 	}
 
+	// ---- 解绑成功弹窗：展示换机码 + 一键复制 + 5s 倒计时后确认关闭 ----
+	namespace
+	{
+		constexpr wchar_t UNBIND_SUCCESS_CLASS[] = L"eBoxUnbindSuccessDialog";
+		constexpr int UNBIND_TITLE_ID = 4103;
+		constexpr int UNBIND_SUB_ID = 4104;
+		constexpr int UNBIND_CODE_ID = 4105;
+		constexpr int UNBIND_REMIND_ID = 4106;
+		constexpr int UNBIND_NOTE_ID = 4107;
+		constexpr int UNBIND_STATE_ID = 4108;
+		constexpr int UNBIND_COPY_ID = 4102;
+		constexpr int UNBIND_OK_ID = 4101;
+		constexpr int UNBIND_W = 520;
+		constexpr int UNBIND_H = 316;
+		constexpr int UNBIND_COUNTDOWN_SEC = 5;
+
+		struct UnbindSuccessData
+		{
+			HWND hwnd{nullptr};
+			HWND hTitle{nullptr};
+			HWND hSub{nullptr};
+			HWND hCode{nullptr};
+			HWND hRemind{nullptr};
+			HWND hNote{nullptr};
+			HWND hState{nullptr};
+			HWND hCopy{nullptr};
+			HWND hOk{nullptr};
+			HFONT hFontTitle{nullptr};
+			HFONT hFontCode{nullptr};
+			HFONT hFontRemind{nullptr};
+			HFONT hFontSmall{nullptr};
+			HBRUSH hStateBg{nullptr};    // 状态行不透明底刷：倒计时/复制切换文案时清底，防止旧文字残留重影
+			std::wstring code;
+			int remain{UNBIND_COUNTDOWN_SEC};
+			bool copied{false};
+			bool done{false};
+			bool confirmed{false};
+		};
+
+		void copy_text_to_clipboard(HWND owner, const std::wstring& text)
+		{
+			if (!OpenClipboard(owner))
+			{
+				return;
+			}
+			EmptyClipboard();
+			const std::size_t bytes = (text.size() + 1) * sizeof(wchar_t);
+			if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes))
+			{
+				if (wchar_t* p = static_cast<wchar_t*>(GlobalLock(hMem)))
+				{
+					memcpy(p, text.c_str(), bytes);
+					GlobalUnlock(hMem);
+					SetClipboardData(CF_UNICODETEXT, hMem);
+				}
+			}
+			CloseClipboard();
+		}
+
+		// 刷新倒计时/状态：更新确定按钮的使能与文案、状态提示行
+		void unbind_success_refresh(UnbindSuccessData& d, int remain)
+		{
+			d.remain = remain;
+			if (d.hOk)
+			{
+				const bool enabled = (remain <= 0);
+				EnableWindow(d.hOk, enabled ? TRUE : FALSE);
+				SetWindowTextW(d.hOk, enabled ? L"确  定" : std::format(L"确定 ({})", remain).c_str());
+				InvalidateRect(d.hOk, nullptr, TRUE);
+			}
+			if (d.hState)
+			{
+				std::wstring status;
+				if (remain > 0)
+				{
+					status = d.copied
+						? std::format(L"已复制，等待 {} 秒后可点“确定”。", remain)
+						: L"倒计时中，可先点击“一键复制新换机码”。";
+				}
+				else
+				{
+					status = d.copied
+						? L"已复制换机码，可点击“确定”关闭。"
+						: L"请先点击“一键复制新换机码”，再点“确定”。";
+				}
+				SetWindowTextW(d.hState, status.c_str());
+				InvalidateRect(d.hState, nullptr, TRUE);
+			}
+		}
+
+		// 未点击“一键复制”就点确定/关闭时，二次确认是否已复制（按钮：已复制确认关闭 / 取消）
+		bool unbind_success_confirm_close(HWND owner)
+		{
+			const TASKDIALOG_BUTTON yesBtn{100, L"已复制确认关闭"};
+			const TASKDIALOG_BUTTON noBtn{200, L"取  消"};
+			TASKDIALOG_BUTTON btns[2]{yesBtn, noBtn};
+			TASKDIALOGCONFIG cfg{};
+			cfg.cbSize = sizeof(cfg);
+			cfg.hwndParent = owner;
+			cfg.hInstance = GetModuleHandleW(nullptr);
+			cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+			cfg.pszWindowTitle = L"解绑本机 · 请确认";
+			cfg.pszMainIcon = TD_WARNING_ICON;
+			cfg.pszMainInstruction = L"尚未点击“一键复制”，请确认是否已复制换机码？";
+			cfg.pszContent = L"若此刻关闭本弹窗，将无法再次获取换机码。\n建议先点击“一键复制新换机码”，再关闭。";
+			cfg.cButtons = 2;
+			cfg.pButtons = btns;
+			int pressed = 0;
+			TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+			return pressed == 100;
+		}
+
+		LRESULT CALLBACK unbind_success_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+		{
+			auto* d = reinterpret_cast<UnbindSuccessData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+			case WM_CREATE:
+			{
+				auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+				d = static_cast<UnbindSuccessData*>(cs->lpCreateParams);
+				d->hwnd = hwnd;
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(d));
+
+				const HMODULE hInst = GetModuleHandleW(nullptr);
+				{
+					const HDC hdc = GetDC(hwnd);
+					const int titleSize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+					const int codeSize = -MulDiv(10, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+					const int remindSize = -MulDiv(11, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+					const int smallSize = -MulDiv(10, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+					ReleaseDC(hwnd, hdc);
+					d->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					d->hFontCode = CreateFontW(codeSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
+					d->hFontRemind = CreateFontW(remindSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					d->hFontSmall = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				}
+
+				d->hTitle = CreateWindowExW(0, L"STATIC", L"解绑成功！已生成换机激活码，已自动复制：",
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 14, 456, 24, hwnd,
+					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_TITLE_ID)), hInst, nullptr);
+				SendMessageW(d->hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontTitle), TRUE);
+
+				// 换机码：静态文本（无输入框边框、可鼠标选区复制）。
+				// 动态按实际码字体测量单字符宽度，用码框可用宽度计算每行字符数，使换机码横向铺满，
+				// 且在高 DPI（PerMonitor）下也不会因字体变宽而溢出裁剪。
+				{
+					constexpr int kCodeLeft = 32;
+					constexpr int kCodeWidth = 456;
+					int charsPerLine = 44;
+					{
+						const HDC hdc = GetDC(hwnd);
+						const HGDIOBJ hOld = SelectObject(hdc, d->hFontCode);
+						SIZE sz{};
+						GetTextExtentPoint32W(hdc, L"W", 1, &sz);
+						SelectObject(hdc, hOld);
+						ReleaseDC(hwnd, hdc);
+						// 预留 8px 右余量，避免字体度量舍入误差导致最后一行溢出
+						const int usable = kCodeWidth - 8;
+						if (sz.cx > 0)
+						{
+							charsPerLine = usable / sz.cx;
+							if (charsPerLine < 16)
+							{
+								charsPerLine = 16;
+							}
+						}
+					}
+					std::wstring codeText;
+					for (std::size_t i = 0; i < d->code.size(); i += static_cast<std::size_t>(charsPerLine))
+					{
+						if (!codeText.empty())
+						{
+							codeText += L"\r\n";
+						}
+						codeText += d->code.substr(i, static_cast<std::size_t>(charsPerLine));
+					}
+					d->hCode = CreateWindowExW(0, L"STATIC", codeText.c_str(),
+						WS_CHILD | WS_VISIBLE | SS_LEFT | SS_EDITCONTROL | SS_NOPREFIX,
+						kCodeLeft, 40, kCodeWidth, 100, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_CODE_ID)), hInst, nullptr);
+					SendMessageW(d->hCode, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontCode), TRUE);
+				}
+
+				d->hRemind = CreateWindowExW(0, L"STATIC", L"请在新电脑上粘贴此激活码完成激活，剩余时长将自动继承。",
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 156, 456, 22, hwnd,
+					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_REMIND_ID)), hInst, nullptr);
+				SendMessageW(d->hRemind, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontRemind), TRUE);
+
+				d->hNote = CreateWindowExW(0, L"STATIC", L"本机将退出授权，应用即将关闭。",
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 180, 456, 20, hwnd,
+					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_NOTE_ID)), hInst, nullptr);
+				SendMessageW(d->hNote, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
+
+				d->hState = CreateWindowExW(0, L"STATIC", L"请点击“一键复制新换机码”做好备份。",
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 204, 456, 22, hwnd,
+					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_STATE_ID)), hInst, nullptr);
+				SendMessageW(d->hState, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
+				d->hStateBg = CreateSolidBrush(RGB(0xf4, 0xf7, 0xfb));
+
+				d->hCopy = CreateWindowExW(0, L"BUTTON", L"一键复制新换机码", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+					32, 234, 216, 44, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_COPY_ID)), hInst, nullptr);
+				SendMessageW(d->hCopy, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
+
+				d->hOk = CreateWindowExW(0, L"BUTTON", L"确  定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+					272, 234, 216, 44, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_OK_ID)), hInst, nullptr);
+				SendMessageW(d->hOk, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
+
+				unbind_success_refresh(*d, d->remain);
+				SetTimer(hwnd, 1, 1000, nullptr);
+				return 0;
+			}
+			case WM_TIMER:
+				if (wParam == 1 && d->remain > 0)
+				{
+					unbind_success_refresh(*d, d->remain - 1);
+					if (d->remain <= 0)
+					{
+						KillTimer(hwnd, 1);
+					}
+				}
+				return 0;
+			case WM_ERASEBKGND:
+				return 1;
+			case WM_PAINT:
+			{
+				PAINTSTRUCT ps{};
+				HDC hdc = BeginPaint(hwnd, &ps);
+				RECT rcClient{};
+				GetClientRect(hwnd, &rcClient);
+				fill_v_gradient(hdc, rcClient, RGB(0xff, 0xff, 0xff), RGB(0xf4, 0xf7, 0xfb));
+				{
+					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe6, 0xec, 0xf4));
+					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
+					MoveToEx(hdc, 24, 148, nullptr);
+					LineTo(hdc, UNBIND_W - 24, 148);
+					SelectObject(hdc, hOldPen);
+					DeleteObject(hPen);
+				}
+				EndPaint(hwnd, &ps);
+				return 0;
+			}
+			case WM_CTLCOLOREDIT:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkMode(hdc, TRANSPARENT);
+				SetTextColor(hdc, RGB(0x24, 0x28, 0x2e));
+				return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+			}
+			case WM_CTLCOLORSTATIC:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				const HWND hWnd = reinterpret_cast<HWND>(lParam);
+				SetBkMode(hdc, TRANSPARENT);
+				if (hWnd == d->hState)
+				{
+					// 状态行：不透明底（先清底再画新文字），倒计时/复制切换文案时防止旧文字残留重影
+					SetBkMode(hdc, OPAQUE);
+					SetBkColor(hdc, RGB(0xf4, 0xf7, 0xfb));
+					SetTextColor(hdc, CLEAN_TEXT_SUB);
+					return reinterpret_cast<LRESULT>(d->hStateBg ? d->hStateBg : GetStockObject(WHITE_BRUSH));
+				}
+				if (hWnd == d->hRemind)
+				{
+					SetTextColor(hdc, CLEAN_DANGER);
+				}
+				else if (hWnd == d->hNote)
+				{
+					SetTextColor(hdc, CLEAN_TEXT_SUB);
+				}
+				else
+				{
+					SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
+				}
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_CTLCOLORBTN:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkMode(hdc, TRANSPARENT);
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_DRAWITEM:
+			{
+				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+				const int id = dis->CtlID;
+				if (id == UNBIND_OK_ID || id == UNBIND_COPY_ID)
+				{
+					const bool primary = (id == UNBIND_OK_ID);
+					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
+					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+					wchar_t buf[64]{};
+					GetWindowTextW(dis->hwndItem, buf, 64);
+					draw_modern_dlg_button(dis->hDC, dis->rcItem, primary, hover, pressed, buf);
+					return TRUE;
+				}
+				return FALSE;
+			}
+			case WM_COMMAND:
+			{
+				const int id = LOWORD(wParam);
+				if (id == UNBIND_COPY_ID)
+				{
+					copy_text_to_clipboard(hwnd, d->code);
+					d->copied = true;
+					unbind_success_refresh(*d, d->remain);
+					return 0;
+				}
+				if (id == UNBIND_OK_ID)
+				{
+					if (d->remain > 0)
+					{
+						return 0; // 倒计时未结束，忽略提前点击
+					}
+					if (!d->copied && !unbind_success_confirm_close(hwnd))
+					{
+						// 用户选择“取消”：留在弹窗，可先复制
+						if (d->hState)
+						{
+							SetWindowTextW(d->hState, L"请先点击“一键复制新换机码”，再点“确定”关闭。");
+							InvalidateRect(d->hState, nullptr, TRUE);
+						}
+						return 0;
+					}
+					d->confirmed = true;
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				return 0;
+			}
+			case WM_CLOSE:
+				if (d->copied || unbind_success_confirm_close(hwnd))
+				{
+					d->confirmed = true;
+					DestroyWindow(hwnd);
+				}
+				return 0;
+			case WM_DESTROY:
+				if (d->hFontTitle)
+				{
+					DeleteObject(d->hFontTitle);
+				}
+				if (d->hFontCode)
+				{
+					DeleteObject(d->hFontCode);
+				}
+				if (d->hFontRemind)
+				{
+					DeleteObject(d->hFontRemind);
+				}
+				if (d->hFontSmall)
+				{
+					DeleteObject(d->hFontSmall);
+				}
+				if (d->hStateBg)
+				{
+					DeleteObject(d->hStateBg);
+				}
+				d->done = true;
+				return 0;
+			}
+			return DefWindowProcW(hwnd, msg, wParam, lParam);
+		}
+
+		bool register_unbind_success_class()
+		{
+			WNDCLASSEXW wc{};
+			wc.cbSize = sizeof(wc);
+			wc.style = CS_HREDRAW | CS_VREDRAW;
+			wc.lpfnWndProc = unbind_success_proc;
+			wc.hInstance = GetModuleHandleW(nullptr);
+			wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+			wc.hbrBackground = nullptr;
+			wc.lpszClassName = UNBIND_SUCCESS_CLASS;
+			return RegisterClassExW(&wc) != 0;
+		}
+
+		// 解绑成功弹窗：展示换机码 + 一键复制 + 5s 倒计时后确认关闭；返回用户是否已确认关闭
+		bool show_unbind_success_dialog(HWND owner, const std::wstring& newCode)
+		{
+			static const bool classRegistered = register_unbind_success_class();
+			(void)classRegistered;
+
+			UnbindSuccessData data;
+			data.code = newCode;
+			const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+			const int wndW = UNBIND_W + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+			const int wndH = UNBIND_H + titleBarHeight;
+			int x = 0;
+			int y = 0;
+			if (owner && IsWindow(owner))
+			{
+				RECT rc{};
+				GetWindowRect(owner, &rc);
+				x = rc.left + (rc.right - rc.left - wndW) / 2;
+				y = rc.top + (rc.bottom - rc.top - wndH) / 2;
+			}
+			const HWND hDlg = CreateWindowExW(0, UNBIND_SUCCESS_CLASS, L"解绑本机 · 换机成功",
+				WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, wndW, wndH, owner, nullptr,
+				GetModuleHandleW(nullptr), &data);
+			if (!hDlg)
+			{
+				return false;
+			}
+			if (owner && IsWindow(owner))
+			{
+				EnableWindow(owner, FALSE);
+			}
+			ShowWindow(hDlg, SW_SHOW);
+
+			MSG msg{};
+			while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
+			{
+				if (IsDialogMessageW(hDlg, &msg))
+				{
+					continue;
+				}
+				TranslateMessage(&msg);
+				DispatchMessageW(&msg);
+			}
+
+			if (owner && IsWindow(owner))
+			{
+				EnableWindow(owner, TRUE);
+				SetForegroundWindow(owner);
+			}
+			return data.confirmed;
+		}
+	}
+
 	// ---- 授权信息对话框（现代化渐变风格）----
 	namespace
 	{
@@ -1671,26 +2104,9 @@ namespace ui
 					case biz::license::UnbindResult::Success:
 						if (!outcome.newCode.empty())
 						{
-							// 服务端换机：换机码继承剩余时长，复制到剪贴板供新电脑激活
-							if (OpenClipboard(hDlg))
-							{
-								EmptyClipboard();
-								const std::size_t bytes = (outcome.newCode.size() + 1) * sizeof(wchar_t);
-								if (HGLOBAL hMem = GlobalAlloc(GMEM_MOVEABLE, bytes))
-								{
-									if (wchar_t* p = static_cast<wchar_t*>(GlobalLock(hMem)))
-									{
-										memcpy(p, outcome.newCode.c_str(), bytes);
-										GlobalUnlock(hMem);
-										SetClipboardData(CF_UNICODETEXT, hMem);
-									}
-								}
-								CloseClipboard();
-							}
-							const std::wstring unbindMsg = L"解绑成功！已生成换机激活码并复制到剪贴板：\n\n" +
-								outcome.newCode +
-								L"\n\n请在新电脑上粘贴此激活码完成激活（剩余时长将自动继承）。\n本机将退出授权，应用即将关闭。";
-							MessageBoxW(hDlg, unbindMsg.c_str(), L"解绑本机 · 换机成功", MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+							// 服务端换机：展示换机码弹窗，含红色加粗提醒、5s 倒计时确定、一键复制二次确认。
+							// 用户是否已确认关闭不影响后续流程（无论复制与否都视为解绑成功）。
+							show_unbind_success_dialog(hDlg, outcome.newCode);
 						}
 						else
 						{

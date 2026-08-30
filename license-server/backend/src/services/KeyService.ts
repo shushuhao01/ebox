@@ -132,6 +132,7 @@ export interface ActivateResult {
   durationSec: number;
   bound: boolean;
   unbindMax: number;
+  unbindCount: number; // 整条换机链本月累计已解绑次数（服务端权威计数），客户端据此继承/展示
   serverTime: number;
   graceUntil: number; // 离线可用到该时刻（=授权真实到期），激活后即使离线也能用完整个授权期限
   revoked?: boolean;
@@ -175,6 +176,7 @@ export async function clientActivate(
       durationSec: parsed.durationSec,
       bound: parsed.bound,
       unbindMax: parsed.unbindMax,
+      unbindCount: 0,
       serverTime,
       graceUntil: expireAt,
       heartbeatIntervalHours: 6,
@@ -246,6 +248,17 @@ export async function clientActivate(
   const heartbeatIntervalHours = Number(await getConfigValue('heartbeat_interval_hours')) || 6;
   const forceOnlineActivate = (await getConfigValue('force_online_activate')) === '1';
 
+  // 整条换机链本月累计已解绑次数（服务端权威）：
+  // 换机码（convertFromKeyId 指向父码）必须继承链上已用次数，不能被视为全新码从零计次，
+  // 否则换机码会显示 0/1 且绕过上限。客户端据此做展示与离线兜底。
+  const month = monthKey();
+  const chainIds = await collectAncestorKeyIds(key);
+  const unbindCount = await unbindRepo()
+    .createQueryBuilder('u')
+    .where('u.month = :month', { month })
+    .andWhere('u.keyId IN (:...ids)', { ids: chainIds })
+    .getCount();
+
   return {
     online: true,
     expireType: key.type === 2 ? 'absolute' : key.durationSec === '0' ? 'permanent' : 'duration',
@@ -253,6 +266,7 @@ export async function clientActivate(
     durationSec: Number(key.durationSec || 0),
     bound: key.bound === 1,
     unbindMax: key.unbindMax,
+    unbindCount,
     serverTime,
     graceUntil: expireAt,
     heartbeatIntervalHours,
@@ -269,6 +283,7 @@ function unregisteredActivate(key: LicenseKey): ActivateResult {
     durationSec: Number(key.durationSec || 0),
     bound: key.bound === 1,
     unbindMax: key.unbindMax,
+    unbindCount: 0,
     serverTime: nowSec(),
     graceUntil: expireAt,
     heartbeatIntervalHours: 6,
@@ -359,6 +374,22 @@ export interface UnbindResult {
   unbindMax: number;
 }
 
+// 沿 convertFromKeyId 把当前 key 的整条换机祖先链（含自身）收集成 keyId 列表，
+// 用于统计"这条授权链"本月累计解绑次数，防止换机码被视为全新码从零计次导致无限换机。
+async function collectAncestorKeyIds(key: LicenseKey): Promise<string[]> {
+  const ids: string[] = [key.id];
+  const seen = new Set<string>([key.id]);
+  let cur = key;
+  while (cur && cur.convertFromKeyId && !seen.has(cur.convertFromKeyId)) {
+    seen.add(cur.convertFromKeyId);
+    const parent = await keyRepo().findOneBy({ id: cur.convertFromKeyId });
+    if (!parent) break;
+    ids.push(parent.id);
+    cur = parent;
+  }
+  return ids;
+}
+
 export async function clientUnbind(
   code: string,
   machineFp: string,
@@ -378,7 +409,14 @@ export async function clientUnbind(
   if (key.unbindMax === 0) throw new ApiError('该码禁止解绑', 1005);
 
   const month = monthKey();
-  const used = await unbindRepo().countBy({ keyId: key.id, month });
+  // 换机链计数：统计整条换机链（当前码 + 所有祖先换机码）本月累计解绑次数。
+  // 若只看当前 key，换机码会被当作全新码从零计次，导致"换机码在新机可再无限换机"绕过每月上限。
+  const chainIds = await collectAncestorKeyIds(key);
+  const used = await unbindRepo()
+    .createQueryBuilder('u')
+    .where('u.month = :month', { month })
+    .andWhere('u.keyId IN (:...ids)', { ids: chainIds })
+    .getCount();
   if (key.unbindMax !== -1 && used >= key.unbindMax) {
     return { online: true, reason: 'exceeded', exceed: true, unbindCount: used, unbindMax: key.unbindMax };
   }
