@@ -1,15 +1,14 @@
 {
-    "latestVersion": "v3.0.3",
-    "latestVersionCode": 30003,
+    "latestVersion": "v3.0.4",
+    "latestVersionCode": 30004,
     "releaseDate": "2026/8/29",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.3/eBox.exe",
-    "downloadSha256": "8ada39c2d3b7c5edda6c84ce4fcd53fd0776ef5a7e3a15b9f54dc6abf01718b6",
-    "downloadSize": 3042304,
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.4/eBox.exe",
+    "downloadSha256": "003f8df3cdeb8347a7c5a0d5d5638f256c3b1796305e0074b3476ac7ce1e1eb8",
+    "downloadSize": 3051008,
     "changelog": [
-        "优化：环境卡片【启动】激活位置正确选中标题含「企业微信」的主窗口，避免误选更大的无标题蒙版窗而弹出黑色空框。",
-        "多开多账号时，点对应卡片的【启动】即可把该号窗口快速调到前台；登录后隐藏到右下角托盘（任务栏不显示、进程仍在）的账号，点【启动】也能把界面调出来并置顶。",
-        "使用手册补充「唤醒隐藏到托盘的账号」使用技巧。",
-        "版本号同步到 v3.0.3（内部计版本号 30003）。"
+        "修复：环境卡片【启动】激活窗口时，优先选中标题含「企业微信」且可见的主窗口，避免误选隐藏或更大的蒙版窗，导致点启动无反应。",
+        "修复：登录后隐藏到右下角托盘（任务栏不可见、进程仍在）的账号，点【启动】不再外部强显，避免自绘主窗渲染成黑屏、拖拽黑框崩溃（0xC0000005）；改为等待应用自行显示后置前，仍未显示则提示用户手动打开（托盘图标/显示快捷键/关闭进程后再启动）。",
+        "版本号同步到 v3.0.4（内部版本号 30004）。"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
