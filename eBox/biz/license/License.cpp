@@ -62,9 +62,9 @@ namespace
 	// 换机/续期场景由发码工具生成，到期 = 原码剩余时间对应的日期，且新旧客户端均兼容
 	constexpr BYTE kLegacyFormatMinor = 7;
 
-	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.0.5）
+	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.1.0）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v3.0.5";
+	constexpr wchar_t kAppVersion[] = L"v3.1.0";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()

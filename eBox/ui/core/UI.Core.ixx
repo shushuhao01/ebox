@@ -11,6 +11,10 @@ namespace ui
 	export using LParam = LPARAM;
 	export class WindowBase;
 
+	// 弹出《用户协议》/《隐私协议》弹窗（供首页用户须知等外部模块调用）
+	export void show_user_agreement_dialog(HWND hOwner);
+	export void show_privacy_agreement_dialog(HWND hOwner);
+
 	export struct RenderContext
 	{
 		UniqueComPtr<ID2D1HwndRenderTarget> renderTarget;

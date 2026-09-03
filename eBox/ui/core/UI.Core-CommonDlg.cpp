@@ -4,6 +4,8 @@ module;
 #include <shlobj.h>
 #include <shellapi.h>
 #include <commctrl.h>
+#include <richedit.h>
+#include <windowsx.h>
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "comctl32.lib")
 module UI.Core;
@@ -765,6 +767,15 @@ namespace ui
 			bool done{false};
 			bool activated{false};
 			bool activating{false};     // 后台激活校验进行中（防重入）
+			bool agreed{false};         // 是否已勾选同意《用户协议》（未勾选不可激活）
+			bool boxHover{false};       // 鼠标悬停在同意勾选框上
+			bool linkUAHover{false};    // 鼠标悬停在《用户协议》链接上
+			bool linkPAHover{false};    // 鼠标悬停在《隐私协议》链接上
+			bool mouseTrack{false};     // 已调用 TrackMouseEvent（用于收到 WM_MOUSELEAVE）
+			RECT rcAgreeBox{};          // 同意勾选框命中区域（WM_CREATE 时按字体计算缓存）
+			RECT rcAgreeUA{};           // 用户协议链接命中区域
+			RECT rcAgreeConj{};         // 连词「和」显示区域
+			RECT rcAgreePA{};           // 隐私协议链接命中区域
 			std::shared_ptr<ActShared> actShared; // 与工作线程共享的激活结果块
 		};
 
@@ -773,6 +784,804 @@ namespace ui
 			L"激活码由作者签发 · 绑定码首次激活自动绑定本机 · 到期后可在界面内续期"
 		};
 
+		// 勾选同意《用户协议》行的布局（提示行与按钮行之间的空白带内）
+		constexpr int AGREE_BOX_LEFT = 40;
+		constexpr int AGREE_BOX_TOP  = 194;
+		constexpr int AGREE_BOX_SIZE = 18;
+		constexpr wchar_t AGREE_LABEL[] = L"我已阅读并同意";
+		constexpr wchar_t AGREE_LINK_UA[] = L"《eBox 用户协议》";
+		constexpr wchar_t AGREE_LINK_PA[] = L"《eBox 隐私协议》";
+		constexpr wchar_t AGREE_CONJ[]    = L"和";
+
+		// 计算同意勾选框、用户协议链接、连词「和」、隐私协议链接的命中区域（随 DPI 计算文字宽度）
+		void activate_agree_rects(HWND hwnd, HFONT hFont, RECT& box, RECT& linkUA, RECT& conj, RECT& linkPA)
+		{
+			box = RECT{AGREE_BOX_LEFT, AGREE_BOX_TOP,
+			           AGREE_BOX_LEFT + AGREE_BOX_SIZE, AGREE_BOX_TOP + AGREE_BOX_SIZE};
+			HDC hdc = GetDC(hwnd);
+			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
+			SIZE lab{}; GetTextExtentPoint32W(hdc, AGREE_LABEL, static_cast<int>(wcslen(AGREE_LABEL)), &lab);
+			SIZE ua{}; GetTextExtentPoint32W(hdc, AGREE_LINK_UA, static_cast<int>(wcslen(AGREE_LINK_UA)), &ua);
+			SIZE cj{}; GetTextExtentPoint32W(hdc, AGREE_CONJ, static_cast<int>(wcslen(AGREE_CONJ)), &cj);
+			SIZE pa{}; GetTextExtentPoint32W(hdc, AGREE_LINK_PA, static_cast<int>(wcslen(AGREE_LINK_PA)), &pa);
+			SelectObject(hdc, hOld);
+			ReleaseDC(hwnd, hdc);
+
+			const int top = box.top + 2;
+			const int labX = box.right + 10;
+			const int uaX = labX + lab.cx + 6;
+			const int cjX = uaX + ua.cx + 5;
+			const int paX = cjX + cj.cx + 5;
+			linkUA = RECT{uaX, top, uaX + ua.cx, top + ua.cy};
+			conj   = RECT{cjX, top, cjX + cj.cx, top + cj.cy};
+			linkPA = RECT{paX, top, paX + pa.cx, top + pa.cy};
+		}
+
+		// 完整用户协议正文（富文本弹窗展示，`# ` 开头的行为章节标题）
+		constexpr wchar_t AGREEMENT_TEXT[] = LR"(
+# eBox 用户协议
+
+更新日期：2026-09-03 · 版本：v1.1
+
+重要提示：请您在使用前仔细阅读并充分理解本协议全部内容。本协议中以红色标注的内容为重要条款，请务必重点关注；如您对任何条款有异议，可在同意前通过本软件官方邮箱（xianhuquwang@163.com）向开发者提出。您首次启动并点击激活、或继续使用本软件，即视为您已阅读、理解并同意本协议。若您不同意本协议，请立即停止使用并卸载本软件。
+
+# 一、总则
+
+1.1 本软件（即 eBox）是由开发者开发的 Windows 平台多实例运行/环境隔离工具。
+1.2 本软件定位为：多实例环境隔离与并行，用于在同一台设备上创建多个相互独立的运行环境，便于多账号、多场景的规范使用。
+1.3 您在使用本软件时，应遵守中华人民共和国法律法规、本协议以及相关平台（如微信、企业微信、QQ 等）的使用条款与平台规则。
+1.4 本软件由开发者依法运营。如您对本协议或本软件有任何疑问、投诉或建议，可通过本软件官方邮箱（xianhuquwang@163.com）与我们联系，我们将在合理期限内予以答复；与本协议相关的通知、修订，均通过本软件内页面或官方渠道公布。
+
+# 二、软件许可与授权
+
+2.1 本软件为免费软件，仅供个人非商业目的使用。未经开发者书面许可，任何单位或个人不得用于商业用途。
+2.2 本软件通过激活码授权，分为单机绑定码与通用码等类型，具体以激活页面说明为准。
+2.3 请妥善保管激活码，不得转卖、转借、共享或用于其他违反本协议的目的。
+2.4 开发者有权根据运营需要调整授权方式、功能范围与版本策略，并有权调整或终止部分或全部服务。
+
+# 三、软件功能说明
+
+3.1 本软件通过内存加载、接口转发与路径重定向等方式，为同一程序创建多个相互独立、互不干扰的运行环境。
+3.2 本软件仅提供多实例环境的隔离与并行，不提供、也不依赖任何“外挂/作弊/风控规避”功能。
+3.3 本软件只能做简单隔离，不阻止环境内进程访问环境外资源，也不阻止环境外进程感知环境内进程，请知悉该技术边界。
+
+# 四、用户行为规范与禁止事项
+
+4.1 您承诺遵守法律法规、相关平台使用条款，不利用本软件从事违法犯罪活动，不损害开发者及他人合法权益。
+4.2 明令禁止将本软件用于：诈骗、传销、刷单、洗钱、非法集资、赌博、侵犯他人隐私与个人信息、侵犯知识产权、发布传播违法信息；批量骚扰、规避他人或平台安全机制；批量群发、定时群发、非官方自动回复、数据抓取/监控/保存、批量拉群、批量自动加好友等违反平台规则的行为。
+4.3 因您违反本条约定的行为所产生的一切后果（包括账号受限、封禁、法律纠纷、行政处罚等），由您自行承担。
+4.4 您应确保通过本软件启动、运行的任何程序、应用均已取得合法授权；因您运行侵权、盗版或违法程序/应用所引发的纠纷、诉讼及损失，由您自行承担，与开发者无关。
+4.5 本软件仅供具备完全民事行为能力的成年人使用；未成年人须在监护人同意并在监护人指导下使用，未成年人违规使用本软件产生的一切后果由其监护人承担。
+
+# 五、第三方平台多开的风控风险
+
+5.1 您知悉：微信、企业微信等平台对多开/第三方工具/虚拟机/模拟器等运行方式设有识别与风控机制。
+5.2 根据企业微信官方《用户外挂自查指南》，“多开企业微信，或将多个企微账号聚合在一台设备上运营”被列为外挂行为，官方明确“企业使用外挂会导致账号被封禁”。
+5.3 因此，使用第三方工具多开微信、企业微信等平台，存在账号受限、功能异常或封禁的风险，该风险由您自行评估并承担，开发者无法、也不承诺规避该等风控。
+5.4 对于明确不允许多实例运行（如禁止多开、禁止多账号聚合运营、禁止使用第三方工具）的平台、程序或应用，建议您严格遵守其规则与条款，以避免造成账号受限、封禁或其他损失。若您仍执意使用本软件多开此类平台，相关行为属于用户个人行为，是否使用以及如何使用由您自主决定，由此产生的一切后果由您自行承担，与开发者无关。
+5.5 您理解并同意：如因您多开某程序、平台、应用，而引发相关程序、平台、公司或官方对您（使用者）的质疑、投诉、追责、账号限制或处罚等，相关责任与争议均由您本人（使用者）承担；相关平台、程序、公司或官方如有任何问题，应直接与使用者沟通或追责，与开发者无关。开发者仅提供多实例环境隔离功能，不对您与任何第三方之间的争议、纠纷或损失承担任何责任。
+5.6 开发者不提供、不协助、不引导任何规避平台风控、绕过平台安全机制的功能或方法；本软件仅提供多实例环境的隔离与并行，对上述用途不做任何承诺、协助或担保。
+
+# 六、数据与隐私
+
+6.1 本软件不收集、不分析、不存储、不上传您的任何账号、聊天记录或企业数据；软件仅在本地运行，激活采用离线验证方式。
+6.2 软件可能生成必要的本地配置与日志，用于自身运行与问题排查，这些数据存储于您本机的环境目录中，由您自行管理。
+6.3 请妥善保管您的账号、密码、激活码等信息，因保管不善导致的损失由您自行承担。
+
+# 七、免责声明
+
+7.1 本软件按“现状”与“可用”原则提供，不保证无错误、不中断、完全兼容所有软硬件环境。
+7.2 因您违规使用或违反本协议及法律法规、第三方平台风控封禁、不可抗力或第三方服务中断、操作不当或使用盗版非官方渠道等导致损失的，开发者不承担责任。
+7.3 在法律允许范围内，开发者不对间接、偶然、特殊、惩罚性或后果性损害承担责任。在适用法律允许的最大范围内，开发者对您承担的累计赔偿责任总额，不超过您为获得本软件授权所实际支付的费用；因本软件为免费提供，故该赔偿责任上限为零。本条不适用于依法不得免除或限制的责任（包括因开发者故意或重大过失造成的损失）。
+
+# 八、知识产权
+
+8.1 本软件及相关代码、文档、图标、界面、商标的知识产权归开发者或其权利人所有。
+8.2 未经书面许可，不得反向工程、反编译、复制、修改、出售、出租、分发或以其他方式侵权。
+
+# 九、协议变更
+
+9.1 开发者可能适时更新、升级本软件；更新后的功能、界面、授权方式以实际版本为准。
+9.2 开发者有权在法律允许范围内修订本协议，修订后自公布之日起生效；您继续使用即视为接受修订后的协议。
+
+# 十、协议的终止
+
+10.1 若您违反本协议任何条款，开发者有权采取警告、限制或暂停授权、终止服务、追究法律责任等措施。
+10.2 您有权随时停止使用并卸载本软件，以终止本协议。
+
+# 十一、法律适用与争议解决
+
+11.1 本协议的订立、执行与解释适用中华人民共和国法律。
+11.2 因本协议引发的争议，双方应友好协商；协商不成，可向开发者所在地有管辖权的人民法院提起诉讼。
+
+# 十二、其他
+
+12.1 本协议部分条款无效或不可执行的，不影响其他条款的效力。
+12.2 继续使用本软件，即表示您已阅读、理解并同意本协议的全部内容。若您不同意，请立即停止使用并卸载本软件。
+
+# 十三、第三方组件与开源许可
+
+13.1 本软件可能包含第三方开源组件，其版权归其原作者所有，相关组件的使用遵循其各自的开源许可证（如 Microsoft Public License 等）。
+13.2 本软件使用的第三方组件清单及许可证信息，可通过本软件官方邮箱（xianhuquwang@163.com）查询；开发者依法尊重并保留第三方之知识产权。
+)";
+
+		// 完整隐私协议正文（富文本弹窗展示，`# ` 开头的行为章节标题）
+		constexpr wchar_t AGREEMENT_TEXT_PRIVACY[] = LR"(
+# eBox 隐私协议
+
+更新日期：2026-09-03 · 版本：v1.0
+
+重要提示：本隐私协议是《eBox 用户协议》的组成部分。我们非常重视您的个人信息与隐私保护，请在使用本软件前仔细阅读并充分理解本协议。
+
+# 一、我们收集的信息
+
+1.1 本软件不收集、不分析、不存储、不上传您的任何账号、密码、聊天记录、联系人、企业数据或个人隐私信息。
+1.2 本软件仅在您的本地设备上运行；激活采用离线验证方式，您输入的激活码仅用于本地校验，不会发送到任何服务器。
+1.3 我们不会申请与软件功能无关的权限，也不会在后台采集您的设备信息、位置信息、通讯录、相册等敏感数据。
+
+# 二、信息的使用
+
+2.1 由于软件本身不收集任何个人信息，我们不会以任何方式对外提供、出售或共享您的个人信息。
+2.2 软件可能在本机生成必要的运行配置与日志，用于自身运行与问题排查；这些数据只保存在软件环境目录中，由您自行管理与删除。
+
+# 三、本地数据的存储与安全
+
+3.1 您在软件运行过程中产生的多开环境、配置、缓存等数据，均存储于您本机的环境目录（如 C:\eBoxData\Env\）内，由您自行负责保管。
+3.2 请您妥善保管您的账号、密码、激活码及本地环境目录，避免泄露或因保管不善导致的损失；因您自身原因造成的损失由您自行承担。
+
+# 四、第三方平台与第三方服务
+
+4.1 您在使用本软件多开微信、企业微信、QQ 等第三方平台时，相关账号数据由您与对应平台之间直接交互，本软件不接触、不存储此类数据。
+4.2 请您遵守对应平台的隐私政策与使用条款，因您违规操作导致的账号数据风险与损失由您自行承担。
+
+# 五、未成年人保护
+
+5.1 本软件仅供具备完全民事行为能力的成年人使用。若您为未成年人，请在监护人指导下使用，并事先取得监护人的同意。
+
+# 六、协议的更新与联系
+
+6.1 我们可能适时更新本隐私协议，更新后自公布之日起生效，您继续使用本软件即视为接受更新后的协议。
+6.2 如您对本隐私协议或个人信息保护有任何疑问，可通过本软件官方邮箱（xianhuquwang@163.com）与我们联系。
+)";
+
+		// ---- 用户协议弹窗（RichEdit 富文本排版，可滚动）----
+		constexpr wchar_t AGREEMENT_DLG_CLASS[] = L"eBoxAgreementDialog";
+		constexpr int AGREEMENT_CLOSE_ID = 3009;
+		constexpr int AGREEMENT_DLG_WIDTH = 560;
+		constexpr int AGREEMENT_DLG_HEIGHT = 560;
+
+		// 协议正文自绘区域（相对客户区）与自绘滚动条布局
+		constexpr int AGREE_BODY_LEFT   = 28;
+		constexpr int AGREE_BODY_TOP    = 96;
+		constexpr int AGREE_BODY_BOTTOM = AGREEMENT_DLG_HEIGHT - 60;
+		constexpr int AGREE_SB_WIDTH    = 8;                                // 滚动条宽度
+		constexpr int AGREE_SB_LEFT     = AGREEMENT_DLG_WIDTH - 30;         // 滚动条左缘
+		constexpr int AGREE_BODY_RIGHT  = AGREE_SB_LEFT - 14;               // 正文右边界（避开滚动条）
+		constexpr int AGREE_SCROLL_STEP = 24;                               // 滚轮/按键一次滚动像素
+		constexpr COLORREF AGREE_TEXT_COLOR      = RGB(0x33, 0x3a, 0x45);
+		constexpr COLORREF AGREE_TITLE_COLOR     = RGB(0x1f, 0x2a, 0x37);
+		constexpr COLORREF AGREE_RED_COLOR       = RGB(0xd9, 0x2b, 0x2b);   // 关键信息标红
+
+		// 需要标红的关键词/短语（命中即整段标红，其余文字保持默认颜色）
+		constexpr const wchar_t* AGREE_RED_KEYWORDS[] = {
+			L"封禁", L"封号", L"外挂", L"违法犯罪", L"违规",
+			L"由您自行承担", L"不承担任何责任", L"不承担责任",
+			L"账号受限", L"该风险由您自行评估并承担",
+		};
+
+		// 一段文字中的一段切片：red 表示该段需要标红
+		struct AgreementSeg
+		{
+			std::wstring_view text;
+			bool red{false};
+		};
+
+		// 按关键短语拆分一段文字，返回若干切片（命中关键词的切片标记为红色）
+		std::vector<AgreementSeg> agreement_split_keywords(const std::wstring& text)
+		{
+			std::vector<AgreementSeg> segs;
+			std::size_t pos = 0;
+			while (pos < text.size())
+			{
+				std::size_t bestPos = std::wstring::npos;
+				std::size_t bestLen = 0;
+				for (const wchar_t* kw : AGREE_RED_KEYWORDS)
+				{
+					const std::size_t len = std::wcslen(kw);
+					const std::size_t found = text.find(kw, pos);
+					if (found != std::wstring::npos)
+					{
+						if (bestPos == std::wstring::npos || found < bestPos ||
+						    (found == bestPos && len > bestLen))
+						{
+							bestPos = found;
+							bestLen = len;
+						}
+					}
+				}
+				if (bestPos == std::wstring::npos)
+				{
+					if (pos < text.size())
+					{
+						segs.push_back({std::wstring_view(text).substr(pos), false});
+					}
+					break;
+				}
+				if (bestPos > pos)
+				{
+					segs.push_back({std::wstring_view(text).substr(pos, bestPos - pos), false});
+				}
+				segs.push_back({std::wstring_view(text).substr(bestPos, bestLen), true});
+				pos = bestPos + bestLen;
+			}
+			return segs;
+		}
+
+		// 逐行渲染块：heading 标记小节标题（需加粗展示），text 为该行的文本
+		struct AgreementLine
+		{
+			std::wstring text;
+			bool heading{false};
+		};
+
+		struct AgreementDialogData
+		{
+			HWND hwnd{nullptr};
+			HWND hTitle{nullptr};
+			HWND hSub{nullptr};
+			HWND hClose{nullptr};
+			HFONT hFontTitle{nullptr};
+			HFONT hFontHead{nullptr};
+			HFONT hFontBody{nullptr};
+			HFONT hFontSub{nullptr};         // 副标题（更小字号）
+			int bodyLineHeight{0};           // 正文字体的单行高度（用于关键词标红的逐行排版）
+			bool* pAgreed{nullptr};        // 同意后回写给激活弹窗的勾选状态
+			const wchar_t* title{nullptr}; // 弹窗标题（用户协议 / 隐私协议）
+			const wchar_t* text{nullptr};  // 要展示的富文本正文
+			std::vector<AgreementLine> lines; // 逐行渲染块（标题加粗、正文自动换行）
+			int contentHeight{0};          // 完整文本高度（像素，含换行）
+			int scrollY{0};                // 当前滚动偏移（像素）
+			bool scrollDragging{false};    // 是否正在拖动自绘滚动条滑块
+			int dragGrabY{0};              // 按下时鼠标相对滑块顶部的偏差（像素）
+			bool done{false};
+		};
+
+		// 将协议正文按“逻辑行”拆分成渲染块：”# “开头为章节标题（加粗），空行保留作为段落间距
+		std::vector<AgreementLine> build_agreement_lines(const wchar_t* text)
+		{
+			std::vector<AgreementLine> out;
+			const wchar_t* p = text;
+			while (*p)
+			{
+				const wchar_t* e = p;
+				while (*e && *e != L'\n')
+				{
+					++e;
+				}
+				std::wstring line(p, e);
+				if (!line.empty() && line.back() == L'\r')
+				{
+					line.pop_back();
+				}
+				AgreementLine blk;
+				if (line.rfind(L"# ", 0) == 0)
+				{
+					line.erase(0, 2);
+					blk.heading = true;
+				}
+				blk.text = std::move(line);
+				out.push_back(std::move(blk));
+				p = (*e == L'\n') ? e + 1 : e;
+			}
+			return out;
+		}
+
+		constexpr int AGREE_PARAGRAPH_GAP = 10;  // 空行（段落间距）高度
+		constexpr int AGREE_LINE_GAP = 3;        // 普通行之间的行距
+		constexpr int AGREE_HEAD_SPACE = 9;      // 章节标题后的额外间距
+
+		// 逐行排版一段正文（含关键词标红）：按字符宽度换行（契合中文逐字换行）。
+		// draw == true 时把文字绘制出来，否则仅测量。返回本次排版消耗的总高度。
+		int agreement_layout_body(HDC hdc, const AgreementDialogData* data,
+		                          const std::wstring& text, int startY, bool draw)
+		{
+			const int lineH = data->bodyLineHeight;
+			const int destX = AGREE_BODY_LEFT;
+			const int bodyW = AGREE_BODY_RIGHT - AGREE_BODY_LEFT;
+			const std::vector<AgreementSeg> segs = agreement_split_keywords(text);
+			int x = destX;
+			int curY = startY;
+			for (const auto& seg : segs)
+			{
+				SetTextColor(hdc, seg.red ? AGREE_RED_COLOR : AGREE_TEXT_COLOR);
+				const wchar_t* run = seg.text.data();
+				const int runLen = static_cast<int>(seg.text.size());
+				int offset = 0;
+				while (offset < runLen)
+				{
+					int fit = 0;
+					const int maxChars = runLen - offset;
+					for (int c = 1; c <= maxChars; ++c)
+					{
+						SIZE sz{};
+						GetTextExtentPoint32W(hdc, run + offset, c, &sz);
+						if (x + sz.cx <= bodyW)
+						{
+							fit = c;
+						}
+						else
+						{
+							break;
+						}
+					}
+					if (fit == 0)
+					{
+						if (x > destX)
+						{
+							x = destX;
+							curY += lineH;
+							continue;
+						}
+						fit = 1; // 行首至少落一个字符，超宽部分交给裁剪处理
+					}
+					SIZE sz{};
+					GetTextExtentPoint32W(hdc, run + offset, fit, &sz);
+					if (draw)
+					{
+						RECT cr{x, curY, x + sz.cx, curY + lineH};
+						ExtTextOutW(hdc, x, curY, ETO_CLIPPED, &cr, run + offset, fit, nullptr);
+					}
+					x += sz.cx;
+					offset += fit;
+					if (x >= bodyW && offset < runLen)
+					{
+						x = destX;
+						curY += lineH;
+					}
+				}
+			}
+			return curY + lineH - startY;
+		}
+
+		// 逐块渲染/测量协议内容；startY 为起始 Y，draw 为 true 时绘制、false 时仅测高。
+		// 返回本次内容占据的总高度（不包含 startY）。
+		int agreement_render(HDC hdc, const AgreementDialogData* data,
+		                     const std::vector<AgreementLine>& lines, int startY, bool draw)
+		{
+			const int bodyW = AGREE_BODY_RIGHT - AGREE_BODY_LEFT;
+			int y = startY;
+			for (const auto& blk : lines)
+			{
+				if (blk.text.empty())
+				{
+					y += AGREE_PARAGRAPH_GAP;
+					continue;
+				}
+				if (blk.heading)
+				{
+					HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontHead));
+					RECT measure{0, 0, bodyW, 0};
+					DrawTextW(hdc, blk.text.c_str(), -1, &measure,
+					          DT_NOPREFIX | DT_LEFT | DT_SINGLELINE | DT_CALCRECT);
+					const int h = measure.bottom;
+					if (draw)
+					{
+						SetTextColor(hdc, AGREE_TITLE_COLOR);
+						RECT dr{AGREE_BODY_LEFT, y, AGREE_BODY_RIGHT, y + h};
+						DrawTextW(hdc, blk.text.c_str(), -1, &dr,
+						          DT_NOPREFIX | DT_LEFT | DT_SINGLELINE);
+					}
+					SelectObject(hdc, hOld);
+					y += h + AGREE_HEAD_SPACE;
+				}
+				else
+				{
+					HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontBody));
+					y += agreement_layout_body(hdc, data, blk.text, y, draw) + AGREE_LINE_GAP;
+					SelectObject(hdc, hOld);
+				}
+			}
+			return y - startY;
+		}
+
+		// 在裁剪区域内自绘协议文本，并按滚动偏移上下移动
+		void agreement_draw_text(HDC hdc, const AgreementDialogData* data)
+		{
+			const int save = SaveDC(hdc);
+			IntersectClipRect(hdc, AGREE_BODY_LEFT, AGREE_BODY_TOP, AGREE_BODY_RIGHT, AGREE_BODY_BOTTOM);
+			SetBkMode(hdc, TRANSPARENT);
+			agreement_render(hdc, data, data->lines, AGREE_BODY_TOP - data->scrollY, true);
+			RestoreDC(hdc, save);
+		}
+
+		LRESULT CALLBACK agreement_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+		{
+			auto* data = reinterpret_cast<AgreementDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+			case WM_CREATE:
+			{
+				auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+				data = static_cast<AgreementDialogData*>(cs->lpCreateParams);
+				data->hwnd = hwnd;
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+
+				const HINSTANCE hInst = GetModuleHandleW(nullptr);
+			const HDC hdc = GetDC(hwnd);
+			const int titleSize = -MulDiv(17, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+			const int headSize = -MulDiv(14, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+			const int bodySize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+			const int subSize = -MulDiv(11, GetDeviceCaps(hdc, LOGPIXELSY), 72);
+			ReleaseDC(hwnd, hdc);
+			data->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data->hFontHead = CreateFontW(headSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data->hFontBody = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data->hFontSub = CreateFontW(subSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			// 取正文字体的单行高度（逐行排版标红时使用，保证内容高度测量与绘制一致）
+			{
+				HDC hMeasure = GetDC(hwnd);
+				HFONT hOldBody = static_cast<HFONT>(SelectObject(hMeasure, data->hFontBody));
+				TEXTMETRICW tm{};
+				GetTextMetricsW(hMeasure, &tm);
+				data->bodyLineHeight = tm.tmHeight;
+				SelectObject(hMeasure, hOldBody);
+				ReleaseDC(hwnd, hMeasure);
+			}
+
+				data->hTitle = CreateWindowExW(0, L"STATIC", data->title ? data->title : L"用户协议",
+				                               WS_CHILD | WS_VISIBLE | SS_LEFT,
+				                               28, 22, AGREEMENT_DLG_WIDTH - 56, 30, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3010)),
+				                               hInst, nullptr);
+				SendMessageW(data->hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontTitle), TRUE);
+				data->hSub = CreateWindowExW(0, L"STATIC", L"请仔细阅读以下内容，同意后勾选“我已阅读并同意”即可继续激活",
+				                             WS_CHILD | WS_VISIBLE | SS_LEFT,
+				                             28, 56, AGREEMENT_DLG_WIDTH - 56, 20, hwnd,
+				                             reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3011)),
+				                             hInst, nullptr);
+				SendMessageW(data->hSub, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSub), TRUE);
+
+				// 正文：改为自绘滚动文本，完全移除系统 EDIT 控件
+				// （多行只读 EDIT 在滚动时因主题/自定义背景刷 + ClearType 会产生严重的重影与文字折叠）
+				if (data->text)
+				{
+					data->lines = build_agreement_lines(data->text);
+					const HDC hMeasure = GetDC(hwnd);
+					data->contentHeight = agreement_render(hMeasure, data, data->lines, 0, false);
+					ReleaseDC(hwnd, hMeasure);
+				}
+
+				data->hClose = CreateWindowExW(0, L"BUTTON", L"我已知晓并同意",
+				                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                               AGREEMENT_DLG_WIDTH - 172, AGREEMENT_DLG_HEIGHT - 46, 148, 36, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(AGREEMENT_CLOSE_ID)),
+				                               hInst, nullptr);
+				SendMessageW(data->hClose, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontBody), TRUE);
+				return 0;
+			}
+			case WM_ERASEBKGND:
+				return 1;
+			case WM_PAINT:
+			{
+				PAINTSTRUCT ps{};
+				HDC hdc = BeginPaint(hwnd, &ps);
+				RECT rc{}; GetClientRect(hwnd, &rc);
+				fill_v_gradient(hdc, rc, RGB(0xf7, 0xfa, 0xfe), RGB(0xff, 0xff, 0xff));
+				// 顶部主题色条
+				HPEN hPen = CreatePen(PS_SOLID, 1, CLEAN_ACCENT);
+				HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
+				MoveToEx(hdc, 0, 0, nullptr); LineTo(hdc, rc.right, 0);
+				// 标题与正文分隔线 + 正文与操作区底部分隔线
+				HPEN hLine = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
+				HPEN hPrevLine = static_cast<HPEN>(SelectObject(hdc, hLine));
+				MoveToEx(hdc, 24, 82, nullptr); LineTo(hdc, rc.right - 24, 82);
+				MoveToEx(hdc, 24, AGREEMENT_DLG_HEIGHT - 52, nullptr);
+				LineTo(hdc, rc.right - 24, AGREEMENT_DLG_HEIGHT - 52);
+				SelectObject(hdc, hPrevLine); // 还原为 hLine
+				SelectObject(hdc, hOldPen);   // 还原为原始画笔
+				DeleteObject(hLine);
+				DeleteObject(hPen);
+
+				// 自绘协议正文（按滚动偏移渲染，裁剪到正文区域）
+				if (!data->lines.empty())
+				{
+					agreement_draw_text(hdc, data);
+				}
+
+				// 自绘滚动条（仅在内容超过可视区时显示）
+				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				if (data->contentHeight > bodyH)
+				{
+					const int maxScroll = data->contentHeight - bodyH;
+					// 轨道背景
+					RECT track{AGREE_SB_LEFT, AGREE_BODY_TOP, AGREE_SB_LEFT + AGREE_SB_WIDTH, AGREE_BODY_BOTTOM};
+					draw_round_rect(hdc, track, 4, RGB(0xec, 0xf1, 0xf8), RGB(0xe4, 0xea, 0xf2), 1);
+					// 滑块
+					const int trackH = bodyH;
+					const int thumbH = std::max(30, trackH * bodyH / data->contentHeight);
+					const int maxTop = trackH - thumbH;
+					int thumbTop = track.top + (maxTop > 0 ? (trackH - thumbH) * data->scrollY / maxScroll : 0);
+					if (thumbTop < track.top) thumbTop = track.top;
+					RECT thumb{track.left, thumbTop, track.right, thumbTop + thumbH};
+					draw_round_rect(hdc, thumb, 4, RGB(0x9c, 0xb8, 0xd8), RGB(0x9c, 0xb8, 0xd8), 0);
+				}
+				EndPaint(hwnd, &ps);
+				return 0;
+			}
+			case WM_CTLCOLORSTATIC:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				const HWND hWnd = reinterpret_cast<HWND>(lParam);
+				SetBkMode(hdc, TRANSPARENT);
+				if (hWnd == data->hSub)
+				{
+					SetTextColor(hdc, CLEAN_TEXT_SUB);
+				}
+				else
+				{
+					SetTextColor(hdc, CLEAN_TEXT);
+				}
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_CTLCOLORBTN:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkMode(hdc, TRANSPARENT);
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_DRAWITEM:
+			{
+				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+				if (dis->CtlID == AGREEMENT_CLOSE_ID)
+				{
+					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
+					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+					wchar_t buf[64]{};
+					GetWindowTextW(dis->hwndItem, buf, 64);
+					draw_modern_dlg_button(dis->hDC, dis->rcItem, true, hover, pressed, buf, false);
+					return TRUE;
+				}
+				return FALSE;
+			}
+			case WM_COMMAND:
+				if (LOWORD(wParam) == AGREEMENT_CLOSE_ID)
+				{
+					// 同意并关闭：回写激活弹窗勾选状态，并让其不显示渲染残留
+					if (data->pAgreed)
+					{
+						*data->pAgreed = true;
+					}
+					if (data->hwnd)
+					{
+						const HWND owner = GetParent(data->hwnd);
+						if (owner && IsWindow(owner))
+						{
+							InvalidateRect(owner, nullptr, TRUE);
+						}
+					}
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				return 0;
+			case WM_CLOSE:
+				DestroyWindow(hwnd);
+				return 0;
+			case WM_MOUSEWHEEL:
+			{
+				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+				if (maxScroll > 0)
+				{
+					const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+					const int value = data->scrollY - delta / WHEEL_DELTA * AGREE_SCROLL_STEP;
+					data->scrollY = value < 0 ? 0 : (value > maxScroll ? maxScroll : value);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_KEYDOWN:
+			{
+				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+				if (maxScroll > 0)
+				{
+					int v = data->scrollY;
+					switch (LOWORD(wParam))
+					{
+					case VK_UP:
+						v -= AGREE_SCROLL_STEP;
+						break;
+					case VK_DOWN:
+						v += AGREE_SCROLL_STEP;
+						break;
+					case VK_PRIOR:
+						v -= bodyH;
+						break;
+					case VK_NEXT:
+						v += bodyH;
+						break;
+					case VK_HOME:
+						v = 0;
+						break;
+					case VK_END:
+						v = maxScroll;
+						break;
+					default:
+						return 0;
+					}
+					data->scrollY = v < 0 ? 0 : (v > maxScroll ? maxScroll : v);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_LBUTTONDOWN:
+			{
+				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+				if (maxScroll > 0 && pt.x >= AGREE_SB_LEFT && pt.x <= AGREE_SB_LEFT + AGREE_SB_WIDTH &&
+				    pt.y >= AGREE_BODY_TOP && pt.y <= AGREE_BODY_BOTTOM)
+				{
+					const int trackH = bodyH;
+					const int thumbH = std::max(30, trackH * bodyH / data->contentHeight);
+					const int maxTop = trackH - thumbH;
+					int curTop = AGREE_BODY_TOP + (maxTop > 0 ? (trackH - thumbH) * data->scrollY / maxScroll : 0);
+					if (curTop < AGREE_BODY_TOP) curTop = AGREE_BODY_TOP;
+					if (pt.y >= curTop && pt.y <= curTop + thumbH)
+					{
+						// 按住滑块拖动
+						data->scrollDragging = true;
+						data->dragGrabY = pt.y - curTop;
+						SetCapture(hwnd);
+					}
+					else if (pt.y < curTop)
+					{
+						// 点击滑块上方 → 向上翻页
+						data->scrollY = data->scrollY - bodyH < 0 ? 0 : data->scrollY - bodyH;
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+					else
+					{
+						// 点击滑块下方 → 向下翻页
+						data->scrollY = data->scrollY + bodyH > maxScroll ? maxScroll : data->scrollY + bodyH;
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+					return 0;
+				}
+				break;
+			}
+			case WM_MOUSEMOVE:
+			{
+				if (data->scrollDragging)
+				{
+					const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+					const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+					const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+					const int trackH = bodyH;
+					const int thumbH = std::max(30, trackH * bodyH / data->contentHeight);
+					const int maxTop = trackH - thumbH;
+					if (maxTop > 0)
+					{
+						int newThumbTop = pt.y - data->dragGrabY;
+						if (newThumbTop < AGREE_BODY_TOP) newThumbTop = AGREE_BODY_TOP;
+						if (newThumbTop > AGREE_BODY_TOP + maxTop) newThumbTop = AGREE_BODY_TOP + maxTop;
+						data->scrollY = (newThumbTop - AGREE_BODY_TOP) * maxScroll / maxTop;
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+				}
+				return 0;
+			}
+			case WM_LBUTTONUP:
+				if (data->scrollDragging)
+				{
+					data->scrollDragging = false;
+					if (GetCapture() == hwnd)
+					{
+						ReleaseCapture();
+					}
+				}
+				return 0;
+			case WM_CAPTURECHANGED:
+				data->scrollDragging = false;
+				return 0;
+			case WM_DESTROY:
+				if (data->hFontTitle)
+				{
+					DeleteObject(data->hFontTitle);
+				}
+				if (data->hFontHead)
+				{
+					DeleteObject(data->hFontHead);
+				}
+				if (data->hFontBody)
+				{
+					DeleteObject(data->hFontBody);
+				}
+				if (data->hFontSub)
+				{
+					DeleteObject(data->hFontSub);
+				}
+				data->done = true;
+				return 0;
+			default:
+				break;
+			}
+			return DefWindowProcW(hwnd, msg, wParam, lParam);
+		}
+
+		void show_agreement_dialog(HWND hOwner, bool* pAgreed, const wchar_t* title, const wchar_t* text)
+		{
+			static const bool classRegistered = []()
+			{
+				WNDCLASSEXW wc = {sizeof(wc)};
+				wc.lpfnWndProc = agreement_dlg_proc;
+				wc.hInstance = GetModuleHandleW(nullptr);
+				wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+				wc.hbrBackground = reinterpret_cast<HBRUSH>((COLOR_WINDOW + 1));
+				wc.style = 0;   // 不使用 CS_DROPSHADOW，避免弹窗右侧/底部出现生硬的边框阴影
+				wc.lpszClassName = AGREEMENT_DLG_CLASS;
+				return RegisterClassExW(&wc) != 0;
+			}();
+			(void)classRegistered;
+
+			AgreementDialogData data;
+			data.pAgreed = pAgreed;
+			data.title = title;
+			data.text = text;
+			const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+			const int dlgWndWidth = AGREEMENT_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+			const int dlgWndHeight = AGREEMENT_DLG_HEIGHT + titleBarHeight;
+
+			int x = 0;
+			int y = 0;
+			if (hOwner && IsWindow(hOwner))
+			{
+				RECT rc{};
+				GetWindowRect(hOwner, &rc);
+				x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
+				y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
+			}
+			const HWND hDlg = CreateWindowExW(0, AGREEMENT_DLG_CLASS, (title ? title : L"用户协议"),
+			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+			                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+			                                  GetModuleHandleW(nullptr), &data);
+			if (!hDlg)
+			{
+				return;
+			}
+			ShowWindow(hDlg, SW_SHOW);
+			UpdateWindow(hDlg);
+			SetFocus(hDlg); // 让弹窗接收鼠标滚轮与键盘方向键
+			if (hOwner && IsWindow(hOwner))
+			{
+				EnableWindow(hOwner, FALSE);
+			}
+
+			MSG msg{};
+			while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
+			{
+				TranslateMessage(&msg);
+				DispatchMessageW(&msg);
+			}
+
+			if (hOwner && IsWindow(hOwner))
+			{
+				EnableWindow(hOwner, TRUE);
+				SetFocus(hOwner);
+			}
+		}
+
+		// 供首页用户须知等外部模块调用：直接打开《用户协议》/《隐私协议》弹窗（不涉及勾选回写）
+		// 注意：这两个导出函数必须定义在 `namespace ui` 作用域（不能放在匿名命名空间内），
+		// 否则会因内链接导致跨模块无法解析，故其定义放在本文件末尾 namespace ui 作用域处。
 		void activate_dlg_show_error(ActivateDialogData& data, std::wstring_view msg)
 		{
 			if (!data.hError)
@@ -880,6 +1689,11 @@ namespace ui
 				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(ACT_CANCEL_ID)),
 				                                hInst, nullptr);
 				SendMessageW(data->hCancel, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
+
+				// 缓存同意勾选框、用户协议链接、连词「和」与隐私协议链接的命中区域（供绘制与鼠标命中共用）
+				// 字号与「激活码作者签发…」提示行一致（hFontHint），避免协议行字号突兀
+				activate_agree_rects(hwnd, data->hFontHint, data->rcAgreeBox, data->rcAgreeUA,
+				                     data->rcAgreeConj, data->rcAgreePA);
 				return 0;
 			}
 			case WM_ERASEBKGND:
@@ -921,6 +1735,83 @@ namespace ui
 					RECT rcInput{24, 92, ACT_DLG_WIDTH - 24, 144};
 					draw_round_rect(hdc, rcInput, 8, RGB(0xff, 0xff, 0xff), CLEAN_ACCENT, 1);
 				}
+
+				// 同意协议行：勾选框 + 「我已阅读并同意」 + 《用户协议》 + 和 + 《隐私协议》
+				{
+					const RECT& rcBox = data->rcAgreeBox;
+					const RECT& rcUA = data->rcAgreeUA;
+					const RECT& rcConj = data->rcAgreeConj;
+					const RECT& rcPA = data->rcAgreePA;
+					const bool checked = data->agreed;
+
+					// 与「激活码作者签发…」提示行同字号
+					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontHint));
+					SetBkMode(hdc, TRANSPARENT);
+
+					// 勾选框：圆角方框；勾选时填充主题蓝并画白色对勾
+					RECT rc = rcBox;
+					const COLORREF fill = checked ? CLEAN_ACCENT : RGB(0xff, 0xff, 0xff);
+					const COLORREF border = checked ? CLEAN_ACCENT : (data->boxHover ? CLEAN_ACCENT_LIGHT : RGB(0xc3, 0xcc, 0xd8));
+					draw_round_rect(hdc, rc, 4, fill, border, checked ? 0 : 1);
+					if (checked)
+					{
+						HPEN hp = CreatePen(PS_SOLID, 2, RGB(0xff, 0xff, 0xff));
+						HPEN hpo = static_cast<HPEN>(SelectObject(hdc, hp));
+						MoveToEx(hdc, rc.left + 4, rc.top + 8, nullptr);
+						LineTo(hdc, rc.left + 7, rc.top + 12);
+						LineTo(hdc, rc.left + 13, rc.top + 5);
+						SelectObject(hdc, hpo);
+						DeleteObject(hp);
+					}
+
+					// 标签「我已阅读并同意」（灰色）
+					{
+						RECT rcLabel{rcBox.right + 10, rcBox.top, rcUA.left - 4, rcBox.bottom};
+						SetTextColor(hdc, CLEAN_TEXT_SUB);
+						DrawTextW(hdc, AGREE_LABEL, -1, &rcLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+					}
+
+					// 链接《eBox 用户协议》（主题蓝，悬停时绘制下划线）
+					{
+						RECT rl = rcUA;
+						SetTextColor(hdc, CLEAN_ACCENT);
+						DrawTextW(hdc, AGREE_LINK_UA, -1, &rl, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+						if (data->linkUAHover)
+						{
+							HPEN hp = CreatePen(PS_SOLID, 1, CLEAN_ACCENT);
+							HPEN hpo = static_cast<HPEN>(SelectObject(hdc, hp));
+							MoveToEx(hdc, rl.left, rl.bottom, nullptr);
+							LineTo(hdc, rl.right, rl.bottom);
+							SelectObject(hdc, hpo);
+							DeleteObject(hp);
+						}
+					}
+
+					// 连词「和」（灰色）
+					{
+						RECT rcC = rcConj;
+						SetTextColor(hdc, CLEAN_TEXT_SUB);
+						DrawTextW(hdc, AGREE_CONJ, -1, &rcC, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+					}
+
+					// 链接《eBox 隐私协议》（主题蓝，悬停时绘制下划线）
+					{
+						RECT rl = rcPA;
+						SetTextColor(hdc, CLEAN_ACCENT);
+						DrawTextW(hdc, AGREE_LINK_PA, -1, &rl, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+						if (data->linkPAHover)
+						{
+							HPEN hp = CreatePen(PS_SOLID, 1, CLEAN_ACCENT);
+							HPEN hpo = static_cast<HPEN>(SelectObject(hdc, hp));
+							MoveToEx(hdc, rl.left, rl.bottom, nullptr);
+							LineTo(hdc, rl.right, rl.bottom);
+							SelectObject(hdc, hpo);
+							DeleteObject(hp);
+						}
+					}
+
+					SelectObject(hdc, hOldFont);
+				}
 				EndPaint(hwnd, &ps);
 				return 0;
 			}
@@ -959,6 +1850,86 @@ namespace ui
 				HDC hdc = reinterpret_cast<HDC>(wParam);
 				SetBkMode(hdc, TRANSPARENT);
 				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_SETCURSOR:
+			{
+				// 悬停在同意勾选框或任一协议链接上时显示手型
+				POINT ptCur{};
+				GetCursorPos(&ptCur);
+				ScreenToClient(hwnd, &ptCur);
+				if (PtInRect(&data->rcAgreeBox, ptCur) || PtInRect(&data->rcAgreeUA, ptCur) ||
+				    PtInRect(&data->rcAgreePA, ptCur))
+				{
+					SetCursor(LoadCursorW(nullptr, IDC_HAND));
+					return TRUE;
+				}
+				break;
+			}
+			case WM_MOUSEMOVE:
+			{
+				const POINTS pts = MAKEPOINTS(lParam);
+				const POINT pt{pts.x, pts.y};
+				const bool overBox = PtInRect(&data->rcAgreeBox, pt);
+				const bool overUA = PtInRect(&data->rcAgreeUA, pt);
+				const bool overPA = PtInRect(&data->rcAgreePA, pt);
+				if (!data->mouseTrack)
+				{
+					TRACKMOUSEEVENT tme{sizeof(tme), TME_LEAVE, hwnd, 0};
+					TrackMouseEvent(&tme);
+					data->mouseTrack = true;
+				}
+				if (overBox != data->boxHover || overUA != data->linkUAHover || overPA != data->linkPAHover)
+				{
+					data->boxHover = overBox;
+					data->linkUAHover = overUA;
+					data->linkPAHover = overPA;
+					RECT rcInvalid = data->rcAgreeBox;
+					UnionRect(&rcInvalid, &rcInvalid, &data->rcAgreeUA);
+					UnionRect(&rcInvalid, &rcInvalid, &data->rcAgreePA);
+					InflateRect(&rcInvalid, 8, 8);
+					InvalidateRect(hwnd, &rcInvalid, FALSE);
+				}
+				return 0;
+			}
+			case WM_MOUSELEAVE:
+			{
+				data->mouseTrack = false;
+				if (data->boxHover || data->linkUAHover || data->linkPAHover)
+				{
+					data->boxHover = false;
+					data->linkUAHover = false;
+					data->linkPAHover = false;
+					RECT rcInvalid = data->rcAgreeBox;
+					UnionRect(&rcInvalid, &rcInvalid, &data->rcAgreeUA);
+					UnionRect(&rcInvalid, &rcInvalid, &data->rcAgreePA);
+					InflateRect(&rcInvalid, 8, 8);
+					InvalidateRect(hwnd, &rcInvalid, FALSE);
+				}
+				return 0;
+			}
+			case WM_LBUTTONDOWN:
+			{
+				const POINTS pts = MAKEPOINTS(lParam);
+				const POINT pt{pts.x, pts.y};
+				if (PtInRect(&data->rcAgreeBox, pt))
+				{
+					data->agreed = !data->agreed;
+					RECT rcInvalid = data->rcAgreeBox;
+					InflateRect(&rcInvalid, 8, 8);
+					InvalidateRect(hwnd, &rcInvalid, FALSE);
+					return 0;
+				}
+				if (PtInRect(&data->rcAgreeUA, pt))
+				{
+					show_agreement_dialog(hwnd, &data->agreed, L"eBox 用户协议", AGREEMENT_TEXT);
+					return 0;
+				}
+				if (PtInRect(&data->rcAgreePA, pt))
+				{
+					show_agreement_dialog(hwnd, &data->agreed, L"eBox 隐私协议", AGREEMENT_TEXT_PRIVACY);
+					return 0;
+				}
+				break;
 			}
 			case WM_DRAWITEM:
 			{
@@ -1000,6 +1971,12 @@ namespace ui
 				}
 				if (id == ACT_OK_ID)
 				{
+					// 未勾选同意《用户协议》时禁止激活（勾选后才可提交激活码）
+					if (!data->agreed)
+					{
+						activate_dlg_show_error(*data, L"请先阅读并勾选同意《eBox 用户协议》");
+						return 0;
+					}
 					if (data->activating)
 					{
 						return 0; // 校验进行中，防重入
@@ -4246,5 +5223,18 @@ namespace ui
 		}
 
 		return data.cancelled ? std::nullopt : std::optional<std::wstring>{data.result};
+	}
+
+	// ---- 跨模块导出的协议弹窗入口（定义在 namespace ui 作用域，保证外部链接可解析）----
+	// 供首页用户须知等外部模块调用：直接打开《用户协议》/《隐私协议》弹窗（不涉及勾选回写）。
+	// 内部复用上面匿名命名空间中的 show_agreement_dialog（本文件内可见）。
+	void show_user_agreement_dialog(HWND hOwner)
+	{
+		show_agreement_dialog(hOwner, nullptr, L"eBox 用户协议", AGREEMENT_TEXT);
+	}
+
+	void show_privacy_agreement_dialog(HWND hOwner)
+	{
+		show_agreement_dialog(hOwner, nullptr, L"eBox 隐私协议", AGREEMENT_TEXT_PRIVACY);
 	}
 }
