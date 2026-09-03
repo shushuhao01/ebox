@@ -1,16 +1,17 @@
 {
-    "latestVersion": "v3.0.5",
-    "latestVersionCode": 30005,
-    "releaseDate": "2026/8/30",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.0.5/eBox.exe",
-    "downloadSha256": "7fb50bc70e76b1a74e4ab2277d8aa54c3aa40b5cb2220785d789b48091db8efe",
-    "downloadSize": 3058688,
+    "latestVersion": "v3.1.0",
+    "latestVersionCode": 30100,
+    "releaseDate": "2026/9/3",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.1.0/eBox.exe",
+    "downloadSha256": "236cd46f3b8f061d8c5a9385c700b7795ee55589531f24d1f2f243fdcfa0f32c",
+    "downloadSize": 3084800,
     "changelog": [
-        "修复：解绑次数按整条换机链继承计算，换机码不再被当作全新激活码从零计次，各激活码次数互不干扰。",
-        "修复：授权页面同步刷新解绑次数与可解绑次数，达到当月上限后点解绑本机给出拦截提示。",
-        "修复：服务端 KeyService 沿换机祖先链追溯当月累计解绑次数，未登记码才走本地计数兜底。",
-        "新增：解绑成功弹窗支持一键复制新换机码、5 秒倒计时后确认关闭。",
-        "版本号同步到 v3.0.5（内部版本号 30005）。"
+        "重构用户/隐私协议弹窗为自绘滚动文本，支持滚轮与自绘滚动条（修复滚动重影）",
+        "协议关键信息（风险/免责/违规等）以红色标注，副标题与正文字号优化",
+        "新增多开免责声明：多开引发的平台/官方问题责任在使用者，与开发者无关",
+        "补齐运营主体联系方式、未成年人保护、赔偿责任上限、第三方开源组件声明等合规条款",
+        "修复协议弹窗右侧/底部边框阴影（移除 CS_DROPSHADOW）",
+        "首页用户须知补充规则遵守提示、使用事项改为启动新进程"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
