@@ -232,6 +232,7 @@ namespace ui
 		// 转到主线程
 		co_await sched::transfer_to(app().get_scheduler());
 
+		bool scrollToNewEnv = false;
 		if (changeType == biz::EnvManager::EChangeType::Create)
 		{
 			addEnv(env);
@@ -240,6 +241,7 @@ namespace ui
 			{
 				m_bAutoSelectNextNewEnv = false;
 				selectEnvByIndex(env->getIndex());
+				scrollToNewEnv = true;
 			}
 		}
 		else if (changeType == biz::EnvManager::EChangeType::Delete)
@@ -248,6 +250,12 @@ namespace ui
 		}
 
 		m_scrollBar->setTotalSize(m_envs.size() * getItemHeight());
+		// 新环境追加在卡片区末尾：卡片溢出可视区域时自动滚动到底部，让刚启动的新环境立即可见
+		if (scrollToNewEnv)
+		{
+			const float maxOffset = m_envs.size() * getItemHeight() - m_scrollBar->getVisibleSize();
+			m_scrollBar->scroll(maxOffset - m_scrollBar->getScrollOffset());
+		}
 		if (m_pfnOnSummaryChange)
 		{
 			m_pfnOnSummaryChange();
