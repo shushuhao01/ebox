@@ -83,6 +83,7 @@ $g.FillPath($bgBrush, $bgPath)
 $bgPath.Dispose()
 $bgBrush.Dispose()
 
+# monitors are shifted down 38px so the pair is vertically centered on the canvas
 # back monitor (upper-right, gray)
 $backBezel = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 226, 232, 240))
 $backScreen = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 13, 40, 74))
@@ -90,7 +91,7 @@ $backStand = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromAr
 $backAccent = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 62, 142, 224))
 $backContent = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 160, 210, 250))
 
-Draw-Monitor -g $g -x 150 -y 62 -w 268 -h 196 -bezelBrush $backBezel -screenBrush $backScreen -standBrush $backStand -accentBrush $backAccent -contentBrush $backContent
+Draw-Monitor -g $g -x 150 -y 100 -w 268 -h 196 -bezelBrush $backBezel -screenBrush $backScreen -standBrush $backStand -accentBrush $backAccent -contentBrush $backContent
 
 # front monitor (lower-left, blue, overlaps back)
 $frontBezel = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 33, 150, 243))
@@ -99,7 +100,7 @@ $frontStand = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromA
 $frontAccent = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 21, 101, 192))
 $frontContent = New-Object System.Drawing.SolidBrush([System.Drawing.Color]::FromArgb(255, 66, 165, 245))
 
-Draw-Monitor -g $g -x 62 -y 150 -w 276 -h 200 -bezelBrush $frontBezel -screenBrush $frontScreen -standBrush $frontStand -accentBrush $frontAccent -contentBrush $frontContent
+Draw-Monitor -g $g -x 62 -y 188 -w 276 -h 200 -bezelBrush $frontBezel -screenBrush $frontScreen -standBrush $frontStand -accentBrush $frontAccent -contentBrush $frontContent
 
 $backBezel.Dispose(); $backScreen.Dispose(); $backStand.Dispose(); $backAccent.Dispose(); $backContent.Dispose()
 $frontBezel.Dispose(); $frontScreen.Dispose(); $frontStand.Dispose(); $frontAccent.Dispose(); $frontContent.Dispose()
