@@ -1,12 +1,12 @@
 {
-    "latestVersion": "v3.1.1",
-    "latestVersionCode": 30101,
-    "releaseDate": "2026/9/21",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.1.1/eBox.exe",
-    "downloadSha256": "2dbafc5f7208f21d294a1d568ae8632587f5511e36356237e12944eaa0529282",
+    "latestVersion": "v3.1.2",
+    "latestVersionCode": 30102,
+    "releaseDate": "2026/9/28",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.1.2/eBox.exe",
+    "downloadSha256": "ad98a27951d5c4ffa502aff5aa9b364997e9e406f2bf24511bda36d9ebf002e5",
     "downloadSize": 3085312,
     "changelog": [
-        "修复：启动新进程后，左侧环境卡片较多、溢出可视区域时，自动滚动到底部定位到刚启动的新环境，无需再手动下拉查看"
+        "更新：应用图标采用全新设计（两个显示器居中布局、圆角蓝底风格），标题栏图标、任务栏图标、任务栏缩略图同步更新"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
