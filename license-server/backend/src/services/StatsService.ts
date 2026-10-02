@@ -1,3 +1,4 @@
+import { MoreThanOrEqual } from 'typeorm';
 import { AppDataSource } from '../config/database';
 import { LicenseKey } from '../entities/LicenseKey';
 import { Device } from '../entities/Device';
@@ -23,7 +24,7 @@ export async function overview() {
     .getCount();
   const startOfDay = new Date();
   startOfDay.setHours(0, 0, 0, 0);
-  const todayActivate = await hbRepo().countBy({ action: 1, createdAt: startOfDay });
+  const todayActivate = await hbRepo().countBy({ action: 1, createdAt: MoreThanOrEqual(startOfDay) });
   return { total, used, revoked, switched, onlineDevices, todayActivate };
 }
 
