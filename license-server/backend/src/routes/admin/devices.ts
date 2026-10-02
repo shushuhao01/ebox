@@ -5,7 +5,7 @@ import { Device } from '../../entities/Device';
 import { LicenseKey } from '../../entities/LicenseKey';
 import { ok, fail, clientIp } from '../../middleware/helpers';
 import { ApiError } from '../../middleware/errorHandler';
-import { getConfigValue } from '../../services/ConfigService';
+import { getOnlineWindowMinutes } from '../../services/ConfigService';
 import { writeOperationLog } from '../../services/LogService';
 
 const router = Router();
@@ -21,8 +21,8 @@ router.get('/devices', async (req, res) => {
     .where('1=1');
 
   const mode = String(req.query.mode || 'all');
-  const thresholdMin = parseInt(await getConfigValue('online_threshold_minutes'), 10) || 30;
-  const threshold = new Date(Date.now() - thresholdMin * 60 * 1000);
+  const windowMin = await getOnlineWindowMinutes();
+  const threshold = new Date(Date.now() - windowMin * 60 * 1000);
   if (mode === 'online') qb.andWhere('d.status = 1 AND d.last_online_at >= :t', { t: threshold });
   else if (mode === 'offline') qb.andWhere('(d.status = 1 AND d.last_online_at < :t)', { t: threshold });
   else if (mode === 'kicked') qb.andWhere('d.status = 2');
@@ -33,15 +33,17 @@ router.get('/devices', async (req, res) => {
 
   const total = await qb.getCount();
   const rows = await qb.orderBy('d.lastOnlineAt', 'DESC').skip((page - 1) * pageSize).take(pageSize).getMany();
-  ok(res, { total, page, pageSize, list: rows });
+  // 在线判定统一由后端给出（与总览/统计同口径），前端不再自行计算阈值
+  const isOnline = (d: Device) => d.status === 1 && !!d.lastOnlineAt && d.lastOnlineAt >= threshold;
+  ok(res, { total, page, pageSize, list: rows.map((d) => ({ ...d, online: isOnline(d) })) });
 });
 
 // GET /api/admin/devices/online  在线设备（供总览）
 router.get('/devices/online', async (req, res) => {
-  const thresholdMin = parseInt(await getConfigValue('online_threshold_minutes'), 10) || 30;
-  const threshold = new Date(Date.now() - thresholdMin * 60 * 1000);
+  const windowMin = await getOnlineWindowMinutes();
+  const threshold = new Date(Date.now() - windowMin * 60 * 1000);
   const rows = await repo().find({ where: { status: 1, lastOnlineAt: MoreThanOrEqual(threshold) }, order: { lastOnlineAt: 'DESC' }, take: 200 });
-  ok(res, rows);
+  ok(res, rows.map((d) => ({ ...d, online: true })));
 });
 
 // POST /api/admin/devices/:id/kick  踢下线

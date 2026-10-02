@@ -156,7 +156,7 @@ INSERT INTO `system_config` (`cfg_key`, `cfg_value`, `remark`) VALUES
   ('offline_grace_days',        '7',   '离线宽限天数（1-30）'),
   ('force_online_activate',     '0',   '是否强制在线激活（1=是 0=否）'),
   ('notice',                    '',    '站点公告（客户端激活时展示）'),
-  ('online_threshold_minutes',  '30',  '设备"在线"判定阈值（分钟）')
+  ('online_threshold_minutes',  '30',  '心跳漏报宽限（分钟）：在线窗口 = 心跳间隔 + 宽限')
 ON DUPLICATE KEY UPDATE `cfg_value` = `cfg_value`;
 
 -- 生成批次

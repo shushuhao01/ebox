@@ -115,11 +115,11 @@ async function main() {
     await initializeDatabase();
     log.info(`✅ 数据库连接成功：${env.db.database} @ ${env.db.host}:${env.db.port}`);
 
-    // 定时任务：每小时清理过期换机码状态
+    // 定时任务：每小时清理过期激活码状态
     cron.schedule('0 * * * *', async () => {
       try {
         const n = await markExpiredKeys();
-        if (n > 0) log.info(`定时清理：${n} 个换机码已过期`);
+        if (n > 0) log.info(`定时清理：${n} 个激活码已过期`);
       } catch (e) {
         log.error('定时清理失败', e);
       }

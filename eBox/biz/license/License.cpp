@@ -62,9 +62,9 @@ namespace
 	// 换机/续期场景由发码工具生成，到期 = 原码剩余时间对应的日期，且新旧客户端均兼容
 	constexpr BYTE kLegacyFormatMinor = 7;
 
-	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.1.2）
+	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.1.3）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v3.1.2";
+	constexpr wchar_t kAppVersion[] = L"v3.1.3";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()
@@ -902,17 +902,8 @@ namespace biz
 				return false;
 			}
 			const std::int64_t now = static_cast<std::int64_t>(std::time(nullptr));
-			// 在线管理的授权：服务端心跳会把 graceUntil 刷新为授权真实到期时间，
-			// 激活后即使长时间离线也能用完整个授权期限；已到期且未能成功心跳才拒绝。
-			// 纯离线码（从未在线）不受此管控，按本地到期时间判断
-			if (licenseserver::wasOnlineBefore() && licenseserver::graceUntil() > 0)
-			{
-				if (now < licenseserver::graceUntil())
-				{
-					return true;   // 授权期内（含离线），放行
-				}
-				return false;      // 授权已到期且未能成功心跳 → 拒绝
-			}
+			// 启动判定只认"当前激活码的有效期"（本地最新激活码为准），
+			// 不再依赖服务端 graceUntil / 离线宽限期，避免续期后误拦截。
 			return exp > now;      // 永久码 exp=INT64_MAX，恒为 true
 		}
 
@@ -1105,12 +1096,8 @@ namespace biz
 			{
 				return L"在线授权";
 			}
-			// 离线可用截止 = 服务端下发的授权真实到期；从未成功心跳过则按本地到期时间
-			std::int64_t deadline = licenseserver::graceUntil();
-			if (deadline <= 0)
-			{
-				deadline = expireTime();
-			}
+			// 离线可用截止 = 当前激活码的有效期（本地最新激活码为准）
+			const std::int64_t deadline = expireTime();
 			if (deadline >= std::numeric_limits<std::int64_t>::max() - 86400)
 			{
 				return L"离线授权（永久）";
@@ -1274,7 +1261,7 @@ namespace biz
 					}
 					else
 					{
-						// 服务器不可达：标记离线（按离线宽限管控，canLaunch 依据 graceUntil 判定），继续尝试
+						// 服务器不可达：仅标记离线（启动判定以本地激活码有效期为准，不受影响），继续尝试
 						licenseserver::markOnline(false);
 					}
 					// 等待下一个心跳周期（1~24h），分段睡眠以便响应停止

@@ -32,6 +32,8 @@ export interface KeyDevice {
   lastIp: string | null
   osInfo: string | null
   appVersion: string | null
+  /** 在线状态：由后端按"心跳间隔 + 宽限"窗口统一判定 */
+  online?: boolean
 }
 
 export interface GenerateParams {

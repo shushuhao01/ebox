@@ -10,6 +10,7 @@ import { ok, fail, clientIp } from '../../middleware/helpers';
 import { ApiError } from '../../middleware/errorHandler';
 import { generateKeys, revokeKey, restoreKey, restoreDeletedKey, convertToSwitchKey, findByCode, countUnbindThisMonth } from '../../services/KeyService';
 import { writeOperationLog } from '../../services/LogService';
+import { getOnlineWindowMinutes } from '../../services/ConfigService';
 import { decodeAndVerify, normalizeCode } from '../../crypto/licenseCodec';
 
 const router = Router();
@@ -372,8 +373,14 @@ router.get('/keys/:id', async (req, res) => {
   const key = await keyRepo().findOneBy({ id: req.params.id });
   if (!key) return fail(res, '激活码不存在', 1002);
   const devices = await AppDataSource.getRepository(Device).find({ where: { keyId: key.id }, order: { lastOnlineAt: 'DESC' } });
+  const windowMin = await getOnlineWindowMinutes();
+  const threshold = new Date(Date.now() - windowMin * 60 * 1000);
+  const deviceList = devices.map((d) => ({
+    ...d,
+    online: d.status === 1 && !!d.lastOnlineAt && d.lastOnlineAt >= threshold,
+  }));
   const unbindCount = await countUnbindThisMonth(key.id);
-  ok(res, { key, devices, unbindCount });
+  ok(res, { key, devices: deviceList, unbindCount });
 });
 
 export default router;

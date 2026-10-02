@@ -19,6 +19,18 @@ export async function getConfigValue(key: string): Promise<string> {
   return row?.cfgValue ?? DEFAULTS[key] ?? '';
 }
 
+/**
+ * 在线判定窗口（分钟）= 心跳间隔 + 宽限阈值。
+ * 客户端按 heartbeat_interval_hours 周期上报心跳，若判定窗口小于一个心跳周期，
+ * 心跳间隙内的正常在线设备会被误判为离线，导致"在线设备"数量长期偏低。
+ * 因此窗口必须不小于一个心跳周期，online_threshold_minutes 作为漏报一次的宽限。
+ */
+export async function getOnlineWindowMinutes(): Promise<number> {
+  const intervalHours = Number(await getConfigValue('heartbeat_interval_hours')) || 6;
+  const graceMin = parseInt(await getConfigValue('online_threshold_minutes'), 10) || 30;
+  return intervalHours * 60 + graceMin;
+}
+
 export async function getConfigAll(): Promise<Record<string, string>> {
   const rows = await repo().find();
   const map: Record<string, string> = { ...DEFAULTS };

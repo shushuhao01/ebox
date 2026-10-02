@@ -34,9 +34,11 @@
             <el-divider />
 
             <div class="form-item">
-              <div class="form-label">在线判定阈值</div>
+              <div class="form-label">心跳漏报宽限</div>
               <el-input-number v-model="policy.online_threshold_minutes" :min="1" :max="1440" />
-              <span class="hint">设备最后心跳距当前时间不超过该分钟数，即视为在线（分钟）</span>
+              <span class="hint">
+                设备最后心跳距今不超过「在线窗口」即视为在线；在线窗口 = 心跳间隔 + 宽限 = 当前 {{ onlineWindowMin }} 分钟（分钟）
+              </span>
             </div>
 
             <el-divider />
@@ -111,7 +113,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
 import { Check, RefreshLeft, Lock, Delete } from '@element-plus/icons-vue'
 import { getConfig, updateConfig, cleanLogs, type SystemConfig } from '@/api/config'
@@ -134,6 +136,11 @@ const policy = reactive<SystemConfig>({
 const forceOnline = ref(false)
 const saving = ref(false)
 const cleaning = ref(false)
+
+// 与后端 getOnlineWindowMinutes 保持一致：在线窗口 = 心跳间隔*60 + 宽限
+const onlineWindowMin = computed(
+  () => (Number(policy.heartbeat_interval_hours) || 6) * 60 + (Number(policy.online_threshold_minutes) || 30),
+)
 
 async function loadPolicy() {
   try {

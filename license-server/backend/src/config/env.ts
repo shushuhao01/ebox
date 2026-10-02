@@ -33,7 +33,6 @@ export const env = {
 
   // 默认配置
   heartbeatIntervalHours: parseInt(process.env.HEARTBEAT_INTERVAL_HOURS || '6', 10),
-  offlineGraceDays: parseInt(process.env.OFFLINE_GRACE_DAYS || '7', 10),
 
   // CORS 白名单（逗号分隔）
   corsOrigin: (process.env.CORS_ORIGIN || 'http://localhost:5173,http://127.0.0.1:5173')

@@ -3,7 +3,7 @@ import { LicenseKey } from '../entities/LicenseKey';
 import { Device } from '../entities/Device';
 import { Heartbeat } from '../entities/Heartbeat';
 import { UnbindLog } from '../entities/UnbindLog';
-import { getConfigValue } from './ConfigService';
+import { getOnlineWindowMinutes } from './ConfigService';
 
 const keyRepo = () => AppDataSource.getRepository(LicenseKey);
 const deviceRepo = () => AppDataSource.getRepository(Device);
@@ -14,8 +14,9 @@ export async function overview() {
   const used = await keyRepo().countBy({ status: 1 });
   const revoked = await keyRepo().countBy({ status: 2 });
   const switched = await keyRepo().countBy({ status: 4 });
-  const onlineThresholdMin = parseInt(await getConfigValue('online_threshold_minutes'), 10) || 30;
-  const threshold = new Date(Date.now() - onlineThresholdMin * 60 * 1000);
+  // 在线窗口 = 心跳间隔 + 宽限，避免心跳间隙把正常在线设备误判为离线
+  const onlineWindowMin = await getOnlineWindowMinutes();
+  const threshold = new Date(Date.now() - onlineWindowMin * 60 * 1000);
   const onlineDevices = await deviceRepo()
     .createQueryBuilder('d')
     .where('d.status = 1 AND d.last_online_at >= :t', { t: threshold })

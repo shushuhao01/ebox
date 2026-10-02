@@ -63,9 +63,14 @@
             <el-tag :type="KEY_TYPE[row.type]?.type || 'info'" size="small">{{ KEY_TYPE[row.type]?.label || row.type }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="时长 / 到期" width="120">
+        <el-table-column label="时长 / 到期" width="150">
           <template #default="{ row }">
-            <span v-if="row.type === 1">{{ formatDuration(row.durationSec) }}</span>
+            <template v-if="row.type === 1">
+              <div>{{ formatDuration(row.durationSec) }}</div>
+              <div v-if="durationKeyExpireText(row.durationSec, row.usedAt)" class="expire-sub text-secondary">
+                {{ durationKeyExpireText(row.durationSec, row.usedAt) }}
+              </div>
+            </template>
             <span v-else class="text-secondary">{{ formatUnixTs(row.expireAt) }}</span>
           </template>
         </el-table-column>
@@ -251,7 +256,13 @@
             </el-tag>
           </el-descriptions-item>
           <el-descriptions-item label="时长 / 到期">
-            {{ detail.key.type === 1 ? formatDuration(detail.key.durationSec) : formatUnixTs(detail.key.expireAt) }}
+            <template v-if="detail.key.type === 1">
+              {{ formatDuration(detail.key.durationSec) }}
+              <span v-if="durationKeyExpireText(detail.key.durationSec, detail.key.usedAt)" class="text-secondary">
+                （{{ durationKeyExpireText(detail.key.durationSec, detail.key.usedAt) }}）
+              </span>
+            </template>
+            <template v-else>{{ formatUnixTs(detail.key.expireAt) }}</template>
           </el-descriptions-item>
           <el-descriptions-item label="绑定">
             {{ detail.key.bound === 1 ? '绑定' : '通用' }} / {{ formatUnbindMax(detail.key.unbindMax) }}
@@ -282,8 +293,8 @@
           </el-table-column>
           <el-table-column label="状态" width="80" align="center">
             <template #default="{ row }">
-              <span class="status-dot" :class="deviceStatusClass(row.status, isOnline(row.lastOnlineAt))"></span>
-              {{ deviceStatusText(row.status, isOnline(row.lastOnlineAt)) }}
+              <span class="status-dot" :class="deviceStatusClass(row.status, !!row.online)"></span>
+              {{ deviceStatusText(row.status, !!row.online) }}
             </template>
           </el-table-column>
           <el-table-column label="最后在线" width="150">
@@ -311,7 +322,7 @@ import { getCustomers, type Customer } from '@/api/customers'
 import { getBatches, type KeyBatch } from '@/api/batches'
 import {
   KEY_STATUS, KEY_TYPE, copyText, formatDuration, formatTime, formatUnixTs, formatUnbindMax,
-  isOnline, deviceStatusClass, deviceStatusText,
+  durationKeyExpireText, deviceStatusClass, deviceStatusText,
 } from '@/utils/format'
 
 // ============ 筛选 ============
@@ -752,6 +763,11 @@ onMounted(() => {
 
 .text-secondary {
   color: var(--text-secondary);
+}
+
+.expire-sub {
+  font-size: 12px;
+  line-height: 1.4;
 }
 
 .step-header {

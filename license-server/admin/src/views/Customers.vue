@@ -177,8 +177,8 @@
           </el-table-column>
           <el-table-column label="状态" width="80" align="center">
             <template #default="{ row }">
-              <span class="status-dot" :class="deviceStatusClass(row.status, isOnline(row.lastOnlineAt))"></span>
-              {{ deviceStatusText(row.status, isOnline(row.lastOnlineAt)) }}
+              <span class="status-dot" :class="deviceStatusClass(row.status, !!row.online)"></span>
+              {{ deviceStatusText(row.status, !!row.online) }}
             </template>
           </el-table-column>
           <el-table-column label="最后在线" width="145">
@@ -202,7 +202,7 @@ import {
   type Customer, type CustomerForm,
 } from '@/api/customers'
 import { getKeyDetail, type LicenseKeyItem, type KeyDevice } from '@/api/keys'
-import { KEY_STATUS, copyText, formatTime, formatDuration, isOnline, deviceStatusClass, deviceStatusText } from '@/utils/format'
+import { KEY_STATUS, copyText, formatTime, formatDuration, deviceStatusClass, deviceStatusText } from '@/utils/format'
 
 const list = ref<Customer[]>([])
 const page = ref(1)

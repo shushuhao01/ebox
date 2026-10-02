@@ -20,9 +20,8 @@ export namespace biz
 		// 服务器地址（含协议与端口，如 https://license.example.com），注册表可覆盖
 		export std::wstring serverBaseUrl();
 
-		// 心跳周期（小时，默认 6）与离线宽限天数（默认 7），注册表可覆盖
+		// 心跳周期（小时，默认 6），注册表可覆盖
 		export int heartbeatIntervalHours();
-		export int offlineGraceDays();
 		// 是否强制在线激活（默认 false：服务器不可达时按离线方式放行）
 		export bool forceOnlineActivate();
 

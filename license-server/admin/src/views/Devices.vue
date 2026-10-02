@@ -45,8 +45,8 @@
         </el-table-column>
         <el-table-column label="状态" width="90" align="center">
           <template #default="{ row }">
-            <span class="status-dot" :class="deviceStatusClass(row.status, isOnline(row.lastOnlineAt))"></span>
-            {{ deviceStatusText(row.status, isOnline(row.lastOnlineAt)) }}
+            <span class="status-dot" :class="deviceStatusClass(row.status, !!row.online)"></span>
+            {{ deviceStatusText(row.status, !!row.online) }}
           </template>
         </el-table-column>
         <el-table-column label="最后在线" width="160">
@@ -99,7 +99,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search } from '@element-plus/icons-vue'
 import { getDevices, kickDevice, type Device, type DeviceMode } from '@/api/devices'
 import { getKeyCodeMap } from '@/api/keys'
-import { formatTime, formatIp, isOnline, deviceStatusClass, deviceStatusText } from '@/utils/format'
+import { formatTime, formatIp, deviceStatusClass, deviceStatusText } from '@/utils/format'
 
 const filters = reactive<{ mode: DeviceMode | string; search: string }>({ mode: 'all', search: '' })
 const list = ref<Device[]>([])

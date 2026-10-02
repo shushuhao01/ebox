@@ -22,7 +22,6 @@ namespace
 	constexpr wchar_t kRegSubKey[] = L"Software\\2Box";
 	constexpr wchar_t kRegServerUrl[] = L"ServerUrl";
 	constexpr wchar_t kRegHeartbeatHours[] = L"HeartbeatIntervalHours";
-	constexpr wchar_t kRegGraceDays[] = L"OfflineGraceDays";
 	constexpr wchar_t kRegForceOnline[] = L"ForceOnlineActivate";
 	constexpr wchar_t kRegServerStatus[] = L"ServerStatus";
 	constexpr wchar_t kRegWasOnline[] = L"WasOnline";
@@ -737,12 +736,6 @@ namespace biz
 		{
 			const DWORD v = regReadDword(kRegHeartbeatHours, 6);
 			return (v >= 1 && v <= 24) ? static_cast<int>(v) : 6;
-		}
-
-		int offlineGraceDays()
-		{
-			const DWORD v = regReadDword(kRegGraceDays, 7);
-			return (v >= 1 && v <= 30) ? static_cast<int>(v) : 7;
 		}
 
 		bool forceOnlineActivate()

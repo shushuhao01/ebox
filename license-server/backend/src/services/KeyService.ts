@@ -590,13 +590,21 @@ export async function countUnbindThisMonth(keyId: string): Promise<number> {
   return unbindRepo().countBy({ keyId, month: monthKey() });
 }
 
-// 清理过期状态（cron）：把绝对到期已过期的换机码置为"过期"
+// 清理过期状态（cron）：把已到期的激活码置为"过期"
+// - 换机码（type=2）：按绝对到期 expireAt
+// - 时长制库存码（type=1）：按"首次激活时间 + 有效时长"（未激活/永久码不设到期）
 export async function markExpiredKeys(): Promise<number> {
   const now = nowSec();
-  const keys = await keyRepo().findBy({ status: 1, type: 2 });
+  const keys = await keyRepo().find({ where: [{ status: 0 }, { status: 1 }] });
   let n = 0;
   for (const k of keys) {
-    if (k.expireAt && Number(k.expireAt) < now) {
+    let expire = 0;
+    if (k.type === 2) {
+      expire = Number(k.expireAt || 0);
+    } else if (k.durationSec !== '0' && k.usedAt) {
+      expire = Math.floor(k.usedAt.getTime() / 1000) + Number(k.durationSec || 0);
+    }
+    if (expire > 0 && expire < now) {
       k.status = 3;
       await keyRepo().save(k);
       n++;

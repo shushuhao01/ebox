@@ -31,6 +31,22 @@ export function formatUnixTs(v: string | number | null | undefined): string {
   return d.isValid() ? d.format('YYYY-MM-DD HH:mm') : String(v)
 }
 
+/**
+ * 时长制（库存）码的到期日期文案：到期 = 首次激活时间 + 有效时长。
+ * 永久码（时长=0）返回 ''；未激活返回 '未激活'；其余返回 '到期 YYYY-MM-DD'。
+ */
+export function durationKeyExpireText(
+  durationSec: string | number | null | undefined,
+  usedAt: string | number | Date | null | undefined,
+): string {
+  const s = Number(durationSec ?? 0)
+  if (!s) return ''
+  if (usedAt === null || usedAt === undefined || usedAt === '') return '未激活'
+  const d = dayjs(usedAt)
+  if (!d.isValid()) return ''
+  return `到期 ${d.add(s, 'second').format('YYYY-MM-DD')}`
+}
+
 /** 复制文本到剪贴板 */
 export async function copyText(text: string, tip = '已复制') {
   try {
@@ -110,14 +126,6 @@ export function formatUnbindMax(v: number): string {
   if (v === -1) return '不限'
   if (v === 0) return '禁止'
   return `每月${v}次`
-}
-
-/** 在线判断：lastOnlineAt 距今 <= 阈值(默认30分钟) */
-export function isOnline(lastOnlineAt: string | null | undefined, thresholdMin = 30): boolean {
-  if (!lastOnlineAt) return false
-  const t = dayjs(lastOnlineAt)
-  if (!t.isValid()) return false
-  return Date.now() - t.valueOf() <= thresholdMin * 60 * 1000
 }
 
 /** 状态灯 class */
