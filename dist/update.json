@@ -1,12 +1,16 @@
 {
-    "latestVersion": "v3.1.2",
-    "latestVersionCode": 30102,
-    "releaseDate": "2026/9/28",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.1.2/eBox.exe",
-    "downloadSha256": "ad98a27951d5c4ffa502aff5aa9b364997e9e406f2bf24511bda36d9ebf002e5",
+    "latestVersion": "v3.1.3",
+    "latestVersionCode": 30103,
+    "releaseDate": "2026/10/2",
+    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.1.3/eBox.exe",
+    "downloadSha256": "afcdce2c7bd4e83a560dcacad6e2444e1d212fd65aa17dc9b11ab6678659ed32",
     "downloadSize": 3085312,
     "changelog": [
-        "更新：应用图标采用全新设计（两个显示器居中布局、圆角蓝底风格），标题栏图标、任务栏图标、任务栏缩略图同步更新"
+        "修正授权平台「在线设备」统计：在线窗口改为「心跳间隔 + 宽限」，解决正常在线设备在心跳间隙被误判离线、在线数量长期偏低的问题",
+        "授权客户端启动判定改为以本地最新激活码有效期为唯一依据，取消 7 天离线宽限",
+        "激活码管理「时长」列新增到期日期展示",
+        "定时任务现覆盖时长制激活码，到期后自动置为「过期」状态",
+        "移除客户端与服务端已废弃的离线宽限配置"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false
