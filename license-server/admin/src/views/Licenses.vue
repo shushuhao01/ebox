@@ -63,13 +63,16 @@
             <el-tag :type="KEY_TYPE[row.type]?.type || 'info'" size="small">{{ KEY_TYPE[row.type]?.label || row.type }}</el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="时长 / 到期" width="150">
+        <el-table-column label="时长 / 到期" width="210">
           <template #default="{ row }">
             <template v-if="row.type === 1">
-              <div>{{ formatDuration(row.durationSec) }}</div>
-              <div v-if="durationKeyExpireText(row.durationSec, row.usedAt)" class="expire-sub text-secondary">
+              <span class="duration-cell">{{ formatDuration(row.durationSec) }}</span>
+              <span
+                v-if="durationKeyExpireText(row.durationSec, row.usedAt)"
+                class="expire-sub text-secondary"
+              >
                 {{ durationKeyExpireText(row.durationSec, row.usedAt) }}
-              </div>
+              </span>
             </template>
             <span v-else class="text-secondary">{{ formatUnixTs(row.expireAt) }}</span>
           </template>
@@ -765,9 +768,14 @@ onMounted(() => {
   color: var(--text-secondary);
 }
 
+.duration-cell {
+  white-space: nowrap;
+}
+
 .expire-sub {
+  margin-left: 6px;
   font-size: 12px;
-  line-height: 1.4;
+  white-space: nowrap;
 }
 
 .step-header {
