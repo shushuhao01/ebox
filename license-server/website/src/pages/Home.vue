@@ -18,7 +18,29 @@
         </div>
 
         <div class="hero-visual fade-up">
-          <div class="hero-card">
+          <div v-if="heroImages.length" class="hero-carousel">
+            <img
+              v-for="(url, idx) in heroImages"
+              :key="url"
+              :src="url"
+              class="hero-slide"
+              :class="{ active: idx === activeIndex }"
+              alt=""
+              @click="openLightbox(url)"
+            />
+            <div v-if="heroImages.length > 1" class="hero-dots">
+              <button
+                v-for="(url, idx) in heroImages"
+                :key="idx"
+                class="hero-dot"
+                :class="{ active: idx === activeIndex }"
+                aria-label="切换配图"
+                @click="activeIndex = idx"
+              ></button>
+            </div>
+          </div>
+
+          <div v-else class="hero-card">
             <div class="hero-card-bar">
               <span></span><span></span><span></span>
             </div>
@@ -140,11 +162,17 @@
         </div>
       </div>
     </section>
+
+    <!-- 配图放大查看 -->
+    <div v-if="lightboxUrl" class="lightbox" @click="closeLightbox">
+      <img :src="lightboxUrl" class="lightbox-img" alt="" @click.stop />
+      <button class="lightbox-close" aria-label="关闭" @click="closeLightbox">×</button>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCaseList, getLatestRelease, track, type LatestRelease, type SiteCase } from '@/api'
 import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
@@ -159,6 +187,56 @@ const heroTitle = computed(() => settings.value.home_hero_title || '一台电脑
 const heroSubtitle = computed(
   () => settings.value.home_hero_subtitle || '环境独立隔离 · 免扫码自动登录 · 体积小不卡顿',
 )
+
+/** 首页右侧轮播配图（JSON 数组字符串，空则回退默认展示卡） */
+const heroImages = computed(() => {
+  const raw = settings.value.home_hero_images
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr)) return arr.map((u) => String(u)).filter(Boolean)
+  } catch {
+    // 忽略非法 JSON
+  }
+  return []
+})
+
+const activeIndex = ref(0)
+const lightboxUrl = ref('')
+let slideTimer: number | undefined
+
+function openLightbox(url: string) {
+  lightboxUrl.value = url
+}
+
+function closeLightbox() {
+  lightboxUrl.value = ''
+}
+
+function onKeydown(e: KeyboardEvent) {
+  if (e.key === 'Escape') closeLightbox()
+}
+
+watch(
+  () => heroImages.value.length,
+  (len) => {
+    if (activeIndex.value >= len) activeIndex.value = 0
+  },
+)
+
+onMounted(() => {
+  slideTimer = window.setInterval(() => {
+    if (heroImages.value.length > 1) {
+      activeIndex.value = (activeIndex.value + 1) % heroImages.value.length
+    }
+  }, 4000)
+  window.addEventListener('keydown', onKeydown)
+})
+
+onUnmounted(() => {
+  if (slideTimer) window.clearInterval(slideTimer)
+  window.removeEventListener('keydown', onKeydown)
+})
 
 const features = [
   { icon: '🔒', title: '环境独立隔离', desc: '每个多开环境相互独立，配置、数据互不干扰。' },
@@ -265,6 +343,100 @@ onMounted(async () => {
   margin-top: 18px;
   color: var(--text-3);
   font-size: 14px;
+}
+
+.hero-carousel {
+  position: relative;
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: var(--shadow-md);
+  border: 1px solid var(--border);
+  background: #fff;
+  aspect-ratio: 4 / 3;
+}
+
+.hero-slide {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  cursor: zoom-in;
+}
+
+.hero-slide.active {
+  opacity: 1;
+}
+
+.hero-dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 12px;
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  z-index: 2;
+}
+
+.hero-dot {
+  width: 8px;
+  height: 8px;
+  padding: 0;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.65);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+  cursor: pointer;
+  transition: all 0.25s ease;
+}
+
+.hero-dot.active {
+  width: 20px;
+  border-radius: 4px;
+  background: #fff;
+}
+
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 48px;
+  background: rgba(0, 0, 0, 0.86);
+  cursor: zoom-out;
+}
+
+.lightbox-img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 8px;
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.lightbox-close {
+  position: absolute;
+  top: 20px;
+  right: 24px;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.15);
+  color: #fff;
+  font-size: 26px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.3);
 }
 
 .hero-card {

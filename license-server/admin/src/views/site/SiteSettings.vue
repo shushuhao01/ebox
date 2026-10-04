@@ -55,6 +55,33 @@
         <el-input v-model="form.home_hero_subtitle" maxlength="200" />
       </el-form-item>
 
+      <div class="section-title">首页配图</div>
+      <el-form-item label="轮播配图">
+        <div class="hero-images">
+          <div v-for="(url, idx) in heroImages" :key="url" class="hero-image-item">
+            <img :src="url" class="hero-image-thumb" />
+            <div class="hero-image-actions">
+              <el-button link size="small" :disabled="idx === 0" @click="moveImage(idx, -1)">上移</el-button>
+              <el-button link size="small" :disabled="idx === heroImages.length - 1" @click="moveImage(idx, 1)">下移</el-button>
+              <el-button link type="danger" size="small" @click="removeImage(idx)">删除</el-button>
+            </div>
+          </div>
+          <el-upload
+            class="hero-image-upload"
+            :show-file-list="false"
+            :http-request="handleUpload"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+          >
+            <div class="hero-image-add" v-loading="uploading">
+              <span v-if="!uploading">+</span>
+            </div>
+          </el-upload>
+        </div>
+        <div class="field-tip">
+          展示在官网首页标题右侧，支持多张自动轮播，点击图片可放大查看。建议放应用截图或宣传海报，单张不超过 10MB。
+        </div>
+      </el-form-item>
+
       <div class="section-title">购买 / 仓库</div>
       <el-form-item label="购买地址">
         <el-input v-model="form.purchase_url" placeholder="点击购买跳转的外部地址（独立发卡站）" />
@@ -112,10 +139,12 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { getSiteSettings, updateSiteSettings } from '@/api/site'
+import type { UploadRequestOptions } from 'element-plus'
+import { getSiteSettings, updateSiteSettings, uploadSiteImage } from '@/api/site'
 
 const loading = ref(false)
 const saving = ref(false)
+const uploading = ref(false)
 
 const form = reactive({
   site_name: '',
@@ -129,6 +158,7 @@ const form = reactive({
   announcement_url: '',
   home_hero_title: '',
   home_hero_subtitle: '',
+  home_hero_images: '[]',
   purchase_url: '',
   github_url: '',
   icp: '',
@@ -139,6 +169,20 @@ const form = reactive({
   statistics_code: '',
 })
 
+/** 首页轮播配图列表（保存时序列化到 form.home_hero_images） */
+const heroImages = ref<string[]>([])
+
+function parseImages(raw: string): string[] {
+  if (!raw) return []
+  try {
+    const arr = JSON.parse(raw)
+    if (Array.isArray(arr)) return arr.map((u) => String(u)).filter(Boolean)
+  } catch {
+    // 忽略非法 JSON
+  }
+  return []
+}
+
 async function load() {
   loading.value = true
   try {
@@ -146,14 +190,40 @@ async function load() {
     for (const key of Object.keys(form) as (keyof typeof form)[]) {
       form[key] = data[key] ?? form[key]
     }
+    heroImages.value = parseImages(form.home_hero_images)
   } finally {
     loading.value = false
   }
 }
 
+async function handleUpload(options: UploadRequestOptions) {
+  uploading.value = true
+  try {
+    const res = await uploadSiteImage(options.file as File)
+    heroImages.value.push(res.url)
+    ElMessage.success('图片上传成功')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    uploading.value = false
+  }
+}
+
+function moveImage(index: number, offset: number) {
+  const target = index + offset
+  if (target < 0 || target >= heroImages.value.length) return
+  const list = heroImages.value
+  ;[list[index], list[target]] = [list[target], list[index]]
+}
+
+function removeImage(index: number) {
+  heroImages.value.splice(index, 1)
+}
+
 async function save() {
   saving.value = true
   try {
+    form.home_hero_images = JSON.stringify(heroImages.value)
     await updateSiteSettings({ ...form })
     ElMessage.success('站点设置已保存')
   } catch {
@@ -189,6 +259,67 @@ onMounted(load)
   font-size: 12px;
   color: var(--text-secondary);
   line-height: 1.6;
+}
+
+.hero-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.hero-image-item,
+.hero-image-add {
+  width: 132px;
+  height: 99px;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.hero-image-item {
+  position: relative;
+  border: 1px solid var(--border-color, #dcdfe6);
+  background: #f5f7fa;
+}
+
+.hero-image-thumb {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.hero-image-actions {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.55);
+}
+
+.hero-image-actions :deep(.el-button) {
+  color: #fff;
+  --el-button-hover-link-text-color: #fff;
+}
+
+.hero-image-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--border-color, #dcdfe6);
+  color: var(--text-secondary);
+  font-size: 26px;
+  cursor: pointer;
+  background: #fafbfc;
+  transition: border-color 0.2s ease;
+}
+
+.hero-image-add:hover {
+  border-color: var(--primary-color);
+  color: var(--primary-color);
 }
 
 .panel-footer {
