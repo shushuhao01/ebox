@@ -33,8 +33,9 @@
       :contenteditable="!disabled"
       @input="emitContent"
       @blur="emitContent"
+      @paste="onPaste"
     ></div>
-    <div class="re-tip">支持标题 / 加粗 / 斜体 / 列表 / 引用 / 表格 / 链接 / 对齐；可上传图片插入正文</div>
+    <div class="re-tip">支持标题 / 加粗 / 斜体 / 列表 / 引用 / 表格 / 链接 / 对齐；可上传图片，或直接粘贴图片（自动上传）</div>
   </div>
 </template>
 
@@ -97,6 +98,105 @@ async function onPickImage(e: Event) {
     ElMessage.success('图片已插入')
   } catch {
     // 拦截器已提示
+  } finally {
+    uploading.value = false
+  }
+}
+
+/** 匹配 src 为 base64 内联图的 <img> 标签 */
+const DATA_IMG_RE = /<img\b[^>]*\bsrc\s*=\s*["'](data:image\/[^"']+)["'][^>]*>/gi
+
+/** 将 base64 图片 DataURL 转为 File，便于走上传接口 */
+function dataUrlToFile(dataUrl: string): File | null {
+  const m = /^data:([^;,]+);base64,(.*)$/is.exec(dataUrl.trim())
+  if (!m) return null
+  try {
+    const bin = atob(m[2])
+    const bytes = new Uint8Array(bin.length)
+    for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i)
+    const type = m[1] || 'image/png'
+    const ext = (type.split('/')[1] || 'png').replace('+xml', '')
+    return new File([bytes], `pasted-${Date.now()}.${ext}`, { type })
+  } catch {
+    return null
+  }
+}
+
+/** 上传单张图片，失败返回 null（拦截器已提示） */
+async function uploadImageFile(file: File): Promise<string | null> {
+  if (file.size > 10 * 1024 * 1024) {
+    ElMessage.error('图片大小不能超过 10MB')
+    return null
+  }
+  try {
+    const res = await uploadSiteImage(file)
+    return res.url
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 拦截粘贴：把剪贴板里的图片（截图 / 复制的图片 / 富文本中的 base64 内联图）
+ * 统一走上传接口转为短地址再插入，避免 base64 撑爆请求体。
+ */
+async function onPaste(e: ClipboardEvent) {
+  if (props.disabled) return
+  const dt = e.clipboardData
+  if (!dt) return
+
+  const html = dt.getData('text/html') || ''
+  // 剪贴板中的图片文件（截图 / 复制图片）
+  const fileList: File[] = []
+  for (const item of Array.from(dt.items || [])) {
+    if (item.kind === 'file' && item.type.startsWith('image/')) {
+      const f = item.getAsFile()
+      if (f) fileList.push(f)
+    }
+  }
+  // 富文本里内联的 base64 图片
+  const inlineDataUrls: string[] = []
+  if (html) {
+    DATA_IMG_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = DATA_IMG_RE.exec(html)) !== null) inlineDataUrls.push(m[1])
+  }
+  // 无图片则走浏览器默认粘贴
+  if (!fileList.length && !inlineDataUrls.length) return
+
+  e.preventDefault()
+  uploading.value = true
+  try {
+    const toImg = (url: string) => `<img src="${url}" style="max-width:100%;height:auto;" />`
+
+    // 上传剪贴板图片文件
+    const fileUrls: string[] = []
+    for (const f of fileList) {
+      const url = await uploadImageFile(f)
+      if (url) fileUrls.push(url)
+    }
+    // 上传 base64 内联图，建立 原地址 → 新地址 映射（同一张图只传一次）
+    const urlMap = new Map<string, string>()
+    for (const dataUrl of inlineDataUrls) {
+      if (urlMap.has(dataUrl)) continue
+      const f = dataUrlToFile(dataUrl)
+      const url = f ? await uploadImageFile(f) : null
+      if (url) urlMap.set(dataUrl, url)
+    }
+    if (!fileUrls.length && !urlMap.size) return
+
+    // 截图等纯图片：直接插入；含富文本：保留原文并把内联图替换为上传后的地址
+    let out = fileUrls.map(toImg).join('')
+    if (html && urlMap.size) {
+      out += html.replace(DATA_IMG_RE, (_all, dataUrl: string) => {
+        const url = urlMap.get(dataUrl)
+        return url ? toImg(url) : ''
+      })
+    }
+    editable.value?.focus()
+    document.execCommand('insertHTML', false, out)
+    emitContent()
+    ElMessage.success('图片已上传并插入')
   } finally {
     uploading.value = false
   }

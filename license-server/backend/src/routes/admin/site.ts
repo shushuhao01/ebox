@@ -89,6 +89,7 @@ function sanitizeHtml(html: string): string {
     .replace(/<(iframe|embed|object|form)[^>]*>/gi, '')
     .replace(/\son\w+\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/gi, '')
     .replace(/javascript:/gi, '')
+    .replace(/<img\b[^>]*\bsrc\s*=\s*("data:[^"]*"|'data:[^']*')[^>]*>/gi, '')
     .replace(/<a\s+([^>]*?)href\s*=\s*("javascript:[^"]*"|'javascript:[^']*')/gi, '<a $1href="#"');
 }
 
