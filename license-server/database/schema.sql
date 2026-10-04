@@ -267,6 +267,8 @@ CREATE TABLE IF NOT EXISTS `site_download_mirrors` (
   `name` VARCHAR(64) NOT NULL,
   `url` VARCHAR(500) NOT NULL,
   `type` VARCHAR(32) NOT NULL DEFAULT 'other',   -- github/netdisk/mirror/other
+  `password` VARCHAR(128) NULL,                  -- 网盘密码（可选）
+  `extract_code` VARCHAR(64) NULL,               -- 网盘提取码（可选）
   `sort` INT NOT NULL DEFAULT 0,
   `enabled` TINYINT NOT NULL DEFAULT 1,
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP

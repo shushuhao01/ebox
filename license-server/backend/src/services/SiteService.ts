@@ -41,6 +41,14 @@ export const SITE_DEFAULTS: Record<string, string> = {
   // 访问安全（仅后台可见）
   maintenance_mode: '0',
   access_password: '',
+  // 官网直下：后台上传的安装包（仅后台可见，非空时优先于 dist/update.json）
+  release_version: '',
+  release_date: '',
+  release_changelog: '[]',
+  release_file_url: '',
+  release_file_name: '',
+  release_file_size: '0',
+  release_file_sha256: '',
 };
 
 /** 公开给官网前台的设置键（不包含敏感项） */
@@ -105,7 +113,14 @@ export interface LatestRelease {
   downloadSha256: string;
   downloadSize: number;
   changelog: string[];
-  mirrors: { id: string; name: string; url: string; type: string }[];
+  mirrors: {
+    id: string;
+    name: string;
+    url: string;
+    type: string;
+    password: string | null;
+    extractCode: string | null;
+  }[];
 }
 
 let releaseCache: { at: number; data: LatestRelease } | null = null;
@@ -129,11 +144,56 @@ function resolveUpdateJsonPath(): string | null {
   return null;
 }
 
-/** 读取最新版本信息（读 update.json + 后台配置的下载地址） */
+/** 解析后台填写的更新日志（JSON 数组字符串，兼容按行拆分） */
+function parseChangelog(value: string): string[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(value);
+    if (Array.isArray(parsed)) return parsed.map((v) => String(v)).filter(Boolean);
+  } catch {
+    // 非 JSON，按行拆分
+  }
+  return value.split('\n').map((s) => s.trim()).filter(Boolean);
+}
+
+/** 读取最新版本信息（后台直下安装包优先，否则回退 dist/update.json + 后台配置的下载地址） */
 export async function getLatestRelease(): Promise<LatestRelease | null> {
   const now = Date.now();
   if (releaseCache && now - releaseCache.at < RELEASE_CACHE_MS) return releaseCache.data;
 
+  const mirrors = await AppDataSource.getRepository(SiteDownloadMirror).find({
+    where: { enabled: 1 },
+    order: { sort: 'ASC', id: 'ASC' },
+  });
+  const mirrorList = mirrors.map((m) => ({
+    id: m.id,
+    name: m.name,
+    url: m.url,
+    type: m.type,
+    password: m.password || null,
+    extractCode: m.extractCode || null,
+  }));
+
+  const settings = await getSiteSettings();
+  const fileUrl = settings.release_file_url || '';
+
+  // 官网直下：后台上传了安装包时，优先使用后台配置的版本号 / 更新日志 / 直链
+  if (fileUrl) {
+    const data: LatestRelease = {
+      latestVersion: settings.release_version || '',
+      latestVersionCode: 0,
+      releaseDate: settings.release_date || '',
+      downloadUrl: fileUrl,
+      downloadSha256: settings.release_file_sha256 || '',
+      downloadSize: Number(settings.release_file_size || 0) || 0,
+      changelog: parseChangelog(settings.release_changelog || ''),
+      mirrors: mirrorList,
+    };
+    releaseCache = { at: now, data };
+    return data;
+  }
+
+  // 回退：GitHub Release 自动生成的 dist/update.json
   const p = resolveUpdateJsonPath();
   if (!p) return null;
   let raw: Record<string, unknown>;
@@ -143,11 +203,6 @@ export async function getLatestRelease(): Promise<LatestRelease | null> {
     return null;
   }
 
-  const mirrors = await AppDataSource.getRepository(SiteDownloadMirror).find({
-    where: { enabled: 1 },
-    order: { sort: 'ASC', id: 'ASC' },
-  });
-
   const data: LatestRelease = {
     latestVersion: String(raw.latestVersion ?? ''),
     latestVersionCode: Number(raw.latestVersionCode ?? 0),
@@ -156,7 +211,7 @@ export async function getLatestRelease(): Promise<LatestRelease | null> {
     downloadSha256: String(raw.downloadSha256 ?? ''),
     downloadSize: Number(raw.downloadSize ?? 0),
     changelog: Array.isArray(raw.changelog) ? (raw.changelog as string[]) : [],
-    mirrors: mirrors.map((m) => ({ id: m.id, name: m.name, url: m.url, type: m.type })),
+    mirrors: mirrorList,
   };
   releaseCache = { at: now, data };
   return data;

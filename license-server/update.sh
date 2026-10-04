@@ -280,6 +280,30 @@ else
         ok "数据库 $DB_DATABASE 表结构正常（$TABLE_COUNT 张表）"
     fi
 
+    # 兼容旧库：为 site_download_mirrors 补充 password / extract_code 列（网盘密码 / 提取码）
+    # 说明：schema.sql 仅在表缺失时整体导入，旧库不会自动补列；MySQL 8 也不支持 ADD COLUMN IF NOT EXISTS，
+    #       因此先查 information_schema 再决定是否 ALTER（列已存在则跳过，不丢数据）。
+    MIRROR_TABLE_EXISTS=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+        -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE' AND table_name='site_download_mirrors';" 2>/dev/null)
+    if [ "${MIRROR_TABLE_EXISTS:-0}" = "1" ]; then
+        HAS_COL=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+            -N -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$DB_DATABASE' AND table_name='site_download_mirrors' AND column_name='password';" 2>/dev/null)
+        if [ "${HAS_COL:-0}" = "0" ]; then
+            info "site_download_mirrors 缺少 password 列，自动补充 ..."
+            MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+                -e "ALTER TABLE site_download_mirrors ADD COLUMN \`password\` VARCHAR(128) NULL COMMENT '网盘密码（可选）' AFTER \`type\`;" \
+                && ok "已补充列 site_download_mirrors.password" || warn "补充 password 列失败，可手动执行 ALTER TABLE"
+        fi
+        HAS_COL=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+            -N -e "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='$DB_DATABASE' AND table_name='site_download_mirrors' AND column_name='extract_code';" 2>/dev/null)
+        if [ "${HAS_COL:-0}" = "0" ]; then
+            info "site_download_mirrors 缺少 extract_code 列，自动补充 ..."
+            MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+                -e "ALTER TABLE site_download_mirrors ADD COLUMN \`extract_code\` VARCHAR(64) NULL COMMENT '网盘提取码（可选）' AFTER \`password\`;" \
+                && ok "已补充列 site_download_mirrors.extract_code" || warn "补充 extract_code 列失败，可手动执行 ALTER TABLE"
+        fi
+    fi
+
     # 管理员确保存在（默认 admin/admin123，可用 .env 的 ADMIN_USERNAME / ADMIN_PASSWORD 覆盖）
     ADMIN_USER=$(grep -E '^ADMIN_USERNAME=' "$ENV_FILE" | head -n1 | sed 's/^ADMIN_USERNAME=//' | tr -d '"' | tr -d "'")
     ADMIN_USER="${ADMIN_USER:-admin}"

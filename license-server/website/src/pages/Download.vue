@@ -63,21 +63,41 @@
             <h2 class="block-title">其他下载地址</h2>
             <p class="block-sub">包含网盘、镜像等备用渠道，可按需选择。</p>
             <div class="grid grid-3">
-              <a
-                v-for="m in release.mirrors"
-                :key="m.id"
-                class="card mirror-card"
-                :href="m.url"
-                target="_blank"
-                rel="noopener"
-                @click="onDownload"
-              >
-                <div class="mirror-icon">{{ typeIcon(m.type) }}</div>
-                <div class="mirror-body">
-                  <div class="mirror-name">{{ m.name || typeLabel(m.type) }}</div>
-                  <div class="mirror-type">{{ typeLabel(m.type) }}</div>
+              <div v-for="m in release.mirrors" :key="m.id" class="card mirror-card">
+                <a
+                  class="mirror-main"
+                  :href="m.url"
+                  target="_blank"
+                  rel="noopener"
+                  @click="onDownload"
+                >
+                  <div class="mirror-icon">{{ typeIcon(m.type) }}</div>
+                  <div class="mirror-body">
+                    <div class="mirror-name">{{ m.name || typeLabel(m.type) }}</div>
+                    <div class="mirror-type">{{ typeLabel(m.type) }}</div>
+                  </div>
+                </a>
+                <div v-if="m.password || m.extractCode" class="mirror-cred">
+                  <div v-if="m.password" class="cred-row">
+                    <span class="cred-label">密码</span>
+                    <span class="cred-value">{{ m.password }}</span>
+                    <button
+                      type="button"
+                      class="cred-copy"
+                      @click="copyCred(`${m.id}-pwd`, m.password)"
+                    >{{ copiedKey === `${m.id}-pwd` ? '已复制' : '复制' }}</button>
+                  </div>
+                  <div v-if="m.extractCode" class="cred-row">
+                    <span class="cred-label">提取码</span>
+                    <span class="cred-value">{{ m.extractCode }}</span>
+                    <button
+                      type="button"
+                      class="cred-copy"
+                      @click="copyCred(`${m.id}-code`, m.extractCode)"
+                    >{{ copiedKey === `${m.id}-code` ? '已复制' : '复制' }}</button>
+                  </div>
                 </div>
-              </a>
+              </div>
             </div>
           </div>
 
@@ -160,6 +180,34 @@ function formatSize(bytes: number) {
 
 function onDownload() {
   track('download')
+}
+
+const copiedKey = ref('')
+let copyTimer: ReturnType<typeof setTimeout> | null = null
+
+async function copyCred(key: string, value: string | null) {
+  if (!value) return
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      const ta = document.createElement('textarea')
+      ta.value = value
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      document.body.appendChild(ta)
+      ta.select()
+      document.execCommand('copy')
+      document.body.removeChild(ta)
+    }
+    copiedKey.value = key
+    if (copyTimer) clearTimeout(copyTimer)
+    copyTimer = setTimeout(() => {
+      copiedKey.value = ''
+    }, 1500)
+  } catch {
+    // 复制失败时静默处理
+  }
 }
 
 onMounted(async () => {
@@ -314,9 +362,15 @@ onMounted(async () => {
 
 .mirror-card {
   display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 20px;
+}
+
+.mirror-main {
+  display: flex;
   align-items: center;
   gap: 14px;
-  padding: 20px;
 }
 
 .mirror-icon {
@@ -332,6 +386,49 @@ onMounted(async () => {
   margin-top: 4px;
   font-size: 13px;
   color: var(--text-3);
+}
+
+.mirror-cred {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 12px;
+  border-top: 1px dashed var(--border);
+}
+
+.cred-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.cred-label {
+  color: var(--text-3);
+}
+
+.cred-value {
+  font-family: 'JetBrains Mono', Consolas, monospace;
+  font-weight: 600;
+  color: var(--text-1);
+  word-break: break-all;
+}
+
+.cred-copy {
+  margin-left: auto;
+  padding: 2px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: #fff;
+  color: var(--primary-color);
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cred-copy:hover {
+  border-color: var(--primary-color);
+  background: var(--primary-light);
 }
 
 .changelog-list,

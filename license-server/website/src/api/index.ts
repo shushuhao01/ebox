@@ -73,6 +73,8 @@ export interface DownloadMirror {
   name: string
   url: string
   type: string
+  password: string | null
+  extractCode: string | null
 }
 
 export interface LatestRelease {

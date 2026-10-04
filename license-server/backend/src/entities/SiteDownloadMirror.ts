@@ -15,6 +15,12 @@ export class SiteDownloadMirror {
   @Column({ type: 'varchar', length: 32, default: 'other', comment: 'github/netdisk/mirror/other' })
   type!: string;
 
+  @Column({ type: 'varchar', length: 128, nullable: true, comment: '网盘密码（可选）' })
+  password!: string | null;
+
+  @Column({ name: 'extract_code', type: 'varchar', length: 64, nullable: true, comment: '网盘提取码（可选）' })
+  extractCode!: string | null;
+
   @Column({ type: 'int', default: 0 })
   sort!: number;
 

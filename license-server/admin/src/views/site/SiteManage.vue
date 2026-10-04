@@ -33,6 +33,9 @@
       <el-tab-pane label="下载地址" name="mirrors">
         <SiteMirrors v-if="rendered.mirrors" />
       </el-tab-pane>
+      <el-tab-pane label="版本与安装包" name="release">
+        <SiteRelease v-if="rendered.release" />
+      </el-tab-pane>
       <el-tab-pane label="导航菜单" name="nav">
         <SiteNav v-if="rendered.nav" />
       </el-tab-pane>
@@ -60,6 +63,7 @@ import SiteDoc from './SiteDoc.vue'
 import SiteArticles from './SiteArticles.vue'
 import SiteCases from './SiteCases.vue'
 import SiteMirrors from './SiteMirrors.vue'
+import SiteRelease from './SiteRelease.vue'
 import SiteNav from './SiteNav.vue'
 import SiteContacts from './SiteContacts.vue'
 import SiteMedia from './SiteMedia.vue'

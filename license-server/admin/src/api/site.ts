@@ -62,9 +62,21 @@ export interface SiteMirror {
   name: string
   url: string
   type: string
+  password: string | null
+  extractCode: string | null
   sort: number
   enabled: number
   createdAt: string
+}
+
+export interface ReleaseConfig {
+  release_version: string
+  release_date: string
+  release_changelog: string
+  release_file_url: string
+  release_file_name: string
+  release_file_size: string
+  release_file_sha256: string
 }
 
 export interface SiteAccessRule {
@@ -250,6 +262,25 @@ export function uploadSiteImage(file: File) {
 
 export function syncRelease() {
   return post<{ synced: boolean }>('/site/release/sync')
+}
+
+/** 读取官网直下配置（版本号 / 更新日志 / 安装包信息） */
+export function getReleaseConfig() {
+  return get<ReleaseConfig>('/site/release')
+}
+
+/** 保存官网直下配置（不含文件本身） */
+export function saveReleaseConfig(data: Partial<ReleaseConfig>) {
+  return put<ReleaseConfig>('/site/release', data)
+}
+
+/** 上传安装包（exe / zip）：以原始二进制提交，文件名通过 query 传递 */
+export function uploadReleaseFile(file: File) {
+  const url = `/site/release/upload?filename=${encodeURIComponent(file.name)}`
+  return request.post(url, file, {
+    headers: { 'Content-Type': 'application/octet-stream' },
+    timeout: 0,
+  }) as unknown as Promise<ReleaseConfig>
 }
 
 export function getSiteStats(days = 30) {

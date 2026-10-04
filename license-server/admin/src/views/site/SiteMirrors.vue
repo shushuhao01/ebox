@@ -27,6 +27,15 @@
           <span class="code-font">{{ row.url }}</span>
         </template>
       </el-table-column>
+      <el-table-column label="密码/提取码" width="180" align="center">
+        <template #default="{ row }">
+          <template v-if="row.password || row.extractCode">
+            <span v-if="row.password" class="cred-tag">密码 {{ row.password }}</span>
+            <span v-if="row.extractCode" class="cred-tag">提取码 {{ row.extractCode }}</span>
+          </template>
+          <span v-else class="cred-empty">—</span>
+        </template>
+      </el-table-column>
       <el-table-column label="排序" width="80" align="center" prop="sort" />
       <el-table-column label="启用" width="90" align="center">
         <template #default="{ row }">
@@ -59,6 +68,21 @@
         </el-form-item>
         <el-form-item label="下载地址" required>
           <el-input v-model="form.url" placeholder="https://...（含网盘分享链接）" />
+        </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="密码">
+              <el-input v-model="form.password" maxlength="128" placeholder="可选，网盘访问密码" />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="提取码">
+              <el-input v-model="form.extractCode" maxlength="64" placeholder="可选，网盘提取码" />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item>
+          <span class="form-hint">密码 / 提取码为可选项，网盘渠道按需填写，官网下载页会一并展示并支持复制。</span>
         </el-form-item>
         <el-row :gutter="12">
           <el-col :span="12">
@@ -127,6 +151,8 @@ const form = reactive({
   name: '',
   url: '',
   type: 'mirror',
+  password: '',
+  extractCode: '',
   sort: 0,
   enabled: 1,
 })
@@ -136,6 +162,8 @@ function resetForm() {
   form.name = ''
   form.url = ''
   form.type = 'mirror'
+  form.password = ''
+  form.extractCode = ''
   form.sort = 0
   form.enabled = 1
 }
@@ -151,6 +179,8 @@ function openEdit(row: SiteMirror) {
   form.name = row.name
   form.url = row.url
   form.type = row.type
+  form.password = row.password || ''
+  form.extractCode = row.extractCode || ''
   form.sort = row.sort || 0
   form.enabled = row.enabled ? 1 : 0
   dialogVisible.value = true
@@ -170,6 +200,8 @@ async function submit() {
     name: form.name.trim(),
     url: form.url.trim(),
     type: form.type,
+    password: form.password.trim(),
+    extractCode: form.extractCode.trim(),
     sort: form.sort,
     enabled: form.enabled,
   }
@@ -226,5 +258,25 @@ onMounted(load)
   .sub-toolbar-right {
     margin-left: auto;
   }
+}
+
+.cred-tag {
+  display: inline-block;
+  margin: 0 2px;
+  padding: 1px 8px;
+  border-radius: 4px;
+  background: var(--el-fill-color-light, #f5f7fa);
+  color: var(--el-text-color-regular, #606266);
+  font-size: 12px;
+}
+
+.cred-empty {
+  color: var(--el-text-color-placeholder, #a8abb2);
+}
+
+.form-hint {
+  color: var(--el-text-color-secondary, #909399);
+  font-size: 12px;
+  line-height: 1.5;
 }
 </style>

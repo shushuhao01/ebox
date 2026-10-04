@@ -2,6 +2,7 @@ import { Router } from 'express';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import Joi from 'joi';
 import { AppDataSource } from '../../config/database';
 import { SiteArticle } from '../../entities/SiteArticle';
@@ -40,6 +41,33 @@ const EXT_MAP: Record<string, string> = {
   'image/gif': '.gif',
   'image/svg+xml': '.svg',
 };
+
+// 官网直下安装包目录与允许的扩展名
+const RELEASE_UPLOAD_DIR = path.join(UPLOAD_ROOT, 'releases');
+try {
+  fs.mkdirSync(RELEASE_UPLOAD_DIR, { recursive: true });
+} catch {
+  // 目录创建失败时，上传接口会返回错误，不影响其他接口
+}
+const RELEASE_EXTS = ['.exe', '.zip'];
+const RELEASE_UPLOAD_LIMIT = process.env.RELEASE_UPLOAD_LIMIT || '500mb';
+
+/** 归一化更新日志为 JSON 数组字符串（兼容数组 / JSON 字符串 / 按行文本） */
+function normalizeChangelog(v: unknown): string {
+  if (v === undefined || v === null || v === '') return '[]';
+  if (Array.isArray(v)) {
+    return JSON.stringify(v.map((s) => String(s)).filter((s) => s.trim()));
+  }
+  const s = String(v).trim();
+  if (!s) return '[]';
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed)) return JSON.stringify(parsed.map((x) => String(x)));
+  } catch {
+    // 非 JSON，按行拆分
+  }
+  return JSON.stringify(s.split('\n').map((x) => x.trim()).filter(Boolean));
+}
 
 /** 基础 SVG 清洗：移除脚本与事件、外链嵌入等危险内容 */
 function sanitizeSvg(svg: string): string {
@@ -402,6 +430,8 @@ router.post('/mirrors', async (req, res) => {
     name: Joi.string().required().max(64),
     url: Joi.string().required().max(500),
     type: Joi.string().valid('github', 'netdisk', 'mirror', 'other').default('other'),
+    password: Joi.string().allow('', null).max(128).default(null),
+    extractCode: Joi.string().allow('', null).max(64).default(null),
     sort: Joi.number().default(0),
     enabled: Joi.number().valid(0, 1).default(1),
   }).validate(req.body);
@@ -419,6 +449,8 @@ router.put('/mirrors/:id', async (req, res) => {
   if (b.name !== undefined) row.name = String(b.name);
   if (b.url !== undefined) row.url = String(b.url);
   if (b.type !== undefined) row.type = String(b.type);
+  if (b.password !== undefined) row.password = (b.password as string) || null;
+  if (b.extractCode !== undefined) row.extractCode = (b.extractCode as string) || null;
   if (b.sort !== undefined) row.sort = Number(b.sort) || 0;
   if (b.enabled !== undefined) row.enabled = Number(b.enabled) ? 1 : 0;
   const saved = await mirrorRepo().save(row);
@@ -550,6 +582,102 @@ router.delete('/media/:id', async (req, res) => {
   await mediaRepo().delete({ id: row.id });
   await writeOperationLog(req.auth!.userId, '官网-删除图片', row.filename, null, clientIp(req));
   ok(res, { id: row.id });
+});
+
+// ==================== 官网直下（版本与安装包） ====================
+
+/** 从全部设置中挑选官网直下相关字段 */
+function pickReleaseConfig(all: Record<string, string>) {
+  return {
+    release_version: all.release_version || '',
+    release_date: all.release_date || '',
+    release_changelog: all.release_changelog || '[]',
+    release_file_url: all.release_file_url || '',
+    release_file_name: all.release_file_name || '',
+    release_file_size: all.release_file_size || '0',
+    release_file_sha256: all.release_file_sha256 || '',
+  };
+}
+
+router.get('/release', async (_req, res) => {
+  ok(res, pickReleaseConfig(await getSiteSettings()));
+});
+
+router.put('/release', async (req, res) => {
+  const { error, value } = Joi.object({
+    release_version: Joi.string().allow('', null).max(64).default(''),
+    release_date: Joi.string().allow('', null).max(32).default(''),
+    release_changelog: Joi.any(),
+  }).validate(req.body);
+  if (error) return fail(res, `参数错误：${error.message}`, 400);
+  const v = value as Record<string, unknown>;
+  await setSiteSettings({
+    release_version: String(v.release_version || ''),
+    release_date: String(v.release_date || ''),
+    release_changelog: normalizeChangelog(v.release_changelog),
+  });
+  clearReleaseCache();
+  await writeOperationLog(
+    req.auth!.userId,
+    '官网-更新版本信息',
+    String(v.release_version || ''),
+    `日期=${v.release_date || '-'}`,
+    clientIp(req)
+  );
+  ok(res, pickReleaseConfig(await getSiteSettings()));
+});
+
+/**
+ * 上传安装包：接收原始二进制（Content-Type 不限），文件名通过 query.filename 传入。
+ * 仅允许 .exe / .zip，成功后写入 release_* 设置并返回最新配置；旧安装包文件自动清理。
+ */
+router.post('/release/upload', express.raw({ type: () => true, limit: RELEASE_UPLOAD_LIMIT }), async (req, res) => {
+  try {
+    const buf = req.body as Buffer;
+    if (!Buffer.isBuffer(buf) || !buf.length) return fail(res, '上传内容为空', 400);
+
+    const orig = String(req.query.filename || '');
+    const ext = path.extname(orig).toLowerCase();
+    if (!RELEASE_EXTS.includes(ext)) return fail(res, '仅支持 .exe / .zip 安装包', 400);
+
+    const base =
+      path.basename(orig, path.extname(orig)).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 60) || 'release';
+    const filename = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${base}${ext}`;
+    fs.writeFileSync(path.join(RELEASE_UPLOAD_DIR, filename), buf);
+
+    const url = `/api/uploads/releases/${filename}`;
+    const sha256 = crypto.createHash('sha256').update(buf).digest('hex');
+
+    // 清理上一个安装包文件（仅限本站 releases 目录）
+    const all = await getSiteSettings();
+    const oldUrl = all.release_file_url || '';
+    if (oldUrl.startsWith('/api/uploads/releases/')) {
+      try {
+        const oldFile = path.join(RELEASE_UPLOAD_DIR, path.basename(oldUrl));
+        if (fs.existsSync(oldFile)) fs.unlinkSync(oldFile);
+      } catch {
+        // 旧文件删除失败不影响新包上传
+      }
+    }
+
+    await setSiteSettings({
+      release_file_url: url,
+      release_file_name: orig ? path.basename(orig) : filename,
+      release_file_size: String(buf.length),
+      release_file_sha256: sha256,
+    });
+    clearReleaseCache();
+    await writeOperationLog(
+      req.auth!.userId,
+      '官网-上传安装包',
+      orig || filename,
+      `${(buf.length / 1048576).toFixed(1)}MB`,
+      clientIp(req)
+    );
+    ok(res, pickReleaseConfig(await getSiteSettings()));
+  } catch (e) {
+    return fail(res, e instanceof Error ? e.message : '上传失败', 500, 500);
+  }
 });
 
 // ==================== 版本同步 / 统计 ====================
