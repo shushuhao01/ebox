@@ -119,6 +119,7 @@ step "1/10 代码目录检查"
 [ -d "$APP_DIR" ] || fail "应用目录不存在: $APP_DIR（请先在宝塔建站并 clone 代码）"
 [ -d "$APP_DIR/backend" ] || fail "未找到 $APP_DIR/backend"
 [ -d "$APP_DIR/admin" ]   || fail "未找到 $APP_DIR/admin"
+[ -d "$APP_DIR/website" ] || fail "未找到 $APP_DIR/website（官网前台工程）"
 [ -f "$APP_DIR/backend/ecosystem.config.js" ] || fail "未找到 backend/ecosystem.config.js"
 cd "$APP_DIR" || fail "无法进入 $APP_DIR"
 ok "目录结构正常"
@@ -197,7 +198,8 @@ if [ -x "$NGINX_BIN" ]; then
     NGINX_CONF=$(find /www/server/panel/vhost/nginx -maxdepth 1 -name '*.conf' 2>/dev/null | xargs grep -l "$DOMAIN" 2>/dev/null | head -n1)
     if [ -n "$NGINX_CONF" ]; then
         grep -q 'location /api/' "$NGINX_CONF" 2>/dev/null || warn "【Nginx 检查】$NGINX_CONF 未包含 location /api/ 反代（客户端/面板接口会 404）"
-        grep -q 'admin/dist' "$NGINX_CONF" 2>/dev/null || warn "【Nginx 检查】$NGINX_CONF 未包含 admin/dist 静态目录（面板会白屏）"
+        grep -q 'admin/dist' "$NGINX_CONF" 2>/dev/null || warn "【Nginx 检查】$NGINX_CONF 未包含 admin/dist 静态目录（后台面板会白屏）"
+        grep -q 'website/dist' "$NGINX_CONF" 2>/dev/null || warn "【Nginx 检查】$NGINX_CONF 未包含 website/dist 静态目录（官网会 404）"
         grep -q 'proxy_pass' "$NGINX_CONF" 2>/dev/null || warn "【Nginx 检查】$NGINX_CONF 未包含 proxy_pass（后端接口不可达）"
     else
         warn "未找到 $DOMAIN 的宝塔 Nginx 站点配置，请确认已按 deploy/nginx/abc222.cn.conf 配置"
@@ -305,14 +307,20 @@ run "构建后端" npm run build || fail "后端构建失败（tsc 编译报错�
 ok "后端构建完成: dist/app.js"
 
 # ============================================================
-# 步骤 8：前端依赖 + 构建
+# 步骤 8：后台 + 官网依赖与构建
 # ============================================================
-step "8/10 前端依赖与构建"
+step "8/10 后台与官网构建"
 cd "$APP_DIR/admin" || fail "无法进入 admin"
-run "安装前端依赖" npm install --registry="$NPM_REGISTRY" || fail "前端依赖安装失败" /tmp/ebox-step.log
-run "构建前端" npm run build || fail "前端构建失败（vite 编译报错，见上方输出）" /tmp/ebox-step.log
-[ -f dist/index.html ] || fail "前端构建产物缺失: admin/dist/index.html"
-ok "前端构建完成: admin/dist"
+run "安装后台依赖" npm install --registry="$NPM_REGISTRY" || fail "后台依赖安装失败" /tmp/ebox-step.log
+run "构建后台" npm run build || fail "后台构建失败（vite 编译报错，见上方输出）" /tmp/ebox-step.log
+[ -f dist/index.html ] || fail "后台构建产物缺失: admin/dist/index.html"
+ok "后台构建完成: admin/dist"
+
+cd "$APP_DIR/website" || fail "无法进入 website"
+run "安装官网依赖" npm install --registry="$NPM_REGISTRY" || fail "官网依赖安装失败" /tmp/ebox-step.log
+run "构建官网" npm run build || fail "官网构建失败（vite-ssg 编译报错，见上方输出）" /tmp/ebox-step.log
+[ -f dist/index.html ] || fail "官网构建产物缺失: website/dist/index.html"
+ok "官网构建完成: website/dist"
 
 # ============================================================
 # 步骤 9：PM2 启停（有进程重启 / 无进程启动）
@@ -386,7 +394,8 @@ echo ""
 echo "============================================================"
 echo -e "${GREEN}🎉 更新完成！${NC}"
 echo "============================================================"
-echo " 管理面板: https://$DOMAIN"
+echo " 官网前台: https://$DOMAIN"
+echo " 管理面板: https://$DOMAIN/admin/"
 echo " 客户端:   默认连接 https://$DOMAIN（在线托管码可正常激活）"
 echo " 查看日志: pm2 logs $PM2_NAME"
 echo " 重启服务: pm2 restart $PM2_NAME"

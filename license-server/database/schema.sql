@@ -171,3 +171,123 @@ CREATE TABLE IF NOT EXISTS `key_batches` (
 -- 初始超管（用户名 admin / 密码 admin123，首次登录后请立即修改）
 -- 密码哈希由 npm run init:admin 生成，避免硬编码；如需手动执行：
 -- INSERT INTO users (username, password_hash, nickname, role) VALUES ('admin', '<bcrypt>', '管理员', 1);
+
+-- ============================================================
+-- 官网（site_*）：与授权表物理隔离
+-- ============================================================
+
+-- 官网站点设置（KV）
+CREATE TABLE IF NOT EXISTS `site_settings` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `cfg_key` VARCHAR(64) NOT NULL UNIQUE,
+  `cfg_value` TEXT NULL,                         -- 可为 JSON 字符串
+  `cfg_group` VARCHAR(32) NOT NULL DEFAULT 'general',
+  `updated_at` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网文章 / 公告（category 区分）
+CREATE TABLE IF NOT EXISTS `site_articles` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `slug` VARCHAR(160) NOT NULL UNIQUE,
+  `title` VARCHAR(200) NOT NULL,
+  `category` VARCHAR(32) NOT NULL DEFAULT 'tutorial',  -- tutorial/science/update/notice
+  `cover` VARCHAR(500) NULL,
+  `summary` VARCHAR(500) NULL,
+  `content` LONGTEXT NULL,
+  `content_type` VARCHAR(8) NOT NULL DEFAULT 'html',   -- html/md
+  `status` VARCHAR(16) NOT NULL DEFAULT 'draft',       -- draft/published
+  `pinned` TINYINT NOT NULL DEFAULT 0,
+  `publish_at` DATETIME NULL,
+  `seo_title` VARCHAR(200) NULL,
+  `seo_desc` VARCHAR(500) NULL,
+  `views` INT UNSIGNED NOT NULL DEFAULT 0,
+  `created_by` BIGINT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP,
+  KEY `idx_category` (`category`),
+  KEY `idx_status` (`status`),
+  KEY `idx_publish` (`publish_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网使用案例
+CREATE TABLE IF NOT EXISTS `site_cases` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `industry` VARCHAR(64) NOT NULL DEFAULT '通用',
+  `title` VARCHAR(200) NOT NULL,
+  `summary` VARCHAR(500) NULL,
+  `content` LONGTEXT NULL,
+  `avatar` VARCHAR(500) NULL,
+  `metrics` TEXT NULL,                           -- JSON 数组
+  `sort` INT NOT NULL DEFAULT 0,
+  `status` VARCHAR(16) NOT NULL DEFAULT 'published',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网导航菜单
+CREATE TABLE IF NOT EXISTS `site_nav` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `position` VARCHAR(16) NOT NULL DEFAULT 'top', -- top/footer
+  `label` VARCHAR(64) NOT NULL,
+  `url` VARCHAR(500) NOT NULL,
+  `target` VARCHAR(16) NOT NULL DEFAULT '_self',
+  `sort` INT NOT NULL DEFAULT 0,
+  `visible` TINYINT NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网联系方式
+CREATE TABLE IF NOT EXISTS `site_contacts` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `type` VARCHAR(32) NOT NULL DEFAULT 'other',   -- wechat/qq/email/phone/other
+  `name` VARCHAR(64) NOT NULL,
+  `value` VARCHAR(255) NULL,
+  `qrcode` VARCHAR(500) NULL,
+  `sort` INT NOT NULL DEFAULT 0,
+  `enabled` TINYINT NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网媒体库
+CREATE TABLE IF NOT EXISTS `site_media` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `filename` VARCHAR(255) NOT NULL,
+  `path` VARCHAR(500) NOT NULL,
+  `size` INT UNSIGNED NOT NULL DEFAULT 0,
+  `mime` VARCHAR(64) NULL,
+  `width` INT UNSIGNED NULL,
+  `height` INT UNSIGNED NULL,
+  `uploaded_by` BIGINT NULL,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网下载地址（GitHub / 网盘 / 镜像站）
+CREATE TABLE IF NOT EXISTS `site_download_mirrors` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `name` VARCHAR(64) NOT NULL,
+  `url` VARCHAR(500) NOT NULL,
+  `type` VARCHAR(32) NOT NULL DEFAULT 'other',   -- github/netdisk/mirror/other
+  `sort` INT NOT NULL DEFAULT 0,
+  `enabled` TINYINT NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网访问控制规则
+CREATE TABLE IF NOT EXISTS `site_access_rules` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `type` VARCHAR(16) NOT NULL,                   -- ip_black/ip_white/ua
+  `pattern` VARCHAR(255) NOT NULL,
+  `note` VARCHAR(255) NULL,
+  `enabled` TINYINT NOT NULL DEFAULT 1,
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网访问统计（按天）
+CREATE TABLE IF NOT EXISTS `site_stats_daily` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `stat_date` DATE NOT NULL UNIQUE,
+  `pv` INT UNSIGNED NOT NULL DEFAULT 0,
+  `uv` INT UNSIGNED NOT NULL DEFAULT 0,
+  `downloads` INT UNSIGNED NOT NULL DEFAULT 0,
+  `buy_clicks` INT UNSIGNED NOT NULL DEFAULT 0
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

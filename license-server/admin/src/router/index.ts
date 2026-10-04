@@ -29,6 +29,7 @@ const routes = [
       { path: 'recycle-bin', name: 'RecycleBin', component: () => import('@/views/RecycleBin.vue'), meta: { title: '回收站', icon: 'Delete' } },
       { path: 'analytics', name: 'Analytics', component: () => import('@/views/Analytics.vue'), meta: { title: '使用分析', icon: 'TrendCharts' } },
       { path: 'heartbeats', name: 'Heartbeats', component: () => import('@/views/Heartbeats.vue'), meta: { title: '心跳日志', icon: 'Timer' } },
+      { path: 'site', name: 'SiteManage', component: () => import('@/views/site/SiteManage.vue'), meta: { title: '官网管理', icon: 'Platform' } },
       { path: 'settings', name: 'Settings', component: () => import('@/views/Settings.vue'), meta: { title: '系统设置', icon: 'Setting' } },
       { path: 'logs', name: 'Logs', component: () => import('@/views/Logs.vue'), meta: { title: '操作日志', icon: 'Document' } },
       { path: 'users', name: 'Users', component: () => import('@/views/Users.vue'), meta: { title: '管理员', icon: 'Lock', superOnly: true } },
@@ -43,7 +44,7 @@ const routes = [
 ]
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(import.meta.env.BASE_URL),
   routes,
 })
 

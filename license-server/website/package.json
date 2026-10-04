@@ -1,0 +1,28 @@
+{
+  "name": "ebox-website",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "eBox 官网前台",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite-ssg build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit"
+  },
+  "dependencies": {
+    "@unhead/vue": "^1.9.10",
+    "axios": "^1.6.8",
+    "vue": "^3.4.21",
+    "vue-router": "^4.3.0",
+    "vite-ssg": "^0.23.6"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "@vitejs/plugin-vue": "^5.0.4",
+    "sass": "^1.72.0",
+    "typescript": "^5.3.3",
+    "vite": "^5.2.8",
+    "vue-tsc": "^2.0.6"
+  }
+}

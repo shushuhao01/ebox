@@ -15,6 +15,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { authRequired } from './middleware/helpers';
 
 import clientRoutes from './routes/client';
+import siteRoutes from './routes/site';
 import adminAuthRoutes from './routes/admin/auth';
 import adminKeyRoutes from './routes/admin/keys';
 import adminCustomerRoutes from './routes/admin/customers';
@@ -24,6 +25,7 @@ import adminConfigRoutes from './routes/admin/config';
 import adminLogRoutes from './routes/admin/logs';
 import adminBatchRoutes from './routes/admin/batches';
 import adminUserRoutes from './routes/admin/users';
+import adminSiteRoutes from './routes/admin/site';
 import { markExpiredKeys } from './services/KeyService';
 import { getConfigValue } from './services/ConfigService';
 import { cleanExpiredData } from './services/LogService';
@@ -91,8 +93,15 @@ app.get('/api/health', (_req, res) => {
   res.json({ success: true, message: 'eBox License Server OK', timestamp: new Date().toISOString() });
 });
 
+// ==================== 官网图片静态托管（后台媒体库上传，路径 /api/uploads/...） ====================
+const uploadRoot = process.env.SITE_UPLOAD_DIR || path.resolve(process.cwd(), 'uploads');
+app.use('/api/uploads', express.static(uploadRoot, { maxAge: '7d', fallthrough: true }));
+
 // ==================== 客户端接口（无需登录） ====================
 app.use(API_PREFIX, clientRoutes);
+
+// ==================== 官网公开只读接口（无需登录） ====================
+app.use('/api/site', siteRoutes);
 
 // ==================== 管理面板接口（JWT） ====================
 app.use(`${ADMIN_PREFIX}/auth`, adminLimiter, adminAuthRoutes);
@@ -104,6 +113,7 @@ app.use(`${ADMIN_PREFIX}/config`, authRequired, adminConfigRoutes);
 app.use(`${ADMIN_PREFIX}`, authRequired, adminLogRoutes);
 app.use(`${ADMIN_PREFIX}`, authRequired, adminBatchRoutes);
 app.use(`${ADMIN_PREFIX}/users`, authRequired, adminUserRoutes);
+app.use(`${ADMIN_PREFIX}/site`, authRequired, adminSiteRoutes);
 
 // 404 与错误处理
 app.use(notFoundHandler);
