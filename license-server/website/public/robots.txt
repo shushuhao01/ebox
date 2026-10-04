@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+Disallow: /admin/
+Disallow: /api/
+Disallow: /maintenance
+
+Sitemap: https://abc222.cn/sitemap.xml

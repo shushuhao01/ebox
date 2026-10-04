@@ -13,8 +13,8 @@ export const SITE_DEFAULTS: Record<string, string> = {
   site_logo: '/logo.png',
   site_favicon: '/favicon.ico',
   primary_color: '#3A7AFE',
-  site_description: 'eBox —— 一台电脑，多开任意应用',
-  site_keywords: 'eBox,电脑多开,应用多开,环境隔离',
+  site_description: 'eBox 电脑多开工具，支持微信、企业微信等任意应用多开，环境独立隔离、免扫码自动登录，一台电脑稳定多开不卡顿。',
+  site_keywords: 'eBox,2box,多开工具,电脑多开,应用多开,多开器,企业微信多开,微信多开,万能多开,虚拟机多开,环境隔离',
   // 页脚合规
   icp: '',
   police_icp: '',

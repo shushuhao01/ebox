@@ -211,7 +211,11 @@ import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
 
 const { siteName, logo, settings, purchaseUrl } = useSite()
-usePageHead('', settings.value.site_description)
+usePageHead(
+  '电脑多开工具_应用多开软件',
+  settings.value.site_description ||
+    'eBox 电脑多开工具，支持微信、企业微信等任意应用多开，环境独立隔离、免扫码自动登录，一台电脑稳定多开不卡顿。',
+)
 
 const release = ref<LatestRelease | null>(null)
 const cases = ref<SiteCase[]>([])
