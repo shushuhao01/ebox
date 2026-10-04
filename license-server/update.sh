@@ -346,6 +346,11 @@ ok "后台构建完成: admin/dist"
 
 cd "$APP_DIR/website" || fail "无法进入 website"
 run "安装官网依赖" npm install --registry="$NPM_REGISTRY" || fail "官网依赖安装失败" /tmp/ebox-step.log
+# 宝塔会在站点目录生成防跨站文件 dist/.user.ini，vite 清空输出目录时会报 ENOTDIR: not a directory，构建前先移除
+if [ -e "$APP_DIR/website/dist/.user.ini" ]; then
+    chattr -i "$APP_DIR/website/dist/.user.ini" 2>/dev/null || true
+    rm -rf "$APP_DIR/website/dist/.user.ini" 2>/dev/null || true
+fi
 run "构建官网" npm run build || fail "官网构建失败（vite-ssg 编译报错，见上方输出）" /tmp/ebox-step.log
 [ -f dist/index.html ] || fail "官网构建产物缺失: website/dist/index.html"
 ok "官网构建完成: website/dist"
