@@ -258,12 +258,16 @@ else
     # 核心表检查：license_keys / devices / heartbeats 缺一即视为结构不完整
     CORE_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
         -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE' AND table_name IN ('license_keys','devices','heartbeats');" 2>/dev/null)
+    # 官网表检查：旧库升级时不会自动补建 site_* 表（TypeORM synchronize=false），缺一即需导入 schema.sql
+    # 注意：导航表名为单数 site_nav
+    SITE_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -h"$DB_HOST" -P"$DB_PORT" -u"$DB_USER" "$DB_DATABASE" \
+        -N -e "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_DATABASE' AND table_name IN ('site_settings','site_articles','site_cases','site_nav','site_contacts','site_media','site_download_mirrors','site_access_rules','site_stats_daily');" 2>/dev/null)
     if [ -z "$TABLE_COUNT" ]; then
         warn "数据库 $DB_DATABASE 连接失败（@ $DB_HOST:$DB_PORT）："
         tail -n 5 /tmp/ebox-db.log
         warn "请确认：库已创建 / DB_PASSWORD 正确 / DB_USER 对该库有权限"
-    elif [ "$TABLE_COUNT" -lt 8 ] || [ "${CORE_COUNT:-0}" -lt 3 ]; then
-        warn "数据库 $DB_DATABASE 表结构不完整（表数 $TABLE_COUNT 张，核心表命中 ${CORE_COUNT:-0}/3），自动导入 database/schema.sql 补齐 ..."
+    elif [ "$TABLE_COUNT" -lt 8 ] || [ "${CORE_COUNT:-0}" -lt 3 ] || [ "${SITE_COUNT:-0}" -lt 9 ]; then
+        warn "数据库 $DB_DATABASE 表结构不完整（表数 $TABLE_COUNT 张，核心表命中 ${CORE_COUNT:-0}/3，官网表命中 ${SITE_COUNT:-0}/9），自动导入 database/schema.sql 补齐 ..."
         # 去掉 schema.sql 开头的 CREATE DATABASE / USE / 注释行，导入到 .env 指定的库。
         # schema.sql 全部为 CREATE TABLE IF NOT EXISTS，已存在的表自动跳过，不会影响已有数据
         sed -e '/^CREATE DATABASE /d' -e '/^USE `/d' -e '/^-- /d' "$APP_DIR/database/schema.sql" \
