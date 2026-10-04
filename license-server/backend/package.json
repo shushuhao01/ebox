@@ -12,6 +12,7 @@
     "init:db": "ts-node src/scripts/init-db.ts",
     "gen:key": "ts-node src/scripts/gen-key.ts",
     "init:admin": "ts-node src/scripts/init-admin.ts",
+    "seed:articles": "ts-node src/scripts/seed-articles.ts",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

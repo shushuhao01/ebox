@@ -35,7 +35,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onServerPrefetch, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useHead } from '@unhead/vue'
 import { getArticle, type RelatedArticle, type SiteArticle } from '@/api'
@@ -77,7 +77,7 @@ useHead({
   ],
 })
 
-onMounted(async () => {
+async function load() {
   try {
     const data = await getArticle(String(route.params.slug))
     article.value = data.article
@@ -88,6 +88,33 @@ onMounted(async () => {
   } finally {
     loading.value = false
   }
+}
+
+// SSG 构建期在服务端预取，使文章正文进入构建产物 HTML（利于 SEO 抓取）
+onServerPrefetch(async () => {
+  await load()
+  // 通过 vite-ssg 的 initialState 通道把数据带入客户端水合，避免重复请求与内容闪烁。
+  // 注意：context.initialState 与此处 meta.state 为同一对象引用，必须原地修改而非整体替换。
+  const state = route.meta.state as Record<string, unknown> | undefined
+  if (state && typeof state === 'object') {
+    state.article = article.value
+    state.related = related.value
+    state.loading = false
+  }
+})
+
+onMounted(() => {
+  // 首次加载（SSG 预渲染页）优先复用水合状态，其余情况走客户端请求
+  const state = route.meta.state as
+    | { article?: SiteArticle | null; related?: RelatedArticle[] }
+    | undefined
+  if (state && typeof state === 'object' && 'article' in state) {
+    article.value = state.article ?? null
+    related.value = state.related ?? []
+    loading.value = false
+    return
+  }
+  void load()
 })
 </script>
 

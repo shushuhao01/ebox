@@ -88,8 +88,12 @@ export interface LatestRelease {
   mirrors: DownloadMirror[]
 }
 
+// SSG 构建期在 Node 环境执行，相对路径无法发请求，需指向后端绝对地址；
+// 浏览器端保持同源相对路径（走 nginx /api 反代）。
+const ssgApiBase = import.meta.env.VITE_SSG_API_BASE || 'http://127.0.0.1:3008'
+
 const http = axios.create({
-  baseURL: '',
+  baseURL: import.meta.env.SSR ? ssgApiBase : '',
   timeout: 15000,
 })
 
@@ -133,6 +137,24 @@ export function getArticle(slug: string): Promise<{ article: SiteArticle; relate
     article: SiteArticle
     related: RelatedArticle[]
   }>
+}
+
+/** SSG 构建期使用：分页拉取全部已发布文章 slug（接口 size 上限 50，需循环） */
+export async function getAllArticleSlugs(): Promise<string[]> {
+  const size = 50
+  const slugs: string[] = []
+  let page = 1
+  // 兜底上限，避免后端异常导致死循环
+  for (let guard = 0; guard < 200; guard += 1) {
+    const res = await getArticles({ page, size })
+    for (const item of res.list || []) {
+      if (item.slug) slugs.push(item.slug)
+    }
+    const total = res.total || 0
+    if (page * size >= total || !res.list || res.list.length === 0) break
+    page += 1
+  }
+  return slugs
 }
 
 export function getCaseList(industry?: string): Promise<SiteCase[]> {

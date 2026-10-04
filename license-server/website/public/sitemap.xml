@@ -31,6 +31,36 @@
     <priority>0.7</priority>
   </url>
   <url>
+    <loc>https://abc222.cn/articles/qiye-weixin-duokai</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://abc222.cn/articles/weixin-diannaoban-duokai</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://abc222.cn/articles/duokaiqi-yuanli-fengxian</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://abc222.cn/articles/xuniji-duokai-duibi</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
+    <loc>https://abc222.cn/articles/ebox-shiyong-jiaocheng</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.7</priority>
+  </url>
+  <url>
+    <loc>https://abc222.cn/articles/yitai-diannao-duokai-yingyong</loc>
+    <changefreq>monthly</changefreq>
+    <priority>0.6</priority>
+  </url>
+  <url>
     <loc>https://abc222.cn/contact</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
