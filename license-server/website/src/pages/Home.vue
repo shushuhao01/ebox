@@ -108,15 +108,15 @@
                 </th>
               </tr>
               <tr>
-                <th>强开多开</th>
-                <th>虚拟机多开</th>
+                <th class="col-force">强开多开</th>
+                <th class="col-vm">虚拟机多开</th>
               </tr>
             </thead>
             <tbody>
               <tr v-for="row in compareRows" :key="row.name">
                 <td class="compare-name">{{ row.name }}</td>
-                <td>{{ row.force }}</td>
-                <td>{{ row.vm }}</td>
+                <td class="col-force">{{ row.force }}</td>
+                <td class="col-vm">{{ row.vm }}</td>
                 <td class="highlight">{{ row.ebox }}</td>
               </tr>
             </tbody>
@@ -663,33 +663,73 @@ onMounted(async () => {
 
 .compare th,
 .compare td {
-  padding: 16px 18px;
+  padding: 15px 18px;
   text-align: center;
-  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
   font-size: 15px;
+  border-bottom: 1px solid var(--border);
 }
 
+/* 表头：每列实心色块 + 白字，与浅色表体形成明显分界，便于分辨 */
 .compare th {
-  background: #f7f9fd;
+  color: #fff;
   font-weight: 600;
 }
 
-.compare-name {
-  text-align: left;
-  color: var(--text-2);
+/* 列分隔线，进一步区分各方案列 */
+.compare th + th,
+.compare td + td,
+.compare .col-force {
+  border-left: 1px solid var(--border);
 }
 
+/* 左上角「对比项」表头与首列行名：中性色，左对齐 */
 .compare .compare-item-col {
   text-align: left;
   color: var(--text-2);
+  background: #e9eef6;
 }
 
+.compare .compare-name {
+  text-align: left;
+  color: var(--text-1);
+  font-weight: 500;
+  background: #f7f9fc;
+}
+
+/* 分组表头「其他方案」：中性深灰，统领下面两列 */
 .compare .others-col {
   color: var(--text-2);
-  font-weight: 600;
+  font-weight: 700;
+  background: #d8e0ee;
 }
 
-.compare .highlight {
+/* 强开多开列：橙色系 */
+.compare th.col-force {
+  background: #ef9b2d;
+}
+
+.compare td.col-force {
+  color: #a15c07;
+  background: #fdf3e3;
+}
+
+/* 虚拟机多开列：青绿色系 */
+.compare th.col-vm {
+  background: #16b3a3;
+}
+
+.compare td.col-vm {
+  color: #0d7268;
+  background: #e8f9f5;
+}
+
+/* eBox 列：主题蓝，整列突出本站方案 */
+.compare th.highlight {
+  background: var(--primary-color);
+}
+
+.compare td.highlight {
   color: var(--primary-color);
   font-weight: 600;
   background: var(--primary-light);
