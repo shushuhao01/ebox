@@ -2,7 +2,7 @@
     "latestVersion": "v3.1.4",
     "latestVersionCode": 30104,
     "releaseDate": "2026/10/4",
-    "downloadUrl": "https://github.com/shushuhao01/ebox/releases/download/v3.1.4/eBox.exe",
+    "downloadUrl": "https://abc222.cn/download/eBox.exe",
     "downloadSha256": "421e6ffbdf1c80dcac0f30701aeedbc2ca5f8d834b3a0e7dc72fd723fc20d417",
     "downloadSize": 3083264,
     "changelog": [
@@ -14,6 +14,7 @@
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
+        "https://abc222.cn/download/eBox.exe",
         "https://github.com/shushuhao01/ebox/releases/download/v3.1.4/eBox.exe"
     ]
 }
