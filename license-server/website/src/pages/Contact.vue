@@ -16,10 +16,18 @@
           <div v-for="c in contacts" :key="c.id" class="card contact-card">
             <div class="contact-icon">{{ typeIcon(c.type) }}</div>
             <div class="contact-name">{{ c.name }}</div>
-            <div v-if="c.value" class="contact-value">
-              <a v-if="linkOf(c)" :href="linkOf(c)" target="_blank" rel="noopener">{{ c.value }}</a>
-              <span v-else>{{ c.value }}</span>
-            </div>
+            <template v-if="isWechatService(c)">
+              <a v-if="c.value" class="wechat-btn" :href="c.value" target="_blank" rel="noopener">
+                <span class="wechat-btn-icon">💬</span> 点击直达微信客服
+              </a>
+              <div v-else-if="c.qrcode" class="contact-value">扫描下方二维码添加客服</div>
+            </template>
+            <template v-else>
+              <div v-if="c.value" class="contact-value">
+                <a v-if="linkOf(c)" :href="linkOf(c)" target="_blank" rel="noopener">{{ c.value }}</a>
+                <span v-else>{{ c.value }}</span>
+              </div>
+            </template>
             <img v-if="c.qrcode" :src="c.qrcode" :alt="c.name" class="contact-qrcode" />
           </div>
         </div>
@@ -49,12 +57,17 @@ const loading = ref(true)
 
 function typeIcon(type: string) {
   const t = (type || '').toLowerCase()
+  if (t === 'wechat_service') return '🎧'
   if (t.includes('qq')) return '🐧'
   if (t.includes('wechat') || t.includes('wx')) return '💬'
   if (t.includes('mail') || t.includes('email')) return '✉️'
   if (t.includes('phone') || t.includes('tel')) return '📞'
   if (t.includes('group')) return '👥'
   return '🔗'
+}
+
+function isWechatService(c: SiteContact) {
+  return (c.type || '').toLowerCase() === 'wechat_service'
 }
 
 function linkOf(c: SiteContact) {
@@ -129,6 +142,29 @@ onMounted(async () => {
 
 .contact-value a:hover {
   color: var(--primary-color);
+}
+
+.wechat-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 14px;
+  padding: 10px 22px;
+  background: var(--primary-color);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  transition: background 0.2s;
+}
+
+.wechat-btn:hover {
+  background: var(--primary-dark);
+}
+
+.wechat-btn-icon {
+  font-size: 16px;
 }
 
 .contact-qrcode {

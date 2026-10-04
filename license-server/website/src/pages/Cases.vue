@@ -27,13 +27,15 @@
 
         <div v-else class="grid grid-3">
           <RouterLink v-for="c in filtered" :key="c.id" class="card case-card" :to="`/cases/${c.id}`">
-            <div class="case-body">
-              <span class="tag">{{ c.industry }}</span>
-              <h3 class="case-title">{{ c.title }}</h3>
+            <h3 class="case-title">{{ c.title }}</h3>
+            <div class="case-main">
+              <img v-if="c.avatar" class="case-thumb" :src="c.avatar" :alt="c.title" loading="lazy" />
               <p class="case-summary">{{ c.summary }}</p>
+            </div>
+            <div class="case-foot">
+              <span class="tag">{{ c.industry }}</span>
               <span class="case-more">查看详情 →</span>
             </div>
-            <img v-if="c.avatar" class="case-thumb" :src="c.avatar" :alt="c.title" loading="lazy" />
           </RouterLink>
         </div>
       </div>
@@ -128,54 +130,61 @@ onMounted(async () => {
 
 .case-card {
   display: flex;
-  gap: 16px;
-  align-items: stretch;
+  flex-direction: column;
   padding: 20px;
 }
 
-.case-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 .case-title {
-  margin-top: 12px;
   font-size: 17px;
+  line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  min-height: 2.9em;
+}
+
+.case-main {
+  display: flex;
+  gap: 14px;
+  margin-top: 14px;
+  margin-bottom: 14px;
 }
 
 .case-summary {
-  margin-top: 8px;
+  flex: 1;
+  min-width: 0;
   color: var(--text-2);
   font-size: 14px;
+  line-height: 1.65;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 .case-thumb {
   flex: none;
-  width: 96px;
-  height: 96px;
-  align-self: center;
+  width: 72px;
+  height: 72px;
   border-radius: 10px;
   object-fit: cover;
   border: 1px solid var(--border);
 }
 
-.case-more {
-  display: inline-block;
+.case-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
   margin-top: auto;
-  padding-top: 14px;
+}
+
+.case-more {
   color: var(--primary-color);
   font-size: 14px;
   font-weight: 600;
+  white-space: nowrap;
 }
 
 .state-tip {

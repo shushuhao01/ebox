@@ -43,6 +43,7 @@
           <el-col :span="12">
             <el-form-item label="类型">
               <el-select v-model="form.type" style="width: 100%">
+                <el-option label="微信客服" value="wechat_service" />
                 <el-option label="微信" value="wechat" />
                 <el-option label="QQ" value="qq" />
                 <el-option label="邮箱" value="email" />
@@ -60,8 +61,15 @@
         <el-form-item label="名称" required>
           <el-input v-model="form.name" maxlength="64" placeholder="例如：官方客服、技术支持邮箱" />
         </el-form-item>
-        <el-form-item label="内容">
-          <el-input v-model="form.value" maxlength="255" placeholder="微信号 / QQ 号 / 邮箱 / 电话" />
+        <el-form-item :label="isWechatService ? '客服链接' : '内容'">
+          <el-input
+            v-model="form.value"
+            maxlength="255"
+            :placeholder="valuePlaceholder"
+          />
+          <div v-if="isWechatService" class="field-tip">
+            填写微信客服链接（如 https://work.weixin.qq.com/kfid/...），官网「联系我们」与右下角客服组件将据此一键直达微信客服。
+          </div>
         </el-form-item>
         <el-form-item label="二维码">
           <div class="cover-row">
@@ -85,7 +93,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
 import { Plus, Refresh, Upload } from '@element-plus/icons-vue'
 import {
@@ -98,6 +106,7 @@ import {
 } from '@/api/site'
 
 const TYPE_MAP: Record<string, string> = {
+  wechat_service: '微信客服',
   wechat: '微信',
   qq: 'QQ',
   email: '邮箱',
@@ -125,7 +134,7 @@ const saving = ref(false)
 const uploading = ref(false)
 const form = reactive({
   id: '',
-  type: 'wechat',
+  type: 'wechat_service',
   name: '',
   value: '',
   qrcode: '',
@@ -133,9 +142,16 @@ const form = reactive({
   enabled: 1,
 })
 
+const isWechatService = computed(() => form.type === 'wechat_service')
+const valuePlaceholder = computed(() =>
+  isWechatService.value
+    ? '微信客服链接，如 https://work.weixin.qq.com/kfid/...'
+    : '微信号 / QQ 号 / 邮箱 / 电话',
+)
+
 function resetForm() {
   form.id = ''
-  form.type = 'wechat'
+  form.type = 'wechat_service'
   form.name = ''
   form.value = ''
   form.qrcode = ''
@@ -176,6 +192,10 @@ async function uploadQrcode(opt: UploadRequestOptions) {
 async function submit() {
   if (!form.name.trim()) {
     ElMessage.warning('请输入名称')
+    return
+  }
+  if (isWechatService.value && form.value.trim() && !/^https?:\/\//i.test(form.value.trim())) {
+    ElMessage.warning('微信客服链接需以 http:// 或 https:// 开头')
     return
   }
   saving.value = true
@@ -254,5 +274,12 @@ onMounted(load)
   gap: 10px;
   width: 100%;
   align-items: center;
+}
+
+.field-tip {
+  margin-top: 6px;
+  line-height: 1.5;
+  color: var(--el-text-color-secondary);
+  font-size: 12px;
 }
 </style>

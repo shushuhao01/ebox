@@ -381,7 +381,7 @@ router.get('/contacts', async (_req, res) => {
 
 router.post('/contacts', async (req, res) => {
   const { error, value } = Joi.object({
-    type: Joi.string().valid('wechat', 'qq', 'email', 'phone', 'other').default('other'),
+    type: Joi.string().valid('wechat', 'wechat_service', 'qq', 'email', 'phone', 'other').default('other'),
     name: Joi.string().required().max(64),
     value: Joi.string().allow('', null).max(255).default(null),
     qrcode: Joi.string().allow('', null).max(500).default(null),

@@ -92,16 +92,24 @@
       <div class="container">
         <div class="section-head">
           <h2 class="section-title">多开方案对比</h2>
-          <p class="section-sub">不同方案的稳定性与使用成本差异明显，选择适合自己的方式最重要。</p>
+          <p class="section-sub">强开多开与虚拟机多开属于其他常见方式，下表仅对比它们与 {{ siteName }} 的差异，帮助你更清楚地了解 {{ siteName }} 的优势。</p>
         </div>
         <div class="compare-wrap">
           <table class="compare">
             <thead>
               <tr>
-                <th>对比项</th>
+                <th rowspan="2" class="compare-item-col">对比项</th>
+                <th colspan="2" class="others-col">其他方案</th>
+                <th rowspan="2" class="highlight">
+                  <span class="ebox-head">
+                    <img class="ebox-logo" :src="logo" alt="" />
+                    {{ siteName }}
+                  </span>
+                </th>
+              </tr>
+              <tr>
                 <th>强开多开</th>
                 <th>虚拟机多开</th>
-                <th class="highlight">{{ siteName }}</th>
               </tr>
             </thead>
             <tbody>
@@ -126,12 +134,12 @@
         </div>
         <div class="grid grid-3">
           <RouterLink v-for="c in cases" :key="c.id" class="card case-card" :to="`/cases/${c.id}`">
-            <div class="case-body">
-              <span class="tag">{{ c.industry }}</span>
-              <h3 class="case-title">{{ c.title }}</h3>
+            <h3 class="case-title">{{ c.title }}</h3>
+            <div class="case-main">
+              <img v-if="c.avatar" class="case-thumb" :src="c.avatar" :alt="c.title" loading="lazy" />
               <p class="case-summary">{{ c.summary }}</p>
             </div>
-            <img v-if="c.avatar" class="case-thumb" :src="c.avatar" :alt="c.title" loading="lazy" />
+            <span class="tag case-tag">{{ c.industry }}</span>
           </RouterLink>
         </div>
         <div class="center more-wrap">
@@ -202,7 +210,7 @@ import { getCaseList, getLatestRelease, track, type LatestRelease, type SiteCase
 import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
 
-const { siteName, settings, purchaseUrl } = useSite()
+const { siteName, logo, settings, purchaseUrl } = useSite()
 usePageHead('', settings.value.site_description)
 
 const release = ref<LatestRelease | null>(null)
@@ -671,53 +679,82 @@ onMounted(async () => {
   color: var(--text-2);
 }
 
+.compare .compare-item-col {
+  text-align: left;
+  color: var(--text-2);
+}
+
+.compare .others-col {
+  color: var(--text-2);
+  font-weight: 600;
+}
+
 .compare .highlight {
   color: var(--primary-color);
   font-weight: 600;
   background: var(--primary-light);
 }
 
+.ebox-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.ebox-logo {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  object-fit: contain;
+}
+
 .case-card {
   display: flex;
-  gap: 16px;
-  align-items: stretch;
+  flex-direction: column;
   padding: 20px;
 }
 
-.case-body {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 .case-title {
-  margin-top: 12px;
   font-size: 17px;
+  line-height: 1.45;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
   overflow: hidden;
+  min-height: 2.9em;
+}
+
+.case-main {
+  display: flex;
+  gap: 14px;
+  margin-top: 14px;
+  margin-bottom: 14px;
 }
 
 .case-summary {
-  margin-top: 8px;
+  flex: 1;
+  min-width: 0;
   color: var(--text-2);
   font-size: 14px;
+  line-height: 1.65;
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 3;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
 
 .case-thumb {
   flex: none;
-  width: 96px;
-  height: 96px;
-  align-self: center;
+  width: 72px;
+  height: 72px;
   border-radius: 10px;
   object-fit: cover;
   border: 1px solid var(--border);
+}
+
+.case-tag {
+  align-self: flex-start;
+  margin-top: auto;
 }
 
 .more-wrap {

@@ -6,6 +6,7 @@
       <RouterView />
     </main>
     <SiteFooter />
+    <ServiceWidget />
   </div>
 </template>
 
@@ -16,6 +17,7 @@ import { useHead } from '@unhead/vue'
 import SiteHeader from '@/components/SiteHeader.vue'
 import SiteFooter from '@/components/SiteFooter.vue'
 import AnnouncementBar from '@/components/AnnouncementBar.vue'
+import ServiceWidget from '@/components/ServiceWidget.vue'
 import { loadSiteData, useSite } from '@/composables/useSite'
 
 useHead({ htmlAttrs: { lang: 'zh-CN' } })
