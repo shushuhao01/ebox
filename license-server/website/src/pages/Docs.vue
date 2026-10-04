@@ -53,6 +53,9 @@
         </div>
       </div>
     </section>
+
+    <!-- 使用教程 -->
+    <ArticlePinned title="使用教程" subtitle="阅读分步操作教程与常见问题排查。" />
   </div>
 </template>
 
@@ -60,6 +63,7 @@
 import { computed } from 'vue'
 import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
+import ArticlePinned from '@/components/ArticlePinned.vue'
 
 const { siteName, docUrl, docTitle, settings } = useSite()
 usePageHead('文档中心', 'eBox 使用手册与操作指引。')

@@ -41,11 +41,37 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
 
+      # 上传 exe 到国内下载镜像（自有服务器 abc222.cn）。
+      # 未配置仓库变量 DOWNLOAD_MIRROR_BASE 时自动跳过，此时 downloadUrl 回退为 GitHub 直链。
+      # 需要的仓库 Secrets：MIRROR_SSH_HOST / MIRROR_SSH_USER / MIRROR_SSH_KEY（可选 MIRROR_SSH_PORT）
+      # 需要的仓库 Variables：DOWNLOAD_MIRROR_BASE（如 https://abc222.cn/download）、MIRROR_UPLOAD_DIR（如 /www/wwwroot/license-server/download）
+      - name: Upload exe to download mirror
+        if: ${{ vars.DOWNLOAD_MIRROR_BASE != '' }}
+        env:
+          SSH_HOST: ${{ secrets.MIRROR_SSH_HOST }}
+          SSH_USER: ${{ secrets.MIRROR_SSH_USER }}
+          SSH_KEY: ${{ secrets.MIRROR_SSH_KEY }}
+          SSH_PORT: ${{ secrets.MIRROR_SSH_PORT }}
+          UPLOAD_DIR: ${{ vars.MIRROR_UPLOAD_DIR }}
+        run: |
+          set -e
+          : "${UPLOAD_DIR:=/www/wwwroot/license-server/download}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          PORT="${SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          EXE=$(ls release_assets/*.exe | head -n1)
+          # 固定上传为 eBox.exe（覆盖），供 update.json 的固定 URL 下载
+          ssh -p "$PORT" -i ~/.ssh/id_ed25519 "$SSH_USER@$SSH_HOST" "mkdir -p '$UPLOAD_DIR'"
+          scp -P "$PORT" -i ~/.ssh/id_ed25519 "$EXE" "$SSH_USER@$SSH_HOST:$UPLOAD_DIR/eBox.exe"
+
       - name: Compute hash & update manifest
         env:
           TAG: ${{ github.event.release.tag_name }}
           PUBLISHED_AT: ${{ github.event.release.published_at }}
-        run: python3 .github/scripts/update_manifest.py release_assets release_body.txt "$TAG" "$PUBLISHED_AT"
+          MIRROR_BASE: ${{ vars.DOWNLOAD_MIRROR_BASE }}
+        run: python3 .github/scripts/update_manifest.py release_assets release_body.txt "$TAG" "$PUBLISHED_AT" "$MIRROR_BASE"
 
       - name: Commit & push
         run: |

@@ -148,6 +148,12 @@
       </div>
     </section>
 
+    <!-- 文章推荐 -->
+    <ArticlePinned
+      title="文章推荐"
+      subtitle="阅读使用教程、行业科普与产品更新，帮助你更好地使用本站工具。"
+    />
+
     <!-- CTA -->
     <section class="section">
       <div class="container">
@@ -207,6 +213,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCaseList, getLatestRelease, track, type LatestRelease, type SiteCase } from '@/api'
+import ArticlePinned from '@/components/ArticlePinned.vue'
 import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
 

@@ -178,13 +178,14 @@ namespace biz::update
 			return false;
 		}
 
-		// 解析 changelog 数组："changelog": ["...", "..."]
-		std::vector<std::wstring> extractJsonChangelog(std::string_view json)
+		// 解析字符串数组："key": ["...", "..."]（用于 changelog / downloadUrls）
+		std::vector<std::wstring> extractJsonStringArray(std::string_view json, std::string_view key)
 		{
 			std::vector<std::wstring> result;
-			const auto arrKey = json.find("\"changelog\":");
-			if (arrKey == std::string_view::npos) return result;
-			const auto openBracket = json.find('[', arrKey);
+			const std::string arrKey = std::string("\"") + std::string(key) + "\":";
+			const auto keyPos = json.find(arrKey);
+			if (keyPos == std::string_view::npos) return result;
+			const auto openBracket = json.find('[', keyPos);
 			if (openBracket == std::string_view::npos) return result;
 			const auto closeBracket = json.find(']', openBracket);
 			if (closeBracket == std::string_view::npos) return result;
@@ -219,6 +220,10 @@ namespace biz::update
 				out.releaseDate = utf8ToWstring(tmpStr);
 			if (extractJsonString(json, "downloadUrl", tmpStr))
 				out.downloadUrl = utf8ToWstring(tmpStr);
+			// 多下载源：新 manifest 带 downloadUrls；旧 manifest 回退到单个 downloadUrl
+			out.downloadUrls = extractJsonStringArray(json, "downloadUrls");
+			if (out.downloadUrls.empty() && !out.downloadUrl.empty())
+				out.downloadUrls.push_back(out.downloadUrl);
 			if (extractJsonString(json, "downloadSha256", tmpStr))
 				out.downloadSha256 = utf8ToWstring(tmpStr);
 			if (extractJsonInt(json, "downloadSize", tmpInt))
@@ -227,8 +232,32 @@ namespace biz::update
 			out.forceUpdate = tmpBool;
 			if (extractJsonInt(json, "minSkipVersionCode", tmpInt))
 				out.minSkipVersionCode = static_cast<int>(tmpInt);
-			out.changelog = extractJsonChangelog(json);
+			out.changelog = extractJsonStringArray(json, "changelog");
 			return true;
+		}
+
+		// 将 WinHttp 底层错误转为面向用户的中文提示（未知错误保留原文便于排查）
+		std::wstring friendlyNetworkError(const std::wstring& raw)
+		{
+			DWORD code = 0;
+			const auto pos = raw.find(L"error code: ");
+			if (pos != std::wstring::npos)
+			{
+				try { code = static_cast<DWORD>(std::stoul(raw.substr(pos + 12))); }
+				catch (...) { code = 0; }
+			}
+			switch (code)
+			{
+			case 12002: return L"网络连接超时，可能是网络不稳定或下载源不可达。请检查网络后重试。";
+			case 12007: return L"无法解析更新服务器地址，请检查网络与 DNS 设置。";
+			case 12029: return L"无法连接到更新服务器，请检查网络或稍后重试。";
+			case 12030: return L"与更新服务器的连接被中断，请稍后重试。";
+			case 12031: return L"与更新服务器的连接被重置，请稍后重试。";
+			case 12032: return L"更新服务器无响应，请稍后重试。";
+			case 12037: return L"更新包证书校验失败，请稍后重试。";
+			default: break;
+			}
+			return raw.empty() ? L"网络异常，请稍后重试。" : raw;
 		}
 
 		// ===== SHA-256 文件校验（BCrypt 增量哈希，避免大文件全量加载）=====
@@ -417,11 +446,13 @@ namespace biz::update
 		DownloadOutcome outcome;
 		outcome.result = DownloadResult::NetworkError;
 
-		// 解析下载 URL
-		UrlParts urlParts;
-		if (!splitUrl(manifest.downloadUrl, urlParts))
+		// 组装下载源列表：优先 downloadUrls（主源在前），为空回退单个 downloadUrl
+		std::vector<std::wstring> sources = manifest.downloadUrls;
+		if (sources.empty() && !manifest.downloadUrl.empty())
+			sources.push_back(manifest.downloadUrl);
+		if (sources.empty())
 		{
-			outcome.errorMessage = L"invalid download url";
+			outcome.errorMessage = L"更新清单缺少下载地址。";
 			co_return outcome;
 		}
 
@@ -434,54 +465,85 @@ namespace biz::update
 		}
 
 		std::vector<std::byte> data;
-		try
+		bool gotData = false;
+		std::wstring lastError;
+
+		// 逐源尝试：任一源下载成功即结束（方案C：主源失败自动切备源）
+		for (const std::wstring& source : sources)
 		{
-			auto session = ms::get_default_win_http_session();
-			auto conn = session->createConnection(urlParts.host, urlParts.port);
-			DWORD flags = WINHTTP_FLAG_REFRESH;
-			if (urlParts.isHttps) flags |= WINHTTP_FLAG_SECURE;
-			auto req = conn->openRequest(L"GET", urlParts.path, L"HTTP/1.1",
-			                             MainApp::kUpdateUserAgent, {}, flags);
-
-			// 共享状态：累计下载字节数（move_only_function 不能拷贝，用 shared_ptr 传递）
-			auto downloaded = std::make_shared<std::atomic<std::uint64_t>>(0);
-			auto total = std::make_shared<std::atomic<std::uint64_t>>(manifest.downloadSize);
-			auto userCb = std::move(progressCb);
-
-			auto contentLenCb = [total](std::uint64_t len)
-			{
-				if (len > 0) total->store(len, std::memory_order_relaxed);
-			};
-			auto progressReporter = [downloaded, total, userCb](std::uint64_t chunk) mutable
-			{
-				const std::uint64_t d = downloaded->fetch_add(chunk, std::memory_order_relaxed) + chunk;
-				if (userCb)
-				{
-					userCb({d, total->load(std::memory_order_relaxed)});
-				}
-			};
-
-			// 启动下载（WinHttp 内部已挂接 stop_token 取消）
-			data = co_await req->request(contentLenCb, progressReporter);
-		}
-		catch (const std::exception& e)
-		{
-			// 取消（WinHttp stop_callback 关闭句柄）时明确返回 Cancelled，便于 UI 清理
 			if (token.stop_requested())
 			{
 				outcome.result = DownloadResult::Cancelled;
-				outcome.errorMessage = L"operation canceled";
+				co_return outcome;
 			}
-			else
+
+			UrlParts urlParts;
+			if (!splitUrl(source, urlParts))
 			{
-				outcome.errorMessage = utf8ToWstring(e.what());
+				lastError = L"下载地址格式无效";
+				continue;
 			}
-			co_return outcome;
+
+			try
+			{
+				auto session = ms::get_default_win_http_session();
+				auto conn = session->createConnection(urlParts.host, urlParts.port);
+				DWORD flags = WINHTTP_FLAG_REFRESH;
+				if (urlParts.isHttps) flags |= WINHTTP_FLAG_SECURE;
+				auto req = conn->openRequest(L"GET", urlParts.path, L"HTTP/1.1",
+				                             MainApp::kUpdateUserAgent, {}, flags);
+
+				// 每次尝试独立累计进度（切换源时进度归零重来）
+				// 共享状态：累计下载字节数（move_only_function 不能拷贝，用 shared_ptr 传递）
+				auto downloaded = std::make_shared<std::atomic<std::uint64_t>>(0);
+				auto total = std::make_shared<std::atomic<std::uint64_t>>(manifest.downloadSize);
+				auto userCb = progressCb;
+
+				auto contentLenCb = [total](std::uint64_t len)
+				{
+					if (len > 0) total->store(len, std::memory_order_relaxed);
+				};
+				auto progressReporter = [downloaded, total, userCb](std::uint64_t chunk) mutable
+				{
+					const std::uint64_t d = downloaded->fetch_add(chunk, std::memory_order_relaxed) + chunk;
+					if (userCb)
+					{
+						userCb({d, total->load(std::memory_order_relaxed)});
+					}
+				};
+
+				// 启动下载（WinHttp 内部已挂接 stop_token 取消）
+				data = co_await req->request(contentLenCb, progressReporter);
+				gotData = true;
+				break;
+			}
+			catch (const std::exception& e)
+			{
+				// 取消（WinHttp stop_callback 关闭句柄）时明确返回 Cancelled，便于 UI 清理
+				if (token.stop_requested())
+				{
+					outcome.result = DownloadResult::Cancelled;
+					outcome.errorMessage = L"operation canceled";
+					co_return outcome;
+				}
+				lastError = utf8ToWstring(e.what());
+			}
+			catch (...)
+			{
+				if (token.stop_requested())
+				{
+					outcome.result = DownloadResult::Cancelled;
+					outcome.errorMessage = L"unknown download error";
+					co_return outcome;
+				}
+				lastError = L"unknown download error";
+			}
 		}
-		catch (...)
+
+		if (!gotData)
 		{
-			outcome.result = token.stop_requested() ? DownloadResult::Cancelled : DownloadResult::NetworkError;
-			outcome.errorMessage = L"unknown download error";
+			outcome.result = DownloadResult::NetworkError;
+			outcome.errorMessage = friendlyNetworkError(lastError);
 			co_return outcome;
 		}
 

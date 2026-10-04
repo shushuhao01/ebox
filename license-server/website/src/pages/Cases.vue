@@ -40,12 +40,16 @@
         </div>
       </div>
     </section>
+
+    <!-- 相关文章 -->
+    <ArticlePinned title="相关文章" subtitle="了解本站工具的使用方法与行业动态。" />
   </div>
 </template>
 
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { getCaseList, type SiteCase } from '@/api'
+import ArticlePinned from '@/components/ArticlePinned.vue'
 import { usePageHead } from '@/composables/usePageHead'
 
 usePageHead('使用案例', '查看 eBox 在不同行业中的实际使用案例。')

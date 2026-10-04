@@ -3,6 +3,10 @@ module;
 #include <Windows.h>
 #include <winhttp.h>
 #pragma comment(lib, "winhttp.lib")
+// Win8.1 以下 SDK 头文件无此常量，兜底定义为 4（运行期不支持时 WinHttpOpen 会失败并回退直连）
+#ifndef WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY
+#define WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY 4
+#endif
 export module WinHttp;
 
 import std;
@@ -59,11 +63,25 @@ namespace ms
 	public:
 		WinHttpSession()
 		{
-			m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+			// 方案B：优先使用系统代理（含手动代理/PAC），兼容挂了代理的用户；
+			// Win8.1 以下不支持 AUTOMATIC_PROXY，WinHttpOpen 会失败，回退为直连（原行为）
+			m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+			if (!m_hSession)
+			{
+				m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+			}
 			if (!m_hSession)
 			{
 				throw std::runtime_error(std::format("WinHttpOpen failed, error code: {}", GetLastError()));
 			}
+
+			// 方案C：显式设置各阶段超时，避免默认超时过久导致长时间无响应，
+			// 也让不可达的下载源尽快失败，便于自动切换到备源
+			WinHttpSetTimeouts(m_hSession,
+			                   10000,  // 域名解析 10s
+			                   15000,  // 建立连接 15s
+			                   30000,  // 发送请求 30s
+			                   60000); // 接收响应 60s
 
 			DWORD dwFlags = WINHTTP_FLAG_SECURE_PROTOCOL_SSL3
 				| WINHTTP_FLAG_SECURE_PROTOCOL_TLS1

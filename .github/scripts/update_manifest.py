@@ -4,8 +4,15 @@
    - 从 release 资产目录找 *.exe，计算 SHA-256 与文件大小
    - 从 tag（vX.Y.Z）解析版本号与 latestVersionCode（major*10000+minor*100+patch）
    - 从 release body 提取 changelog（每行一条，兼容 "- " / "* " markdown 列表前缀）
-   - 更新 downloadUrl / releaseDate / downloadSha256 / downloadSize
-用法：update_manifest.py <assets_dir> <body_file> <tag> <published_at>
+   - 更新 downloadUrl / downloadUrls / releaseDate / downloadSha256 / downloadSize
+
+下载源策略（解决国内直连 GitHub Releases 超时 12002）：
+   - 传入 mirror_base_url（如 https://abc222.cn/download）时：
+       downloadUrl  = <mirror_base_url>/eBox.exe   （主源，老客户端只读这个字段）
+       downloadUrls = [ 主源, GitHub Release 直链 ]  （新客户端多源自动切换）
+   - 未传 mirror_base_url 时：downloadUrl = downloadUrls = [ GitHub 直链 ]（保持原行为）
+
+用法：update_manifest.py <assets_dir> <body_file> <tag> <published_at> [mirror_base_url]
 """
 import hashlib
 import json
@@ -14,6 +21,7 @@ import re
 import sys
 
 assets_dir, body_file, tag, published_at = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+mirror_base_url = sys.argv[5].strip() if len(sys.argv) > 5 else ""
 
 # 1) 找 exe 资产
 exe_files = [f for f in os.listdir(assets_dir) if f.lower().endswith(".exe")]
@@ -60,9 +68,18 @@ with open("dist/update.json", "r", encoding="utf-8") as f:
 manifest["latestVersion"] = f"v{major}.{minor}.{patch}"
 manifest["latestVersionCode"] = version_code
 manifest["releaseDate"] = release_date
-manifest["downloadUrl"] = (
+github_url = (
     f"https://github.com/shushuhao01/ebox/releases/download/{tag}/{exe_name}"
 )
+if mirror_base_url:
+    # 主源用国内可达的自有服务器；镜像文件名固定为 eBox.exe（由 workflow scp 上传），
+    # 与 nginx /download/ alias 下的实际文件名严格一致，避免 asset 名不同导致 404
+    mirror_url = f"{mirror_base_url.rstrip('/')}/eBox.exe"
+    manifest["downloadUrl"] = mirror_url
+    manifest["downloadUrls"] = [mirror_url, github_url]
+else:
+    manifest["downloadUrl"] = github_url
+    manifest["downloadUrls"] = [github_url]
 manifest["downloadSha256"] = sha_hex
 manifest["downloadSize"] = size
 manifest["changelog"] = changelog

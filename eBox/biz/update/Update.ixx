@@ -20,7 +20,8 @@ namespace biz
 			std::wstring latestVersion;       // 显示用，如 "v2.8.0"
 			int latestVersionCode{0};         // 版本比较主依据（单调递增数字）
 			std::wstring releaseDate;         // 如 "2026-09-01"
-			std::wstring downloadUrl;         // exe 直链
+			std::wstring downloadUrl;         // exe 直链（老客户端唯一读取的字段，保留兼容）
+			std::vector<std::wstring> downloadUrls; // 多下载源（主源在前），新客户端按序自动切换
 			std::wstring downloadSha256;      // 64 字符小写十六进制
 			std::uint64_t downloadSize{0};    // 字节数，用于显示"约 X MB"
 			std::vector<std::wstring> changelog; // 更新日志，每条一行
