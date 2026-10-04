@@ -27,10 +27,13 @@
 
         <div v-else class="grid grid-3">
           <RouterLink v-for="c in filtered" :key="c.id" class="card case-card" :to="`/cases/${c.id}`">
-            <span class="tag">{{ c.industry }}</span>
-            <h3 class="case-title">{{ c.title }}</h3>
-            <p class="case-summary">{{ c.summary }}</p>
-            <span class="case-more">查看详情 →</span>
+            <div class="case-body">
+              <span class="tag">{{ c.industry }}</span>
+              <h3 class="case-title">{{ c.title }}</h3>
+              <p class="case-summary">{{ c.summary }}</p>
+              <span class="case-more">查看详情 →</span>
+            </div>
+            <img v-if="c.avatar" class="case-thumb" :src="c.avatar" :alt="c.title" loading="lazy" />
           </RouterLink>
         </div>
       </div>
@@ -124,24 +127,52 @@ onMounted(async () => {
 }
 
 .case-card {
-  display: block;
-  padding: 24px 22px;
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  padding: 20px;
+}
+
+.case-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .case-title {
-  margin-top: 14px;
-  font-size: 18px;
+  margin-top: 12px;
+  font-size: 17px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .case-summary {
-  margin-top: 10px;
+  margin-top: 8px;
   color: var(--text-2);
   font-size: 14px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.case-thumb {
+  flex: none;
+  width: 96px;
+  height: 96px;
+  align-self: center;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid var(--border);
 }
 
 .case-more {
   display: inline-block;
-  margin-top: 16px;
+  margin-top: auto;
+  padding-top: 14px;
   color: var(--primary-color);
   font-size: 14px;
   font-weight: 600;

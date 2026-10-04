@@ -18,24 +18,27 @@
         </div>
 
         <div class="hero-visual fade-up">
-          <div v-if="heroImages.length" class="hero-carousel">
-            <img
-              v-for="(url, idx) in heroImages"
-              :key="url"
-              :src="url"
-              class="hero-slide"
-              :class="{ active: idx === activeIndex }"
-              alt=""
-              @click="openLightbox(url)"
-            />
+          <div v-if="heroImages.length" class="hero-gallery">
+            <div class="hero-carousel">
+              <img
+                v-for="(url, idx) in heroImages"
+                :key="url"
+                :src="url"
+                class="hero-slide"
+                :class="{ active: idx === activeIndex }"
+                alt=""
+                @click="openLightbox(idx)"
+              />
+            </div>
             <div v-if="heroImages.length > 1" class="hero-dots">
               <button
                 v-for="(url, idx) in heroImages"
                 :key="idx"
+                type="button"
                 class="hero-dot"
                 :class="{ active: idx === activeIndex }"
-                aria-label="切换配图"
-                @click="activeIndex = idx"
+                :aria-label="`查看第 ${idx + 1} 张配图`"
+                @click="goToSlide(idx)"
               ></button>
             </div>
           </div>
@@ -123,9 +126,12 @@
         </div>
         <div class="grid grid-3">
           <RouterLink v-for="c in cases" :key="c.id" class="card case-card" :to="`/cases/${c.id}`">
-            <span class="tag">{{ c.industry }}</span>
-            <h3 class="case-title">{{ c.title }}</h3>
-            <p class="case-summary">{{ c.summary }}</p>
+            <div class="case-body">
+              <span class="tag">{{ c.industry }}</span>
+              <h3 class="case-title">{{ c.title }}</h3>
+              <p class="case-summary">{{ c.summary }}</p>
+            </div>
+            <img v-if="c.avatar" class="case-thumb" :src="c.avatar" :alt="c.title" loading="lazy" />
           </RouterLink>
         </div>
         <div class="center more-wrap">
@@ -164,9 +170,28 @@
     </section>
 
     <!-- 配图放大查看 -->
-    <div v-if="lightboxUrl" class="lightbox" @click="closeLightbox">
-      <img :src="lightboxUrl" class="lightbox-img" alt="" @click.stop />
-      <button class="lightbox-close" aria-label="关闭" @click="closeLightbox">×</button>
+    <div v-if="lightboxIndex >= 0" class="lightbox" @click="closeLightbox">
+      <button class="lightbox-close" aria-label="关闭" @click.stop="closeLightbox">×</button>
+      <button
+        v-if="heroImages.length > 1"
+        class="lightbox-nav prev"
+        aria-label="上一张"
+        @click.stop="prevImage"
+      >
+        ‹
+      </button>
+      <img :src="heroImages[lightboxIndex]" class="lightbox-img" alt="" @click.stop />
+      <button
+        v-if="heroImages.length > 1"
+        class="lightbox-nav next"
+        aria-label="下一张"
+        @click.stop="nextImage"
+      >
+        ›
+      </button>
+      <div v-if="heroImages.length > 1" class="lightbox-count">
+        {{ lightboxIndex + 1 }} / {{ heroImages.length }}
+      </div>
     </div>
   </div>
 </template>
@@ -202,25 +227,45 @@ const heroImages = computed(() => {
 })
 
 const activeIndex = ref(0)
-const lightboxUrl = ref('')
+const lightboxIndex = ref(-1)
 let slideTimer: number | undefined
 
-function openLightbox(url: string) {
-  lightboxUrl.value = url
+function goToSlide(idx: number) {
+  activeIndex.value = idx
+}
+
+function openLightbox(idx: number) {
+  lightboxIndex.value = idx
 }
 
 function closeLightbox() {
-  lightboxUrl.value = ''
+  lightboxIndex.value = -1
+}
+
+function prevImage() {
+  const len = heroImages.value.length
+  if (len < 2) return
+  lightboxIndex.value = (lightboxIndex.value - 1 + len) % len
+}
+
+function nextImage() {
+  const len = heroImages.value.length
+  if (len < 2) return
+  lightboxIndex.value = (lightboxIndex.value + 1) % len
 }
 
 function onKeydown(e: KeyboardEvent) {
+  if (lightboxIndex.value < 0) return
   if (e.key === 'Escape') closeLightbox()
+  else if (e.key === 'ArrowLeft') prevImage()
+  else if (e.key === 'ArrowRight') nextImage()
 }
 
 watch(
   () => heroImages.value.length,
   (len) => {
     if (activeIndex.value >= len) activeIndex.value = 0
+    if (lightboxIndex.value >= len) lightboxIndex.value = -1
   },
 )
 
@@ -345,6 +390,12 @@ onMounted(async () => {
   font-size: 14px;
 }
 
+.hero-gallery {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 .hero-carousel {
   position: relative;
   border-radius: 16px;
@@ -362,41 +413,41 @@ onMounted(async () => {
   height: 100%;
   object-fit: cover;
   opacity: 0;
+  pointer-events: none;
   transition: opacity 0.6s ease;
   cursor: zoom-in;
 }
 
 .hero-slide.active {
   opacity: 1;
+  pointer-events: auto;
 }
 
 .hero-dots {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 12px;
   display: flex;
   justify-content: center;
-  gap: 8px;
-  z-index: 2;
+  gap: 10px;
 }
 
 .hero-dot {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
   padding: 0;
-  border: none;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.65);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12);
+  border: 1px solid rgba(26, 34, 51, 0.25);
+  border-radius: 999px;
+  background: #cbd5e1;
   cursor: pointer;
   transition: all 0.25s ease;
 }
 
+.hero-dot:hover {
+  background: #94a3b8;
+}
+
 .hero-dot.active {
-  width: 20px;
-  border-radius: 4px;
-  background: #fff;
+  width: 26px;
+  border-color: var(--primary-color);
+  background: var(--primary-color);
 }
 
 .lightbox {
@@ -406,8 +457,8 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 48px;
-  background: rgba(0, 0, 0, 0.86);
+  padding: 56px;
+  background: rgba(0, 0, 0, 0.88);
   cursor: zoom-out;
 }
 
@@ -419,24 +470,61 @@ onMounted(async () => {
   cursor: default;
 }
 
-.lightbox-close {
+.lightbox-close,
+.lightbox-nav {
   position: absolute;
-  top: 20px;
-  right: 24px;
-  width: 40px;
-  height: 40px;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   border: none;
   border-radius: 50%;
-  background: rgba(255, 255, 255, 0.15);
+  background: rgba(255, 255, 255, 0.16);
   color: #fff;
-  font-size: 26px;
-  line-height: 1;
   cursor: pointer;
   transition: background 0.2s ease;
 }
 
-.lightbox-close:hover {
-  background: rgba(255, 255, 255, 0.3);
+.lightbox-close:hover,
+.lightbox-nav:hover {
+  background: rgba(255, 255, 255, 0.32);
+}
+
+.lightbox-close {
+  top: 20px;
+  right: 24px;
+  width: 42px;
+  height: 42px;
+  font-size: 26px;
+  line-height: 1;
+}
+
+.lightbox-nav {
+  top: 50%;
+  transform: translateY(-50%);
+  width: 52px;
+  height: 52px;
+  padding-bottom: 4px;
+  font-size: 34px;
+  line-height: 1;
+}
+
+.lightbox-nav.prev {
+  left: 24px;
+}
+
+.lightbox-nav.next {
+  right: 24px;
+}
+
+.lightbox-count {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 14px;
+  letter-spacing: 1px;
 }
 
 .hero-card {
@@ -590,19 +678,46 @@ onMounted(async () => {
 }
 
 .case-card {
-  display: block;
-  padding: 24px 22px;
+  display: flex;
+  gap: 16px;
+  align-items: stretch;
+  padding: 20px;
+}
+
+.case-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 .case-title {
-  margin-top: 14px;
-  font-size: 18px;
+  margin-top: 12px;
+  font-size: 17px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .case-summary {
-  margin-top: 10px;
+  margin-top: 8px;
   color: var(--text-2);
   font-size: 14px;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.case-thumb {
+  flex: none;
+  width: 96px;
+  height: 96px;
+  align-self: center;
+  border-radius: 10px;
+  object-fit: cover;
+  border: 1px solid var(--border);
 }
 
 .more-wrap {
