@@ -83,6 +83,11 @@ KeyGen.private
 *.private.bak
 License.cpp.private.bak
 
+# 密钥轮换私密方案文档（含安全设计细节，禁止推送）
+/密钥轮换与双公钥过渡方案.md
+/*密钥*方案*.md
+/*密钥*.md
+
 # ===== KeyGen 激活码生成工具（调用私钥生成激活码，禁止推送到公开仓库）=====
 # License.cpp 中 #ifdef LICENSE_GENERATOR 段的私钥已替换为占位符 0xCC
 # KeyGen 工具编译前需从本地 License.cpp.private.bak 还原真实私钥

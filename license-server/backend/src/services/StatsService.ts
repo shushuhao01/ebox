@@ -102,7 +102,20 @@ export async function distribution() {
     statusMap[statusNames[r.s] || r.s] = Number(r.c);
   }
 
+  // 客户端版本分布（在绑设备，取最近一次上报的版本）
+  const versionRows = await deviceRepo()
+    .createQueryBuilder('d')
+    .select("COALESCE(NULLIF(d.app_version, ''), '未上报')", 'v')
+    .addSelect('COUNT(*)', 'c')
+    .where('d.status = 1')
+    .groupBy("COALESCE(NULLIF(d.app_version, ''), '未上报')")
+    .getRawMany<{ v: string; c: string }>();
+  const versionMap: Record<string, number> = {};
+  for (const r of versionRows) {
+    versionMap[r.v] = Number(r.c);
+  }
+
   // 最近 30 天激活来源分布（IP 统计不可靠，用码类型近似）
   const unbindCount = await AppDataSource.getRepository(UnbindLog).count();
-  return { durationMap, statusMap, unbindCount };
+  return { durationMap, statusMap, unbindCount, versionMap };
 }

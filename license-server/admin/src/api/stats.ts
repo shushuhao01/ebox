@@ -20,6 +20,7 @@ export interface Distribution {
   durationMap: Record<string, number>
   statusMap: Record<string, number>
   unbindCount: number
+  versionMap: Record<string, number>
 }
 
 /** 总览统计 */

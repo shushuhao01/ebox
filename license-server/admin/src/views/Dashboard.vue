@@ -72,6 +72,19 @@
         </el-card>
       </el-col>
     </el-row>
+
+    <!-- 客户端版本分布 -->
+    <el-row :gutter="16">
+      <el-col :span="24">
+        <el-card shadow="never" class="chart-card">
+          <template #header>
+            <span class="chart-title">客户端版本分布（在绑设备）</span>
+            <span class="chart-sub">按最近一次上报版本统计</span>
+          </template>
+          <div ref="versionRef" class="chart-box" v-loading="chartLoading" />
+        </el-card>
+      </el-col>
+    </el-row>
   </div>
 </template>
 
@@ -103,9 +116,11 @@ const statCards = computed(() => [
 const trendRef = ref<HTMLElement>()
 const statusRef = ref<HTMLElement>()
 const durationRef = ref<HTMLElement>()
+const versionRef = ref<HTMLElement>()
 let trendChart: echarts.ECharts | null = null
 let statusChart: echarts.ECharts | null = null
 let durationChart: echarts.ECharts | null = null
+let versionChart: echarts.ECharts | null = null
 
 function renderTrend(t: Trend) {
   if (!trendRef.value) return
@@ -202,10 +217,62 @@ function renderDuration(d: Distribution) {
   })
 }
 
+function renderVersion(d: Distribution) {
+  if (!versionRef.value) return
+  const entries = Object.entries(d.versionMap || {})
+  if (!entries.length) {
+    versionChart = initChart(versionRef.value, {
+      title: { text: '暂无数据', left: 'center', top: 'middle', textStyle: { color: AXIS_TEXT, fontSize: 13, fontWeight: 'normal' } },
+    })
+    return
+  }
+  // 版本号从新到旧排列（"未上报"置末），便于观察升级进度
+  entries.sort((a, b) => {
+    if (a[0] === '未上报') return 1
+    if (b[0] === '未上报') return -1
+    return b[0].localeCompare(a[0], undefined, { numeric: true })
+  })
+  versionChart = initChart(versionRef.value, {
+    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
+    grid: { left: 40, right: 20, top: 30, bottom: 30 },
+    xAxis: {
+      type: 'category',
+      data: entries.map(([name]) => name),
+      axisLine: { lineStyle: { color: '#e5e7eb' } },
+      axisLabel: { color: AXIS_TEXT },
+    },
+    yAxis: {
+      type: 'value',
+      splitLine: { lineStyle: { color: '#f0f2f7' } },
+      axisLabel: { color: AXIS_TEXT },
+    },
+    series: [
+      {
+        name: '设备数',
+        type: 'bar',
+        data: entries.map(([, value]) => value),
+        barMaxWidth: 42,
+        itemStyle: {
+          color: {
+            type: 'linear',
+            x: 0, y: 0, x2: 0, y2: 1,
+            colorStops: [
+              { offset: 0, color: '#22C55E' },
+              { offset: 1, color: '#86EFAC' },
+            ],
+          },
+          borderRadius: [4, 4, 0, 0],
+        },
+      },
+    ],
+  })
+}
+
 function onResize() {
   trendChart?.resize()
   statusChart?.resize()
   durationChart?.resize()
+  versionChart?.resize()
 }
 
 async function loadAll() {
@@ -222,6 +289,7 @@ async function loadAll() {
     if (dist.status === 'fulfilled') {
       renderStatus(dist.value)
       renderDuration(dist.value)
+      renderVersion(dist.value)
     }
     if (hbs.status === 'fulfilled') {
       recentHbs.value = hbs.value
@@ -244,6 +312,7 @@ onBeforeUnmount(() => {
   disposeChart(trendChart)
   disposeChart(statusChart)
   disposeChart(durationChart)
+  disposeChart(versionChart)
 })
 </script>
 
@@ -302,6 +371,12 @@ onBeforeUnmount(() => {
   font-size: 14px;
   font-weight: 600;
   color: var(--text-main);
+}
+
+.chart-sub {
+  font-size: 12px;
+  color: var(--text-secondary);
+  margin-left: 8px;
 }
 
 .chart-box {
