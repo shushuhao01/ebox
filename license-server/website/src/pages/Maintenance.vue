@@ -19,7 +19,7 @@ import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
 
 const { siteName } = useSite()
-usePageHead('维护中')
+usePageHead('维护中', undefined, { canonical: false })
 
 function reload() {
   if (typeof window !== 'undefined') window.location.reload()

@@ -1,77 +1,77 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://abc222.cn/</loc>
+    <loc>https://www.abc222.cn/</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/features</loc>
+    <loc>https://www.abc222.cn/features</loc>
     <changefreq>monthly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/download</loc>
+    <loc>https://www.abc222.cn/download</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/cases</loc>
+    <loc>https://www.abc222.cn/cases</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles</loc>
+    <loc>https://www.abc222.cn/articles</loc>
     <changefreq>weekly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/docs</loc>
+    <loc>https://www.abc222.cn/docs</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles/qiye-weixin-duokai</loc>
+    <loc>https://www.abc222.cn/articles/qiye-weixin-duokai</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles/weixin-diannaoban-duokai</loc>
+    <loc>https://www.abc222.cn/articles/weixin-diannaoban-duokai</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles/duokaiqi-yuanli-fengxian</loc>
+    <loc>https://www.abc222.cn/articles/duokaiqi-yuanli-fengxian</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles/xuniji-duokai-duibi</loc>
+    <loc>https://www.abc222.cn/articles/xuniji-duokai-duibi</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles/ebox-shiyong-jiaocheng</loc>
+    <loc>https://www.abc222.cn/articles/ebox-shiyong-jiaocheng</loc>
     <changefreq>monthly</changefreq>
     <priority>0.7</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/articles/yitai-diannao-duokai-yingyong</loc>
+    <loc>https://www.abc222.cn/articles/yitai-diannao-duokai-yingyong</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/contact</loc>
+    <loc>https://www.abc222.cn/contact</loc>
     <changefreq>monthly</changefreq>
     <priority>0.6</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/agreement</loc>
+    <loc>https://www.abc222.cn/agreement</loc>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>
   <url>
-    <loc>https://abc222.cn/privacy</loc>
+    <loc>https://www.abc222.cn/privacy</loc>
     <changefreq>yearly</changefreq>
     <priority>0.3</priority>
   </url>

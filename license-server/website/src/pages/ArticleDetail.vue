@@ -40,6 +40,7 @@ import { useRoute } from 'vue-router'
 import { useHead } from '@unhead/vue'
 import { getArticle, type RelatedArticle, type SiteArticle } from '@/api'
 import { useSite } from '@/composables/useSite'
+import { canonicalUrl } from '@/composables/usePageHead'
 
 const route = useRoute()
 const { siteName } = useSite()
@@ -75,6 +76,7 @@ useHead({
       content: computed(() => article.value?.seoDesc || article.value?.summary || ''),
     },
   ],
+  link: computed(() => [{ rel: 'canonical', href: canonicalUrl(route.path) }]),
 })
 
 async function load() {

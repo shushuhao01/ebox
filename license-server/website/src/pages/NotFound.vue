@@ -15,7 +15,7 @@
 <script setup lang="ts">
 import { usePageHead } from '@/composables/usePageHead'
 
-usePageHead('页面不存在')
+usePageHead('页面不存在', undefined, { canonical: false })
 </script>
 
 <style scoped>
