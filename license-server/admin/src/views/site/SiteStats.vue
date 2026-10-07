@@ -334,7 +334,7 @@ function renderCharts() {
   else {
     upsert('trend', trendRef.value, {
       tooltip: { trigger: 'axis' },
-      legend: { data: ['访问量(PV)', '访客数(UV)'], textStyle: { color: AXIS_TEXT } },
+      legend: { data: ['访问量(PV)', '访客数(UV)'], top: 0, left: 'center', textStyle: { color: AXIS_TEXT } },
       grid: { left: 48, right: 24, top: 40, bottom: 24 },
       xAxis: {
         type: 'category', data: a.trend.dates, boundaryGap: false,
