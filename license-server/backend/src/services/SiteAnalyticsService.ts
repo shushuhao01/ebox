@@ -310,7 +310,7 @@ export async function getSiteAnalytics(days = 30): Promise<SiteAnalytics> {
         .where('v.visit_date >= :start', { start })
         .getRawOne<{ pv: string; uv: string; ips: string }>(),
       r.createQueryBuilder('v')
-        .select('v.visit_date', 'date')
+        .select("DATE_FORMAT(v.visit_date, '%Y-%m-%d')", 'date')
         .addSelect('COUNT(*)', 'pv')
         .addSelect(UV_EXPR, 'uv')
         .where('v.visit_date >= :start', { start })
