@@ -19,6 +19,16 @@
 
           <article v-if="article.content" class="rich-content" v-html="article.content"></article>
 
+          <a
+            v-if="article.linkUrl"
+            class="article-link-btn"
+            :href="article.linkUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            查看链接 ↗
+          </a>
+
           <div v-if="related.length" class="related">
             <h2 class="related-title">相关文章</h2>
             <div class="grid grid-3">
@@ -169,6 +179,23 @@ onMounted(() => {
 
 .rich-content {
   margin-top: 30px;
+}
+
+.article-link-btn {
+  display: inline-block;
+  margin-top: 32px;
+  padding: 12px 28px;
+  background: var(--primary-color);
+  color: #fff;
+  border-radius: 999px;
+  font-size: 15px;
+  font-weight: 600;
+  transition: opacity 0.2s;
+}
+
+.article-link-btn:hover {
+  opacity: 0.88;
+  color: #fff;
 }
 
 .related {

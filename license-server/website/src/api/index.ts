@@ -37,6 +37,7 @@ export interface SiteArticle extends ArticleBrief {
   contentType: string
   seoTitle: string | null
   seoDesc: string | null
+  linkUrl: string | null
 }
 
 export interface RelatedArticle {
