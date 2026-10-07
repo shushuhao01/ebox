@@ -3,7 +3,7 @@ import type { RouteRecordRaw } from 'vue-router'
 import App from './App.vue'
 import { routes } from './router'
 import { loadSiteData } from './composables/useSite'
-import { getAllArticleSlugs, track } from './api'
+import { getAllArticleSlugs, trackPageview } from './api'
 import './styles/main.scss'
 
 export const createApp = ViteSSG(
@@ -18,9 +18,9 @@ export const createApp = ViteSSG(
       return true
     })
 
-    // 页面访问埋点
-    router.afterEach(() => {
-      track('pv')
+    // 页面访问埋点（携带路径 / 来源 / 访客标识）
+    router.afterEach((to) => {
+      trackPageview(to.fullPath)
     })
   },
 )

@@ -12,6 +12,7 @@ import {
   bumpStat,
   getSiteSetting,
 } from '../../services/SiteService';
+import { recordVisit } from '../../services/SiteAnalyticsService';
 
 const router = Router();
 
@@ -192,11 +193,29 @@ router.get('/latest-release', async (_req, res) => {
   ok(res, data);
 });
 
-/** 埋点：下载点击 / 购买点击 / 页面访问 */
+/** 埋点：页面访问（PV/UV+明细）/ 下载点击 / 购买点击 */
 router.post('/track', async (req, res) => {
   const type = String(req.body?.type || '');
-  const map: Record<string, 'pv' | 'uv' | 'downloads' | 'buyClicks'> = {
-    pv: 'pv', uv: 'uv', download: 'downloads', buy: 'buyClicks',
+
+  // 页面访问：写入访问明细（IP / 来源 / 设备 / 地域 / 时间），并累加 PV、当日首访累加 UV
+  if (type === 'pv') {
+    try {
+      await recordVisit({
+        ip: clientIp(req),
+        ua: String(req.headers['user-agent'] || ''),
+        referer: String(req.headers.referer || req.body?.referer || ''),
+        path: String(req.body?.path || '/'),
+        visitorId: String(req.body?.visitorId || ''),
+        host: String(req.headers.host || ''),
+      });
+    } catch {
+      // 统计失败不影响前台
+    }
+    return ok(res, null);
+  }
+
+  const map: Record<string, 'uv' | 'downloads' | 'buyClicks'> = {
+    uv: 'uv', download: 'downloads', buy: 'buyClicks',
   };
   const field = map[type];
   if (!field) return fail(res, '参数错误', 400);

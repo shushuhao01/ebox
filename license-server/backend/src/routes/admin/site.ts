@@ -21,6 +21,7 @@ import {
   clearAccessRuleCache,
   getRecentStats,
 } from '../../services/SiteService';
+import { getSiteAnalytics, listSiteVisits } from '../../services/SiteAnalyticsService';
 
 const router = Router();
 
@@ -703,6 +704,30 @@ router.get('/stats', async (req, res) => {
     { pv: 0, uv: 0, downloads: 0, buyClicks: 0 }
   );
   ok(res, { list, totals });
+});
+
+// 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间多维聚合）
+router.get('/analytics', async (req, res) => {
+  const days = Math.min(90, Math.max(1, parseInt(String(req.query.days || '30'), 10) || 30));
+  const data = await getSiteAnalytics(days);
+  ok(res, data);
+});
+
+// 官网访问明细分页查询
+router.get('/visits', async (req, res) => {
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const data = await listSiteVisits({
+    page: parseInt(String(req.query.page || '1'), 10) || 1,
+    pageSize: parseInt(String(req.query.pageSize || '20'), 10) || 20,
+    ip: str(req.query.ip),
+    path: str(req.query.path),
+    device: str(req.query.device),
+    source: str(req.query.source),
+    keyword: str(req.query.keyword),
+    start: str(req.query.start),
+    end: str(req.query.end),
+  });
+  ok(res, data);
 });
 
 export default router;

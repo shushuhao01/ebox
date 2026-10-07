@@ -177,3 +177,31 @@ export function getLatestRelease(): Promise<LatestRelease> {
 export function track(type: 'pv' | 'uv' | 'download' | 'buy'): void {
   http.post('/api/site/track', { type }).catch(() => undefined)
 }
+
+/** 生成 / 读取本地访客标识（用于 UV 去重，仅存浏览器本地） */
+function getVisitorId(): string {
+  if (typeof localStorage === 'undefined') return ''
+  try {
+    let id = localStorage.getItem('ebox_vid')
+    if (!id) {
+      id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`
+      localStorage.setItem('ebox_vid', id)
+    }
+    return id
+  } catch {
+    return ''
+  }
+}
+
+/** 页面访问埋点：携带路径 / 来源 / 访客标识，供后台流量分析（失败不影响前台） */
+export function trackPageview(path: string): void {
+  if (typeof window === 'undefined') return
+  http
+    .post('/api/site/track', {
+      type: 'pv',
+      path: path || window.location.pathname + window.location.search,
+      referer: document.referrer || '',
+      visitorId: getVisitorId(),
+    })
+    .catch(() => undefined)
+}

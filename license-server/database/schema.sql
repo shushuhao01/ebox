@@ -293,3 +293,29 @@ CREATE TABLE IF NOT EXISTS `site_stats_daily` (
   `downloads` INT UNSIGNED NOT NULL DEFAULT 0,
   `buy_clicks` INT UNSIGNED NOT NULL DEFAULT 0
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网访问明细（逐条记录，用于流量 / 来源 / 地域 / 设备 / 时间分析，保留 90 天）
+CREATE TABLE IF NOT EXISTS `site_visit_log` (
+  `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  `visit_date` DATE NOT NULL,                    -- 访问日期（本地时区）
+  `visit_hour` TINYINT UNSIGNED NOT NULL DEFAULT 0, -- 访问小时 0-23
+  `ip` VARCHAR(64) NOT NULL DEFAULT '',
+  `country` VARCHAR(16) NOT NULL DEFAULT '',
+  `province` VARCHAR(32) NOT NULL DEFAULT '',
+  `city` VARCHAR(32) NOT NULL DEFAULT '',
+  `isp` VARCHAR(64) NOT NULL DEFAULT '',
+  `device` VARCHAR(16) NOT NULL DEFAULT 'unknown',  -- desktop/mobile/tablet/bot/unknown
+  `os` VARCHAR(32) NOT NULL DEFAULT '',
+  `browser` VARCHAR(32) NOT NULL DEFAULT '',
+  `source` VARCHAR(24) NOT NULL DEFAULT '其他',      -- 来源渠道（中文）
+  `referer` VARCHAR(512) NOT NULL DEFAULT '',
+  `path` VARCHAR(255) NOT NULL DEFAULT '/',
+  `visitor_id` VARCHAR(64) NOT NULL DEFAULT '',
+  `user_agent` VARCHAR(255) NOT NULL DEFAULT '',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY `idx_svl_date` (`visit_date`),
+  KEY `idx_svl_ip` (`ip`),
+  KEY `idx_svl_path` (`path`),
+  KEY `idx_svl_visitor` (`visitor_id`),
+  KEY `idx_svl_created` (`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

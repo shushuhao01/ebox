@@ -11,6 +11,7 @@ import cron from 'node-cron';
 import { env } from './config/env';
 import { logger, log } from './config/logger';
 import { initializeDatabase } from './config/database';
+import { ensureSchema } from './config/ensureSchema';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { authRequired } from './middleware/helpers';
 
@@ -29,6 +30,7 @@ import adminSiteRoutes from './routes/admin/site';
 import { markExpiredKeys } from './services/KeyService';
 import { getConfigValue } from './services/ConfigService';
 import { cleanExpiredData } from './services/LogService';
+import { cleanSiteVisitLogs } from './services/SiteAnalyticsService';
 
 const app = express();
 const PORT = env.port;
@@ -125,6 +127,9 @@ async function main() {
     await initializeDatabase();
     log.info(`✅ 数据库连接成功：${env.db.database} @ ${env.db.host}:${env.db.port}`);
 
+    // 结构自愈：自动创建 / 补齐官网访问明细表（无需手动执行建表 SQL）
+    await ensureSchema();
+
     // 定时任务：每小时清理过期激活码状态
     cron.schedule('0 * * * *', async () => {
       try {
@@ -161,6 +166,16 @@ async function main() {
         }
       } catch (e) {
         log.error('日志清理失败', e);
+      }
+    });
+
+    // 定时任务：官网访问明细清理（保留 90 天，每日 03:30 执行，避免明细表无限增长爆盘）
+    cron.schedule('30 3 * * *', async () => {
+      try {
+        const n = await cleanSiteVisitLogs(90);
+        if (n > 0) log.info(`官网访问明细清理：删除 ${n} 条超过 90 天的记录`);
+      } catch (e) {
+        log.error('官网访问明细清理失败', e);
       }
     });
 

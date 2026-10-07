@@ -289,3 +289,77 @@ export function getSiteStats(days = 30) {
     { days },
   )
 }
+
+// ==================== 数据分析 ====================
+
+export interface NameValue {
+  name: string
+  value: number
+}
+
+export interface SiteVisitLog {
+  id: string
+  visitDate: string
+  visitHour: number
+  ip: string
+  country: string
+  province: string
+  city: string
+  isp: string
+  device: string
+  os: string
+  browser: string
+  source: string
+  referer: string
+  path: string
+  visitorId: string
+  userAgent: string
+  createdAt: string
+}
+
+export interface SiteAnalytics {
+  range: { days: number; start: string; end: string }
+  summary: {
+    pv: number
+    uv: number
+    ips: number
+    downloads: number
+    buyClicks: number
+    todayPv: number
+    todayUv: number
+    avgPv: number
+    peakHour: number
+    peakHourPv: number
+  }
+  trend: { dates: string[]; pv: number[]; uv: number[] }
+  hours: { labels: string[]; pv: number[] }
+  sources: NameValue[]
+  devices: NameValue[]
+  os: NameValue[]
+  browsers: NameValue[]
+  regions: NameValue[]
+  isps: NameValue[]
+  pages: { path: string; pv: number; uv: number }[]
+  ips: { ip: string; province: string; city: string; isp: string; pv: number; lastPath: string; lastTime: string }[]
+  daily: { date: string; pv: number; uv: number; downloads: number; buyClicks: number }[]
+}
+
+/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间多维聚合） */
+export function getSiteAnalytics(days = 30) {
+  return get<SiteAnalytics>('/site/analytics', { days })
+}
+
+/** 官网访问明细分页查询 */
+export function getSiteVisits(params: {
+  page?: number
+  pageSize?: number
+  ip?: string
+  path?: string
+  device?: string
+  source?: string
+  keyword?: string
+  start?: string
+  end?: string
+}) {
+  return get<PageResult<SiteVisitLog>>('/site/visits', params)
+}
