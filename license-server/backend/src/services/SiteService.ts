@@ -25,10 +25,6 @@ export const SITE_DEFAULTS: Record<string, string> = {
   doc_title: '使用手册',
   doc_target: '_blank',
   github_url: '',
-  // 顶部公告条
-  announcement_enabled: '0',
-  announcement_text: '',
-  announcement_url: '',
   // 首页文案
   home_hero_title: '一台电脑，多开任意应用',
   home_hero_subtitle: '环境独立隔离 · 免扫码自动登录 · 体积小不卡顿',
@@ -57,7 +53,6 @@ const PUBLIC_KEYS = [
   'site_name', 'site_logo', 'site_favicon', 'primary_color',
   'site_description', 'site_keywords', 'icp', 'police_icp', 'copyright',
   'purchase_url', 'doc_url', 'doc_title', 'doc_target', 'github_url',
-  'announcement_enabled', 'announcement_text', 'announcement_url',
   'home_hero_title', 'home_hero_subtitle', 'home_hero_images', 'home_stats',
   'seo_title', 'seo_desc', 'statistics_code', 'maintenance_mode',
 ];

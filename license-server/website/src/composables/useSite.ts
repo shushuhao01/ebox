@@ -1,29 +1,43 @@
 import { computed, reactive } from 'vue'
-import { getNavList, getSiteSettings, type SiteNav, type SiteSettings } from '@/api'
+import {
+  getNavList,
+  getLatestNotice,
+  getSiteSettings,
+  type LatestNotice,
+  type SiteNav,
+  type SiteSettings,
+} from '@/api'
 
 interface SiteState {
   settings: SiteSettings
   nav: SiteNav[]
+  notice: LatestNotice | null
   loaded: boolean
 }
 
 const state = reactive<SiteState>({
   settings: {},
   nav: [],
+  notice: null,
   loaded: false,
 })
 
 let loading: Promise<void> | null = null
 
-/** 加载站点公共数据（设置 + 导航），全局仅加载一次 */
+/** 加载站点公共数据（设置 + 导航 + 最新公告），全局仅加载一次 */
 export function loadSiteData(force = false): Promise<void> {
   if (state.loaded && !force) return Promise.resolve()
   if (loading) return loading
   loading = (async () => {
     try {
-      const [settings, nav] = await Promise.all([getSiteSettings(), getNavList()])
+      const [settings, nav, notice] = await Promise.all([
+        getSiteSettings(),
+        getNavList(),
+        getLatestNotice(),
+      ])
       state.settings = settings || {}
       state.nav = (nav || []).filter((n) => n.visible !== 0)
+      state.notice = notice || null
       state.loaded = true
       applyTheme()
     } catch {
@@ -53,11 +67,17 @@ export function useSite() {
   const docTitle = computed(() => state.settings.doc_title || '使用手册')
   const githubUrl = computed(() => state.settings.github_url || '')
   const copyright = computed(() => state.settings.copyright || '')
-  const announcement = computed(() => ({
-    enabled: state.settings.announcement_enabled === '1',
-    text: state.settings.announcement_text || '',
-    url: state.settings.announcement_url || '',
-  }))
+  const announcement = computed(() => {
+    // 公告条数据来源统一为「公告管理」里最新一条已发布且未过期的公告
+    const n = state.notice
+    if (!n || !n.title) return null
+    return {
+      id: n.id,
+      text: n.title,
+      detailUrl: `/articles/${encodeURIComponent(n.slug)}`,
+      linkUrl: n.linkUrl || '',
+    }
+  })
 
   const topNav = computed(() => state.nav.filter((n) => n.position === 'top'))
   const footerNav = computed(() => state.nav.filter((n) => n.position === 'footer'))

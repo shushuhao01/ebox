@@ -46,6 +46,16 @@ export interface RelatedArticle {
   cover: string | null
 }
 
+/** 最新公告（公告管理里最新一条已发布公告） */
+export interface LatestNotice {
+  id: string
+  slug: string
+  title: string
+  summary: string | null
+  linkUrl: string | null
+  pinned: number
+}
+
 export interface SiteCase {
   id: string
   industry: string
@@ -137,6 +147,13 @@ export function getArticle(slug: string): Promise<{ article: SiteArticle; relate
     article: SiteArticle
     related: RelatedArticle[]
   }>
+}
+
+/** 最新公告（顶部公告条）：发布后需即时生效，加时间戳绕过缓存 */
+export function getLatestNotice(): Promise<LatestNotice | null> {
+  return http.get('/api/site/notice', {
+    params: { _t: Date.now() },
+  }) as unknown as Promise<LatestNotice | null>
 }
 
 /** SSG 构建期使用：分页拉取全部已发布文章 slug（接口 size 上限 50，需循环） */

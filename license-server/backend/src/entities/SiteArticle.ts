@@ -41,6 +41,14 @@ export class SiteArticle {
   @Column({ type: 'datetime', name: 'publish_at', nullable: true })
   publishAt!: Date | null;
 
+  /** 过期时间：到期后前台自动下线（公告/文章通用），null 表示不过期 */
+  @Column({ type: 'datetime', name: 'expire_at', nullable: true })
+  expireAt!: Date | null;
+
+  /** 公告链接：配置后官网顶部公告条可点击跳转（仅公告使用） */
+  @Column({ type: 'varchar', length: 500, name: 'link_url', nullable: true })
+  linkUrl!: string | null;
+
   @Column({ type: 'varchar', length: 200, name: 'seo_title', nullable: true })
   seoTitle!: string | null;
 

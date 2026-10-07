@@ -183,6 +183,8 @@ router.post('/articles', async (req, res) => {
     status: Joi.string().valid('draft', 'published').default('draft'),
     pinned: Joi.number().valid(0, 1).default(0),
     publishAt: Joi.string().allow('', null).default(null),
+    expireAt: Joi.string().allow('', null).default(null),
+    linkUrl: Joi.string().allow('', null).max(500).default(null),
     seoTitle: Joi.string().allow('', null).max(200).default(null),
     seoDesc: Joi.string().allow('', null).max(500).default(null),
   }).validate(req.body);
@@ -207,6 +209,8 @@ router.post('/articles', async (req, res) => {
       status: String(v.status),
       pinned: Number(v.pinned) || 0,
       publishAt: v.publishAt ? new Date(String(v.publishAt)) : (v.status === 'published' ? new Date() : null),
+      expireAt: v.expireAt ? new Date(String(v.expireAt)) : null,
+      linkUrl: (v.linkUrl as string) || null,
       seoTitle: (v.seoTitle as string) || null,
       seoDesc: (v.seoDesc as string) || null,
       createdBy: req.auth!.userId,
@@ -243,6 +247,8 @@ router.put('/articles/:id', async (req, res) => {
   if (b.status !== undefined) row.status = String(b.status);
   if (b.pinned !== undefined) row.pinned = Number(b.pinned) ? 1 : 0;
   if (b.publishAt !== undefined) row.publishAt = b.publishAt ? new Date(String(b.publishAt)) : null;
+  if (b.expireAt !== undefined) row.expireAt = b.expireAt ? new Date(String(b.expireAt)) : null;
+  if (b.linkUrl !== undefined) row.linkUrl = (b.linkUrl as string) || null;
   if (b.seoTitle !== undefined) row.seoTitle = (b.seoTitle as string) || null;
   if (b.seoDesc !== undefined) row.seoDesc = (b.seoDesc as string) || null;
   const saved = await articleRepo().save(row);

@@ -112,7 +112,8 @@ router.get('/articles', async (req, res) => {
   const qb = repo
     .createQueryBuilder('a')
     .where('a.status = :status', { status: 'published' })
-    .andWhere('(a.publish_at IS NULL OR a.publish_at <= NOW())');
+    .andWhere('(a.publish_at IS NULL OR a.publish_at <= NOW())')
+    .andWhere('(a.expire_at IS NULL OR a.expire_at > NOW())');
   if (category) qb.andWhere('a.category = :category', { category });
 
   const total = await qb.getCount();
@@ -138,6 +139,10 @@ router.get('/articles/:slug', async (req, res) => {
   const repo = AppDataSource.getRepository(SiteArticle);
   const article = await repo.findOneBy({ slug: req.params.slug, status: 'published' });
   if (!article) return fail(res, '文章不存在', 1002);
+  // 定时发布未到 / 已过期 均视为不可见
+  const now = Date.now();
+  if (article.publishAt && new Date(article.publishAt).getTime() > now) return fail(res, '文章不存在', 1002);
+  if (article.expireAt && new Date(article.expireAt).getTime() <= now) return fail(res, '文章不存在', 1002);
   await repo.increment({ id: article.id }, 'views', 1);
   article.views += 1;
 
@@ -147,6 +152,8 @@ router.get('/articles/:slug', async (req, res) => {
     .where('a.status = :status', { status: 'published' })
     .andWhere('a.category = :category', { category: article.category })
     .andWhere('a.id != :id', { id: article.id })
+    .andWhere('(a.publish_at IS NULL OR a.publish_at <= NOW())')
+    .andWhere('(a.expire_at IS NULL OR a.expire_at > NOW())')
     .orderBy('a.id', 'DESC')
     .take(5)
     .getMany();
@@ -155,6 +162,28 @@ router.get('/articles/:slug', async (req, res) => {
     article,
     related: related.map((a) => ({ id: a.id, slug: a.slug, title: a.title, cover: a.cover })),
   });
+});
+
+/** 最新公告（官网顶部公告条使用）：取最新一条已发布且未过期的公告，无则返回 null */
+router.get('/notice', async (_req, res) => {
+  const row = await AppDataSource.getRepository(SiteArticle)
+    .createQueryBuilder('a')
+    .where('a.category = :category', { category: 'notice' })
+    .andWhere('a.status = :status', { status: 'published' })
+    .andWhere('(a.publish_at IS NULL OR a.publish_at <= NOW())')
+    .andWhere('(a.expire_at IS NULL OR a.expire_at > NOW())')
+    .orderBy('a.pinned', 'DESC')
+    .addOrderBy('a.publish_at', 'DESC')
+    .addOrderBy('a.id', 'DESC')
+    .getOne();
+  // 公告条需“发布即生效”，禁用浏览器/中间层缓存
+  res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  ok(
+    res,
+    row
+      ? { id: row.id, slug: row.slug, title: row.title, summary: row.summary, linkUrl: row.linkUrl, pinned: row.pinned }
+      : null
+  );
 });
 
 /** 案例列表 */

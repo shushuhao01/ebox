@@ -2,16 +2,18 @@
   <div v-if="visible" class="announce">
     <div class="container announce-inner">
       <span class="announce-dot"></span>
+      <RouterLink class="announce-text announce-link" :to="announcement!.detailUrl">
+        {{ announcement!.text }}
+      </RouterLink>
       <a
-        v-if="announcement.url"
-        class="announce-text announce-link"
-        :href="announcement.url"
+        v-if="announcement!.linkUrl"
+        class="announce-external"
+        :href="announcement!.linkUrl"
         target="_blank"
         rel="noopener"
       >
-        {{ announcement.text }}
+        查看链接 ↗
       </a>
-      <span v-else class="announce-text">{{ announcement.text }}</span>
       <button class="announce-close" type="button" aria-label="关闭" @click="close">×</button>
     </div>
   </div>
@@ -24,10 +26,7 @@ import { useSite } from '@/composables/useSite'
 const { announcement } = useSite()
 const closed = ref(false)
 
-const visible = computed(() => {
-  if (closed.value) return false
-  return announcement.value.enabled && !!announcement.value.text
-})
+const visible = computed(() => !closed.value && !!announcement.value)
 
 function close() {
   closed.value = true
@@ -67,6 +66,21 @@ function close() {
 
 .announce-link {
   text-decoration: underline;
+}
+
+.announce-external {
+  flex: none;
+  color: #fff;
+  font-size: 13px;
+  padding: 2px 10px;
+  border: 1px solid rgba(255, 255, 255, 0.6);
+  border-radius: 12px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.announce-external:hover {
+  background: rgba(255, 255, 255, 0.15);
 }
 
 .announce-close {

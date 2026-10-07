@@ -14,6 +14,8 @@ export interface SiteArticle {
   status: string
   pinned: number
   publishAt: string | null
+  expireAt: string | null
+  linkUrl: string | null
   seoTitle: string | null
   seoDesc: string | null
   views: number

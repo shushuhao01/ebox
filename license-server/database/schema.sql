@@ -198,6 +198,8 @@ CREATE TABLE IF NOT EXISTS `site_articles` (
   `status` VARCHAR(16) NOT NULL DEFAULT 'draft',       -- draft/published
   `pinned` TINYINT NOT NULL DEFAULT 0,
   `publish_at` DATETIME NULL,
+  `expire_at` DATETIME NULL,                           -- 过期时间：到期后前台自动下线
+  `link_url` VARCHAR(500) NULL,                        -- 公告链接：官网公告条点击跳转
   `seo_title` VARCHAR(200) NULL,
   `seo_desc` VARCHAR(500) NULL,
   `views` INT UNSIGNED NOT NULL DEFAULT 0,

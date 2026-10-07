@@ -91,6 +91,33 @@
         <el-form-item label="标识 slug">
           <el-input v-model="form.slug" maxlength="160" placeholder="留空自动生成，用于文章链接" />
         </el-form-item>
+        <el-row :gutter="12">
+          <el-col :span="12">
+            <el-form-item label="定时发布">
+              <el-date-picker
+                v-model="form.publishAt"
+                type="datetime"
+                placeholder="留空则立即发布"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+          <el-col :span="12">
+            <el-form-item label="过期时间">
+              <el-date-picker
+                v-model="form.expireAt"
+                type="datetime"
+                placeholder="留空则不过期"
+                value-format="YYYY-MM-DD HH:mm:ss"
+                style="width: 100%"
+              />
+            </el-form-item>
+          </el-col>
+        </el-row>
+        <el-form-item v-if="isNotice" label="公告链接">
+          <el-input v-model="form.linkUrl" maxlength="500" placeholder="可选，配置后官网公告条点击可跳转该地址" />
+        </el-form-item>
         <el-form-item label="封面图">
           <div class="cover-row">
             <el-input v-model="form.cover" placeholder="图片地址，可点击右侧上传" />
@@ -125,7 +152,7 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
 import { Plus, Refresh, Upload, Top } from '@element-plus/icons-vue'
 import {
@@ -202,9 +229,15 @@ const form = reactive({
   contentType: 'html',
   status: 'draft',
   pinned: 0 as number,
+  publishAt: '',
+  expireAt: '',
+  linkUrl: '',
   seoTitle: '',
   seoDesc: '',
 })
+
+/** 是否为公告（固定分类页签或当前表单分类为公告），公告链接仅对公告展示 */
+const isNotice = computed(() => props.fixedCategory || form.category === 'notice')
 
 function resetForm() {
   form.id = ''
@@ -215,8 +248,12 @@ function resetForm() {
   form.summary = ''
   form.content = ''
   form.contentType = 'html'
-  form.status = 'draft'
+  // 公告为即时发布场景，默认「已发布」；普通文章默认草稿
+  form.status = props.fixedCategory ? 'published' : 'draft'
   form.pinned = 0
+  form.publishAt = ''
+  form.expireAt = ''
+  form.linkUrl = ''
   form.seoTitle = ''
   form.seoDesc = ''
 }
@@ -241,6 +278,9 @@ async function openEdit(row: SiteArticle) {
     form.contentType = full.contentType || 'html'
     form.status = full.status
     form.pinned = full.pinned ? 1 : 0
+    form.publishAt = full.publishAt ? formatTime(full.publishAt) : ''
+    form.expireAt = full.expireAt ? formatTime(full.expireAt) : ''
+    form.linkUrl = full.linkUrl || ''
     form.seoTitle = full.seoTitle || ''
     form.seoDesc = full.seoDesc || ''
   } catch {
@@ -277,6 +317,9 @@ async function submit() {
     contentType: form.contentType,
     status: form.status,
     pinned: form.pinned,
+    publishAt: form.publishAt || null,
+    expireAt: form.expireAt || null,
+    linkUrl: form.linkUrl || null,
     seoTitle: form.seoTitle,
     seoDesc: form.seoDesc,
   }

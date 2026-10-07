@@ -36,17 +36,6 @@
         </el-col>
       </el-row>
 
-      <div class="section-title">顶部公告条</div>
-      <el-form-item label="启用公告">
-        <el-switch v-model="form.announcement_enabled" active-value="1" inactive-value="0" />
-      </el-form-item>
-      <el-form-item label="公告内容">
-        <el-input v-model="form.announcement_text" maxlength="200" placeholder="例如：新版本 v2.0 已发布" />
-      </el-form-item>
-      <el-form-item label="公告链接">
-        <el-input v-model="form.announcement_url" placeholder="可选，点击公告跳转的地址" />
-      </el-form-item>
-
       <div class="section-title">首页文案</div>
       <el-form-item label="主标题">
         <el-input v-model="form.home_hero_title" maxlength="100" />
@@ -153,9 +142,6 @@ const form = reactive({
   primary_color: '#3A7AFE',
   site_description: '',
   site_keywords: '',
-  announcement_enabled: '0',
-  announcement_text: '',
-  announcement_url: '',
   home_hero_title: '',
   home_hero_subtitle: '',
   home_hero_images: '[]',
