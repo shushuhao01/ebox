@@ -1,20 +1,18 @@
 {
-    "latestVersion": "v3.1.4",
-    "latestVersionCode": 30104,
-    "releaseDate": "2026/10/4",
+    "latestVersion": "v3.1.5",
+    "latestVersionCode": 30105,
+    "releaseDate": "2026/10/8",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "421e6ffbdf1c80dcac0f30701aeedbc2ca5f8d834b3a0e7dc72fd723fc20d417",
-    "downloadSize": 3083264,
+    "downloadSha256": "af0d96f64302afc4a8b1286937846db18cc3945a04452567c42d548b1673e607",
+    "downloadSize": 3087872,
     "changelog": [
-        "优化自动更新网络兼容性：自动识别并使用系统代理（含手动代理/PAC），修复部分开启代理的用户更新失败的问题",
-        "自动更新新增多下载源：优先使用国内下载源，失败时自动切换备用源重试，提升下载成功率",
-        "自动更新增加超时控制：不可达的下载源会快速失败并切换，避免长时间卡住",
-        "更新失败提示改为更友好的中文说明（网络超时、DNS 解析失败、无法连接等）"
+        "修复智能文档打不开（一直转圈）的问题：mojo 通信管道名被错误改写导致连接失败，现已修复",
+        "优化命名管道处理逻辑：相对名管道改为对称改名，失败自动回退原名，避免连接失配"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.1.4/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.1.5/eBox.exe"
     ]
 }
