@@ -142,6 +142,39 @@ namespace hook
 
 	//////////////////////////////////////////////////////////////////////////
 	//named pipe
+
+	// 大小写不敏感子串匹配。
+	inline bool contains_icase(std::wstring_view hay, std::wstring_view needle) noexcept
+	{
+		if (needle.empty())
+		{
+			return true;
+		}
+		if (needle.size() > hay.size())
+		{
+			return false;
+		}
+		const std::size_t last = hay.size() - needle.size();
+		for (std::size_t i = 0; i <= last; ++i)
+		{
+			if (::_wcsnicmp(hay.data() + i, needle.data(), needle.size()) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// mojo 管道（Chromium/WeCom 自建 Mojo IPC）名字本身即每实例高熵随机
+	// （mojo.<pid>.<tid>.<rand> 或 mojo.<32位十六进制 token>），无需靠 env 后缀做隔离。
+	// 而客户端（如浏览器进程）连接 mojo 管道的 syscall 路径未必经过本 hook：一旦服务端管道
+	// 被改名而客户端仍用原始 token 连接，就会找不到目标 → GetNamedPipeServerProcessId
+	// error:6（智能文档一直转圈）。故对 mojo 管道两端均不改名，使两端始终以原始名对齐。
+	inline bool isMojoPipeName(std::wstring_view name) noexcept
+	{
+		return contains_icase(name, L"mojo.");
+	}
+
 	template <auto trampoline>
 	NTSTATUS NTAPI NtCreateNamedPipeFile(_Out_ PHANDLE FileHandle, _In_ ULONG DesiredAccess, _In_ POBJECT_ATTRIBUTES ObjectAttributes,
 	                                     _Out_ PIO_STATUS_BLOCK IoStatusBlock, _In_ ULONG ShareAccess, _In_ ULONG CreateDisposition,
@@ -149,6 +182,19 @@ namespace hook
 	                                     _In_ ULONG CompletionMode, _In_ ULONG MaximumInstances, _In_ ULONG InboundQuota,
 	                                     _In_ ULONG OutboundQuota, _In_opt_ PLARGE_INTEGER DefaultTimeout)
 	{
+		if (ObjectAttributes && ObjectAttributes->ObjectName && ObjectAttributes->ObjectName->Buffer && ObjectAttributes->ObjectName->Length)
+		{
+			const std::wstring_view pipeName{ObjectAttributes->ObjectName->Buffer, ObjectAttributes->ObjectName->Length / sizeof(wchar_t)};
+			// mojo 管道不改名（见 isMojoPipeName 注释）：保证与客户端连接的原始名一致。
+			if (isMojoPipeName(pipeName))
+			{
+				return trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+				                  IoStatusBlock, ShareAccess, CreateDisposition,
+				                  CreateOptions, NamedPipeType, ReadMode,
+				                  CompletionMode, MaximumInstances, InboundQuota,
+				                  OutboundQuota, DefaultTimeout);
+			}
+		}
 		return ChangeObjNameThenTrampoline<trampoline, ChangePolicy::ForceChange>(ObjectAttributes, FileHandle, DesiredAccess, ObjectAttributes,
 		                                                                          IoStatusBlock, ShareAccess, CreateDisposition,
 		                                                                          CreateOptions, NamedPipeType, ReadMode,
@@ -272,6 +318,77 @@ namespace hook
 		}
 		while (false);
 		return {};
+	}
+
+	// 名字是否像跨进程 IPC 管道令牌（如 meta/mojo.<token>、IPC-*、32 位十六进制）。
+	// 用于捕获「以 \Device\NamedPipe 为 RootDirectory 的相对名打开」这类不带 "pipe" 字样的形态。
+	inline bool looks_like_pipe_token(std::wstring_view name) noexcept
+	{
+		if (name.empty())
+		{
+			return false;
+		}
+		if (contains_icase(name, L"mojo") || contains_icase(name, L"ipc"))
+		{
+			return true;
+		}
+		if (name.size() == 32)
+		{
+			bool bAllHex = true;
+			for (const wchar_t c : name)
+			{
+				const bool bHex = (c >= L'0' && c <= L'9') || (c >= L'a' && c <= L'f') || (c >= L'A' && c <= L'F');
+				if (!bHex)
+				{
+					bAllHex = false;
+					break;
+				}
+			}
+			if (bAllHex)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// 命名管道「相对名」形态判定：RootDirectory 非空（相对路径，如以 \DosDevices\pipe\
+	// 目录句柄为根）+ 名字像管道令牌（mojo.<token> / 32 位十六进制等）。此类形态现有改名
+	// 逻辑（仅匹配 \??\pipe\ 全名前缀）未覆盖，会与服务端被追加 env 后缀的实际管道名失配。
+	inline bool isPipeRelativeName(POBJECT_ATTRIBUTES ObjectAttributes, std::wstring& relativeName) noexcept
+	{
+		relativeName.clear();
+		if (!ObjectAttributes || !ObjectAttributes->RootDirectory)
+		{
+			return false;
+		}
+		if (!ObjectAttributes->ObjectName || !ObjectAttributes->ObjectName->Buffer || !ObjectAttributes->ObjectName->Length)
+		{
+			return false;
+		}
+		relativeName.assign(ObjectAttributes->ObjectName->Buffer, ObjectAttributes->ObjectName->Length / sizeof(wchar_t));
+		return looks_like_pipe_token(relativeName);
+	}
+
+	// 对「管道相对名」追加同一 env 后缀再调用；失败则回退原名重试（TryToChange 语义）。
+	// 与 NtCreateNamedPipeFile 服务端的 ForceChange 改名保持对称，修复跨进程 IPC 失配
+	// （智能文档 mojo 管道连接 GetNamedPipeServerProcessId error:6）。
+	template <auto trampoline, typename... Args>
+	NTSTATUS ChangePipeRelativeNameThenTrampoline(POBJECT_ATTRIBUTES ObjectAttributes, std::wstring_view relativeName, Args&&... args)
+	{
+		std::wstring strNewName = std::format(L"{}{}", relativeName, global::Data::get().envFlagName());
+		const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
+		UNICODE_STRING newObjName;
+		newObjName.Buffer = strNewName.data();
+		newObjName.Length = newObjName.MaximumLength = static_cast<USHORT>(strNewName.length() * sizeof(wchar_t));
+		ObjectAttributes->ObjectName = &newObjName;
+		const NTSTATUS ret = trampoline(std::forward<Args>(args)...);
+		ObjectAttributes->ObjectName = pOldName;
+		if (!NT_SUCCESS(ret))
+		{
+			return trampoline(std::forward<Args>(args)...);
+		}
+		return ret;
 	}
 
 	// 环境内目标是否已有"有效"数据（存在且非空）。
@@ -582,6 +699,14 @@ namespace hook
 		if (filePath.starts_with(L"\\??\\pipe\\"))
 		{
 			/* \??\pipe\ */
+			// mojo 管道不改名（见 isMojoPipeName 注释）：客户端连接路径未必经过本 hook，
+			// 两端都不改名才能始终以原始名对齐。
+			if (isMojoPipeName(filePath))
+			{
+				return trampoline(FileHandle, DesiredAccess, ObjectAttributes,
+				                  IoStatusBlock, AllocationSize, FileAttributes, ShareAccess,
+				                  CreateDisposition, CreateOptions, EaBuffer, EaLength);
+			}
 			std::wstring strNewName = std::format(L"{}{}", filePath, global::Data::get().envFlagName());
 			const PUNICODE_STRING pOldName = ObjectAttributes->ObjectName;
 			UNICODE_STRING newObjName;
@@ -599,6 +724,26 @@ namespace hook
 				                 CreateDisposition, CreateOptions, EaBuffer, EaLength);
 			}
 			return ret;
+		}
+		// 命名管道「相对名」打开/连接（客户端以管道命名空间目录句柄作 RootDirectory，
+		// 如 \DosDevices\pipe\ + mojo.<token>）：与服务端被追加 env 后缀的实际管道名
+		// 对称改名，失败回退原名。修复智能文档等 mojo IPC 连接失配（error 6）。
+		{
+			std::wstring relativePipeName;
+			if (isPipeRelativeName(ObjectAttributes, relativePipeName))
+			{
+				// mojo 管道不改名（见 isMojoPipeName 注释）：保证与客户端原始名一致。
+				if (isMojoPipeName(relativePipeName))
+				{
+					const NTSTATUS relRet = trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize, FileAttributes,
+					                                   ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
+					return relRet;
+				}
+				const NTSTATUS relRet = ChangePipeRelativeNameThenTrampoline<trampoline>(ObjectAttributes, relativePipeName,
+				                                                                       FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, AllocationSize, FileAttributes,
+				                                                                       ShareAccess, CreateDisposition, CreateOptions, EaBuffer, EaLength);
+				return relRet;
+			}
 		}
 		auto processRedirect = [&]()-> std::optional<NTSTATUS>
 		{
@@ -765,6 +910,25 @@ namespace hook
 	                          IN ULONG ShareAccess, IN ULONG OpenOptions)
 	{
 		const std::wstring_view filePath = viewFileObjectName(ObjectAttributes);
+
+		// 命名管道「相对名」打开（RootDirectory 指向管道命名空间目录时）对称改名，
+		// 失败回退原名。修复 mojo/IPC 相对名管道与已被追加后缀的服务端管道失配。
+		{
+			std::wstring relativePipeName;
+			if (isPipeRelativeName(ObjectAttributes, relativePipeName))
+			{
+				// mojo 管道不改名（见 isMojoPipeName 注释）：保证与客户端原始名一致。
+				if (isMojoPipeName(relativePipeName))
+				{
+					const NTSTATUS relRet = trampoline(FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+					return relRet;
+				}
+				const NTSTATUS relRet = ChangePipeRelativeNameThenTrampoline<trampoline>(ObjectAttributes, relativePipeName,
+				                                                                       FileHandle, DesiredAccess, ObjectAttributes, IoStatusBlock, ShareAccess, OpenOptions);
+				return relRet;
+			}
+		}
+
 		auto processRedirect = [&]()-> std::optional<NTSTATUS>
 		{
 			std::optional<NTSTATUS> defaultRet = std::nullopt;
@@ -953,12 +1117,15 @@ namespace hook
 		WCHAR FileName[1];
 	};
 
+	// FILE_RENAME_INFORMATION_EX 与基础版布局一致，只是把首字段的 BOOLEAN ReplaceIfExists
+	// 换成同为 4 字节的 ULONG Flags（二者在真实 winnt.h 中是同偏移 union），
+	// 因此 FileName 偏移必须与 FILE_RENAME_INFORMATION 相同。切勿额外追加 Flags 字段，
+	// 否则 FileName 会整体后移，解析出的路径被截断（历史 bug：曾出现 "?\D:\..." 且尾部多 2 字符）。
 	struct FILE_RENAME_INFORMATION_EX
 	{
-		BOOLEAN ReplaceIfExists;
+		ULONG Flags;
 		HANDLE RootDirectory;
 		ULONG FileNameLength;
-		ULONG Flags;
 		WCHAR FileName[1];
 	};
 
@@ -977,7 +1144,7 @@ namespace hook
 				{
 					return std::nullopt;
 				}
-				// Ex 结构体多一个 Flags 字段，FileName 偏移不同，必须按结构体取路径
+				// Ex 与基础版 FileName 偏移一致（见结构体注释），仍需按各自结构体取指针
 				const WCHAR* pFileName = FileInformationClass == FileRenameInformationEx
 					? reinterpret_cast<const FILE_RENAME_INFORMATION_EX*>(FileInformation)->FileName
 					: fileInfo.FileName;
@@ -1024,10 +1191,9 @@ namespace hook
 				{
 					const auto& src = *reinterpret_cast<const FILE_RENAME_INFORMATION_EX*>(FileInformation);
 					auto& dst = *reinterpret_cast<FILE_RENAME_INFORMATION_EX*>(newFileInfoBuffer.data());
-					dst.ReplaceIfExists = src.ReplaceIfExists;
+					dst.Flags = src.Flags;
 					dst.RootDirectory = nullptr; // 目标已改为绝对路径，必须清空 RootDirectory
 					dst.FileNameLength = newFileNameLength;
-					dst.Flags = src.Flags;
 				}
 				else
 				{
