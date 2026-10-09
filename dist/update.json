@@ -1,18 +1,20 @@
 {
-    "latestVersion": "v3.1.5",
-    "latestVersionCode": 30105,
-    "releaseDate": "2026/10/8",
+    "latestVersion": "v3.1.6",
+    "latestVersionCode": 30106,
+    "releaseDate": "2026/10/9",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "af0d96f64302afc4a8b1286937846db18cc3945a04452567c42d548b1673e607",
-    "downloadSize": 3087872,
+    "downloadSha256": "ba747d7537dfc9a0d8322cd680cb10ac8c188f279fe6340badfabd1e0ee77a86",
+    "downloadSize": 3090432,
     "changelog": [
-        "修复智能文档打不开（一直转圈）的问题：mojo 通信管道名被错误改写导致连接失败，现已修复",
-        "优化命名管道处理逻辑：相对名管道改为对称改名，失败自动回退原名，避免连接失配"
+        "新增「访问官网」入口：主界面顶部工具栏「授权」右侧新增纯文字「官网」按钮",
+        "授权信息弹窗「复制激活码」下方新增「访问官网」按钮",
+        "帮助(FAQ)弹窗底部「联系客服」左侧新增「访问官网」按钮",
+        "版本号更新至 v3.1.6"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.1.5/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.1.6/eBox.exe"
     ]
 }
