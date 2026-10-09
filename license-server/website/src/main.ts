@@ -8,7 +8,14 @@ import './styles/main.scss'
 
 export const createApp = ViteSSG(
   App,
-  { routes, base: import.meta.env.BASE_URL },
+  {
+    routes,
+    base: import.meta.env.BASE_URL,
+    // 路由切换回到顶部：否则从文章底部点击「相关文章」后仍停留在底部，看似没有跳转
+    scrollBehavior(_to, _from, savedPosition) {
+      return savedPosition || { top: 0 }
+    },
+  },
   ({ router, isClient }) => {
     if (!isClient) return
 

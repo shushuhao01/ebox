@@ -45,7 +45,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onServerPrefetch, ref } from 'vue'
+import { computed, onMounted, onServerPrefetch, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { useHead } from '@unhead/vue'
 import { getArticle, type RelatedArticle, type SiteArticle } from '@/api'
@@ -128,6 +128,18 @@ onMounted(() => {
   }
   void load()
 })
+
+// 点击「相关文章」时是在同一路由（/articles/:slug）间切换，Vue 会复用本组件实例，
+// onMounted 不会再次触发，必须监听 slug 变化重新拉取，否则会一直停留在上一篇文章。
+watch(
+  () => route.params.slug,
+  () => {
+    loading.value = true
+    article.value = null
+    related.value = []
+    void load()
+  },
+)
 </script>
 
 <style scoped>
