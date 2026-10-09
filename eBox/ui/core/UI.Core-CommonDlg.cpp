@@ -2589,6 +2589,7 @@ namespace ui
 		constexpr int INFO_CLOSE_ID = 4004;
 		constexpr int INFO_UNBIND_ID = 4005;
 		constexpr int INFO_COPY_CODE_ID = 4006;
+		constexpr int INFO_WEBSITE_ID = 4007;       // 标题右侧"访问官网"（复制激活码下方）
 		constexpr int INFO_DLG_WIDTH = 520;
 		constexpr int INFO_DLG_HEIGHT = 360;
 		constexpr UINT INFO_WM_UNBIND_DONE = WM_APP + 0x33; // 后台解绑完成（线程消息，结果经 UnbindShared 交接，消息不携带指针）
@@ -2702,6 +2703,12 @@ namespace ui
 					                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_COPY_CODE_ID)),
 					                hInst, nullptr);
 				}
+				// 复制激活码下方：访问官网按钮（浅色系，比复制激活码更低调）
+				CreateWindowExW(0, L"BUTTON", L"访问官网",
+				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                INFO_DLG_WIDTH - 140, 54, 116, 24, hwnd,
+				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_WEBSITE_ID)),
+				                hInst, nullptr);
 				return 0;
 			}
 			case WM_ERASEBKGND:
@@ -2875,15 +2882,26 @@ namespace ui
 			{
 				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
 				const int id = dis->CtlID;
-				if (id == INFO_REACTIVATE_ID || id == INFO_BUY_ID || id == INFO_SERVICE_ID || id == INFO_CLOSE_ID || id == INFO_UNBIND_ID || id == INFO_COPY_CODE_ID)
+				if (id == INFO_REACTIVATE_ID || id == INFO_BUY_ID || id == INFO_SERVICE_ID || id == INFO_CLOSE_ID || id == INFO_UNBIND_ID || id == INFO_COPY_CODE_ID || id == INFO_WEBSITE_ID)
 				{
 					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
 					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+					wchar_t buf[32]{};
+					GetWindowTextW(dis->hwndItem, buf, 32);
+					if (id == INFO_WEBSITE_ID)
+					{
+						// 访问官网：浅蓝色按钮（比"复制激活码"更低调，颜色不同）
+						const COLORREF fill = pressed ? RGB(0xd6, 0xe7, 0xf8) : (hover ? RGB(0xe4, 0xef, 0xfb) : RGB(0xf0, 0xf6, 0xfd));
+						const COLORREF border = hover ? RGB(0xa9, 0xc9, 0xea) : RGB(0xd0, 0xdf, 0xf0);
+						draw_round_rect(dis->hDC, dis->rcItem, 8, fill, border, 1);
+						SetBkMode(dis->hDC, TRANSPARENT);
+						SetTextColor(dis->hDC, RGB(0x2f, 0x6b, 0xa8));
+						DrawTextW(dis->hDC, buf, -1, const_cast<RECT*>(&dis->rcItem), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						return TRUE;
+					}
 					const bool primary = (id == INFO_REACTIVATE_ID);
 					const bool danger = (id == INFO_UNBIND_ID);
 					const bool success = (id == INFO_BUY_ID); // 购买激活码按钮绿色
-					wchar_t buf[32]{};
-					GetWindowTextW(dis->hwndItem, buf, 32);
 					draw_modern_dlg_button(dis->hDC, dis->rcItem, primary, hover, pressed, buf, danger, success);
 					return TRUE;
 				}
@@ -2892,6 +2910,15 @@ namespace ui
 			case WM_COMMAND:
 			{
 				const int id = LOWORD(wParam);
+				if (id == INFO_WEBSITE_ID)
+				{
+					// 访问官网：用系统默认浏览器打开官网首页
+					if (!MainApp::kWebsiteUrl.empty())
+					{
+						ShellExecuteW(nullptr, L"open", std::wstring{MainApp::kWebsiteUrl}.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+					}
+					return 0;
+				}
 				if (id == INFO_COPY_CODE_ID)
 				{
 					const std::wstring code = biz::license::currentActivationCode();
@@ -3133,6 +3160,7 @@ namespace ui
 		constexpr int FAQ_CLOSE_ID = 5002;          // 底部"关闭"
 		constexpr int FAQ_SERVICE_ID = 5003;        // 底部"联系客服"
 		constexpr int FAQ_GUIDE_ID = 5004;          // 左侧"详细使用指南"
+		constexpr int FAQ_WEBSITE_ID = 5005;        // 底部"访问官网"
 		constexpr int FAQ_DLG_WIDTH = 760;
 		constexpr int FAQ_DLG_HEIGHT = 540;
 		constexpr wchar_t FAQ_GUIDE_URL[] = L"https://uac8b85dxgk.feishu.cn/wiki/RmH4wnRcAi15e6kdds6cxR3MnJP";
@@ -3494,6 +3522,11 @@ namespace ui
 				                30, 424, 174, 36, hwnd,
 				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_GUIDE_ID)), hInst, nullptr);
 
+				// 底部"访问官网"按钮：打开官网首页
+				CreateWindowExW(0, L"BUTTON", L"访问官网",
+				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                412, 486, 96, 36, hwnd,
+				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_WEBSITE_ID)), hInst, nullptr);
 				// 底部"联系客服"按钮（与授权页同一微信客服链接）
 				CreateWindowExW(0, L"BUTTON", L"联系客服",
 				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
@@ -3586,7 +3619,7 @@ namespace ui
 			{
 				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
 				const int id = dis->CtlID;
-				if (id == FAQ_CLOSE_ID || id == FAQ_SERVICE_ID || id == FAQ_GUIDE_ID)
+				if (id == FAQ_CLOSE_ID || id == FAQ_SERVICE_ID || id == FAQ_GUIDE_ID || id == FAQ_WEBSITE_ID)
 				{
 					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
 					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
@@ -3598,6 +3631,13 @@ namespace ui
 						faq_draw_light_button(dis->hDC, dis->rcItem, hover, pressed, buf,
 						                      RGB(0xff, 0xff, 0xff), RGB(0xf2, 0xf6, 0xfb), RGB(0xe6, 0xee, 0xf7),
 						                      RGB(0xcf, 0xd8, 0xe3), RGB(0x3a, 0x46, 0x55));
+					}
+					else if (id == FAQ_WEBSITE_ID)
+					{
+						// 访问官网：浅蓝色按钮
+						faq_draw_light_button(dis->hDC, dis->rcItem, hover, pressed, buf,
+						                      RGB(0xec, 0xf4, 0xfd), RGB(0xdd, 0xec, 0xfb), RGB(0xcd, 0xe3, 0xf8),
+						                      RGB(0x9c, 0xc8, 0xee), RGB(0x0a, 0x6c, 0xbd));
 					}
 					else if (id == FAQ_SERVICE_ID)
 					{
@@ -3637,6 +3677,15 @@ namespace ui
 				{
 					// 详细使用指南：飞书文档，用系统默认浏览器打开
 					ShellExecuteW(nullptr, L"open", FAQ_GUIDE_URL, nullptr, nullptr, SW_SHOWNORMAL);
+					return 0;
+				}
+				if (id == FAQ_WEBSITE_ID)
+				{
+					// 访问官网：用系统默认浏览器打开官网首页
+					if (!MainApp::kWebsiteUrl.empty())
+					{
+						ShellExecuteW(nullptr, L"open", std::wstring{MainApp::kWebsiteUrl}.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+					}
 					return 0;
 				}
 				if (code == LBN_SELCHANGE)

@@ -174,13 +174,13 @@ public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 3;
 	static constexpr int kVerMinor = 1;
-	static constexpr int kVerPatch = 5;
-	static constexpr int kVerCode  = 30105;  // 单调递增数字，用于版本比较
+	static constexpr int kVerPatch = 6;
+	static constexpr int kVerCode  = 30106;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v3.1.5"};
-	static constexpr std::wstring_view appUpdateDate{L"2026/10/8"};
+	static constexpr std::wstring_view appVersion{L"v3.1.6"};
+	static constexpr std::wstring_view appUpdateDate{L"2026/10/9"};
 
 	// ===== 自动升级配置 =====
 	// manifest 由 jsDelivr CDN 加速 GitHub 仓库文件，客户端追加时间戳破除缓存
@@ -193,6 +193,7 @@ public:
 	// 授权相关外链（激活弹窗 / 授权信息弹窗的"购买激活码""联系客服"按钮点击跳转）
 	static constexpr std::wstring_view kBuyLicenseUrl{L"https://noepay.cn/"};            // 购买激活码
 	static constexpr std::wstring_view kServiceUrl{L"https://work.weixin.qq.com/kfid/kfce45838d309351f53"};  // WX 客服
+	static constexpr std::wstring_view kWebsiteUrl{L"https://www.abc222.cn"};            // 官网
 
 public:
 	HINSTANCE moduleInstance() const noexcept { return m_hInstance; }

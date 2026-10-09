@@ -9,6 +9,7 @@ module;
 #include <cstdio>
 #pragma comment(lib, "Comctl32.lib")
 #include <commctrl.h>
+#include <shellapi.h>
 module UI.MainWindow;
 
 import "sys_defs.h";
@@ -183,6 +184,30 @@ namespace ui
 			SendMessageW(m_hHelpTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
 		}
 
+		// 右上角"官网"按钮（授权按钮右侧，与"授权"同款纯文字按钮）：点击打开官网首页
+		m_btnWebsite.setBackgroundColor(D2D1::ColorF(0, 0.f), Button::EState::Normal);
+		m_btnWebsite.setBackgroundColor(D2D1::ColorF(0, 0.102f), Button::EState::Hover);
+		m_btnWebsite.setBackgroundColor(D2D1::ColorF(0, 0.208f), Button::EState::Active);
+		m_btnWebsite.setOnClick([this]
+		{
+			if (!MainApp::kWebsiteUrl.empty())
+			{
+				ShellExecuteW(nullptr, L"open", std::wstring{MainApp::kWebsiteUrl}.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+			}
+		});
+		m_btnWebsite.setDrawCallback(std::bind(&MainWindow::drawToWebsiteBtn, this, std::placeholders::_1, std::placeholders::_2));
+		m_btnWebsite.setDontDrawDefault(true);
+		// Win32 tooltip：悬浮官网按钮
+		m_hWebsiteTooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr,
+		                                    WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+		                                    CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		                                    nativeHandle(), nullptr, GetModuleHandleW(nullptr), nullptr);
+		if (m_hWebsiteTooltip)
+		{
+			SendMessageW(m_hWebsiteTooltip, TTM_SETMAXTIPWIDTH, 0, 300);
+			SendMessageW(m_hWebsiteTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
+		}
+
 #if 0	// 暂时不使用反射注入，就不需要下载pdb了
 		initSymbols().detachAndStart();
 #else
@@ -299,7 +324,8 @@ namespace ui
 			const float licenseBtnWidth = toTrayBthWidth;
 			const float updateBtnWidth = toTrayBthWidth;
 			const float helpBtnWidth = toTrayBthWidth;
-			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - helpBtnWidth - 8.f;
+			const float websiteBtnWidth = toTrayBthWidth;
+			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - helpBtnWidth - websiteBtnWidth - 8.f;
 
 			if (ID2D1Bitmap* bitmap = getTitleIconBitmap(renderTarget))
 			{
@@ -324,8 +350,10 @@ namespace ui
 			}
 			m_btnToTray.setBounds(D2D1::Rect(toTrayBthXPos, paddingTop + 1.f, toTrayBthXPos + toTrayBthWidth, m_margins.top));
 			m_btnToTray.draw(renderCtx);
-			// 授权信息按钮（托盘按钮左侧，加宽加醒目）
-			const float licenseBtnXPos = toTrayBthXPos - licenseBtnWidth;
+			// 官网按钮（授权按钮右侧，与"授权"同款纯文字按钮）
+			const float websiteBtnXPos = toTrayBthXPos - websiteBtnWidth;
+			// 授权信息按钮（官网按钮左侧，加宽加醒目）
+			const float licenseBtnXPos = websiteBtnXPos - licenseBtnWidth;
 			m_btnLicense.setBounds(D2D1::Rect(licenseBtnXPos, paddingTop + 1.f, licenseBtnXPos + licenseBtnWidth, m_margins.top));
 			m_btnLicense.setDontDrawDefault(true);
 			m_btnLicense.draw(renderCtx);
@@ -359,6 +387,20 @@ namespace ui
 					static_cast<LONG>(m_margins.top * d2p)};
 				sync_tooltip(m_hHelpTooltip, 3, nativeHandle(), rcTool, L"常见问题",
 				             m_helpTipAdded, m_lastHelpTipRect, m_lastHelpTipText);
+			}
+			// 官网按钮（授权按钮右侧）：点击打开官网首页
+			m_btnWebsite.setBounds(D2D1::Rect(websiteBtnXPos, paddingTop + 1.f, websiteBtnXPos + websiteBtnWidth, m_margins.top));
+			m_btnWebsite.draw(renderCtx);
+			if (m_hWebsiteTooltip)
+			{
+				const float d2p = dpiInfo().deviceToPhysical;
+				RECT rcTool{
+					static_cast<LONG>(websiteBtnXPos * d2p),
+					static_cast<LONG>((paddingTop + 1.f) * d2p),
+					static_cast<LONG>((websiteBtnXPos + websiteBtnWidth) * d2p),
+					static_cast<LONG>(m_margins.top * d2p)};
+				sync_tooltip(m_hWebsiteTooltip, 4, nativeHandle(), rcTool, L"访问官网",
+				             m_websiteTipAdded, m_lastWebsiteTipRect, m_lastWebsiteTipText);
 			}
 			// 更新 tooltip 工具矩形（物理像素）
 			if (m_hLicenseTooltip)
@@ -647,6 +689,57 @@ namespace ui
 			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
 			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
 			DrawTextW(hdc, L"?", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			SelectObject(hdc, hOld);
+			ReleaseDC(nativeHandle(), hdc);
+		}
+	}
+
+	void MainWindow::drawToWebsiteBtn(const RenderContext& renderCtx, Button::EState state) const
+	{
+		// draw() 已将坐标系平移到按钮原点，必须使用本地坐标 (0,0)-(width,height)
+		const float width = m_btnWebsite.getBounds().right - m_btnWebsite.getBounds().left;
+		const float height = m_btnWebsite.getBounds().bottom - m_btnWebsite.getBounds().top;
+
+		if (isCompositionEnabled())
+		{
+			const UniqueComPtr<ID2D1HwndRenderTarget>& renderTarget = renderCtx.renderTarget;
+			const UniqueComPtr<ID2D1SolidColorBrush>& solidBrush = renderCtx.brush;
+			// 纯文字按钮：无背景，悬浮/按下时浅蓝高亮，文字始终蓝色（与"授权"按钮完全一致）
+			if (state == Button::EState::Hover || state == Button::EState::Active)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 0.12f));
+				renderTarget->FillRoundedRectangle(
+					D2D1::RoundedRect(D2D1::RectF(0.f, 0.f, width, height), 4.f, 4.f),
+					solidBrush);
+			}
+			// 蓝色文字"官网"，水平+垂直居中
+			solidBrush->SetColor(D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 1.f));
+			IDWriteTextFormat* const tipsFmt = app().textFormat().pTipsFormat.get();
+			const auto oldAlign = tipsFmt->GetTextAlignment();
+			tipsFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			renderTarget->DrawTextW(L"官网", 2,
+			                        tipsFmt,
+			                        D2D1::RectF(0.f, (height - 12.f) * 0.5f, width, (height - 12.f) * 0.5f + 12.f),
+			                        solidBrush);
+			tipsFmt->SetTextAlignment(oldAlign);
+		}
+		else
+		{
+			const D2D1_RECT_F& bounds = m_btnWebsite.getBounds();
+			HDC hdc = GetWindowDC(nativeHandle());
+			const float deviceToPhysical = dpiInfo().deviceToPhysical;
+			D2D1_RECT_F physicalBounds = D2D1::RectF((bounds.left + m_margins.left) * deviceToPhysical,
+			                                         (bounds.top + m_margins.top) * deviceToPhysical,
+			                                         (bounds.right + m_margins.left) * deviceToPhysical,
+			                                         (bounds.bottom + m_margins.top) * deviceToPhysical);
+			RECT rc{static_cast<LONG>(physicalBounds.left), static_cast<LONG>(physicalBounds.top),
+			        static_cast<LONG>(physicalBounds.right), static_cast<LONG>(physicalBounds.bottom)};
+			// 纯文字蓝字
+			SetBkMode(hdc, TRANSPARENT);
+			SetTextColor(hdc, RGB(0x00, 0x78, 0xd4));
+			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
+			DrawTextW(hdc, L"官网", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 			SelectObject(hdc, hOld);
 			ReleaseDC(nativeHandle(), hdc);
 		}
@@ -954,19 +1047,28 @@ namespace ui
 		m_btnToTray.setBounds(D2D1::Rect(toTrayBthXPos, 6 - m_margins.top, toTrayBthXPos + toTrayBthWidth, -2.f));
 		m_btnToTray.setDontDrawDefault(true);
 		m_btnToTray.drawImpl(renderContext());
-		// 授权信息按钮（托盘按钮左侧，加宽加醒目）
+		// 官网按钮（授权按钮右侧，与"授权"同宽同款纯文字按钮）
+		const float websiteBtnWidthNc = toTrayBthWidth * 1.7f;
+		const float websiteBtnXPosNc = toTrayBthXPos - websiteBtnWidthNc;
+		m_btnWebsite.setBounds(D2D1::Rect(websiteBtnXPosNc, 6 - m_margins.top, websiteBtnXPosNc + websiteBtnWidthNc, -2.f));
+		m_btnWebsite.setDontDrawDefault(true);
+		m_btnWebsite.drawImpl(renderContext());
+		// 授权信息按钮（官网按钮左侧，加宽加醒目）
 		const float licenseBtnWidth = toTrayBthWidth * 1.7f;
-		m_btnLicense.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth, 6 - m_margins.top, toTrayBthXPos, -2.f));
+		const float licenseBtnXPosNc = websiteBtnXPosNc - licenseBtnWidth;
+		m_btnLicense.setBounds(D2D1::Rect(licenseBtnXPosNc, 6 - m_margins.top, licenseBtnXPosNc + licenseBtnWidth, -2.f));
 		m_btnLicense.setDontDrawDefault(true);
 		m_btnLicense.drawImpl(renderContext());
 		// 更新按钮（授权按钮左侧）
 		const float updateBtnWidthNc = toTrayBthWidth;
-		m_btnUpdate.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc, 6 - m_margins.top, toTrayBthXPos - licenseBtnWidth, -2.f));
+		const float updateBtnXPosNc = licenseBtnXPosNc - updateBtnWidthNc;
+		m_btnUpdate.setBounds(D2D1::Rect(updateBtnXPosNc, 6 - m_margins.top, updateBtnXPosNc + updateBtnWidthNc, -2.f));
 		m_btnUpdate.setDontDrawDefault(true);
 		m_btnUpdate.drawImpl(renderContext());
 		// 帮助按钮（更新按钮左侧）
 		const float helpBtnWidthNc = toTrayBthWidth;
-		m_btnHelp.setBounds(D2D1::Rect(toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc - helpBtnWidthNc, 6 - m_margins.top, toTrayBthXPos - licenseBtnWidth - updateBtnWidthNc, -2.f));
+		const float helpBtnXPosNc = updateBtnXPosNc - helpBtnWidthNc;
+		m_btnHelp.setBounds(D2D1::Rect(helpBtnXPosNc, 6 - m_margins.top, helpBtnXPosNc + helpBtnWidthNc, -2.f));
 		m_btnHelp.setDontDrawDefault(true);
 		m_btnHelp.drawImpl(renderContext());
 	}
@@ -1132,7 +1234,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.1.5   更新时间：2026/10/8   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.1.6   更新时间：2026/10/9   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1337,7 +1439,7 @@ namespace ui
 		//这里的入参pt是相对于屏幕的
 		ScreenToClient(nativeHandle(), &pt);
 		const D2D1_POINT_2F local = D2D1::Point2F(pt.x * dpiInfo().physicalToDevice, pt.y * dpiInfo().physicalToDevice);
-		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local) || m_btnHelp.hitTest(local);
+		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local) || m_btnHelp.hitTest(local) || m_btnWebsite.hitTest(local);
 	}
 
 	// ===== 自动升级实现 =====
