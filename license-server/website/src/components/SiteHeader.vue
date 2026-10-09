@@ -7,6 +7,8 @@
       </RouterLink>
 
       <nav class="nav" :class="{ open: menuOpen }">
+        <RouterLink class="nav-link" to="/" @click="menuOpen = false">首页</RouterLink>
+
         <template v-for="item in menus" :key="item.url">
           <a
             v-if="isExternal(item.url)"
