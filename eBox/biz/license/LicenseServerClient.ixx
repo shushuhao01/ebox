@@ -58,6 +58,15 @@ export namespace biz
 		export HeartbeatResult heartbeat(const std::wstring& code, const std::wstring& machineFp,
 		                                 const std::wstring& appVersion);
 
+		// 服务端系统公告实时推送（SSE 长连接）。
+		//   阻塞式监听 GET /api/v1/notice/stream：连上即收到当前公告快照，之后在公告变更时实时推送；
+		//   每收到一条事件即回调 onNotice（空串=公告已撤下）。
+		//   stopToken 触发或连接断开时返回；返回 true=曾成功建立连接（正常结束），
+		//   false=建连/鉴权失败（调用方据此退避重连）。
+		export bool listenNoticeStream(const std::wstring& code, const std::wstring& machineFp,
+		                               std::stop_token stopToken,
+		                               const std::function<void(const std::wstring&)>& onNotice);
+
 		// 服务端解绑换机结果
 		export struct UnbindResult
 		{

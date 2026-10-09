@@ -66,11 +66,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 		// 纯离线激活码不受影响（服务器未登记，心跳返回 offline 后自动停止）。
 		biz::license::startHeartbeatLoop();
 
+		// 系统公告实时推送：启动 SSE 长连接监听线程（与心跳独立，心跳周期下发公告作为兜底）。
+		biz::license::startNoticeStream();
+
 		app.runMessageLoop();
 
 		// 通知心跳线程尽快结束（不 join）：若其正阻塞在同步 HTTP 请求，
 		// 等待会拖慢退出。真正退出由函数末尾的 ExitProcess 兜底（跳过静态析构）。
 		biz::license::requestStopHeartbeat();
+		// 同理通知公告推送线程尽快结束（不 join）。
+		biz::license::requestStopNoticeStream();
 	}
 	catch (const std::exception& e)
 	{

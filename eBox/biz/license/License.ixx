@@ -91,6 +91,15 @@ namespace biz
 		// 但不等它（若正阻塞在同步 HTTP 请求，join 会拖慢退出）。静态析构前调用。
 		export void requestStopHeartbeat();
 
+		// ---- 服务端公告实时推送线程（SSE 长连接）----
+		// 与心跳相互独立：心跳周期下发公告作为兜底，本线程负责"秒级"实时刷新公告栏。
+		// 收到公告变更时持久化（storeNotice）并通知 UI（WM_APP_LICENSENOTICE）；断线自动退避重连。
+		// 宿主（MainApp）在生命周期内调用 start/stop。
+		export void startNoticeStream();
+		export void stopNoticeStream();
+		// 仅请求停止（不 join）：语义同 requestStopHeartbeat，供应用退出时使用。
+		export void requestStopNoticeStream();
+
 		// 纯校验激活码（不持久化），返回有效性/到期时间/是否绑定/解绑上限；发码工具校验用
 		export struct VerifyResult
 		{

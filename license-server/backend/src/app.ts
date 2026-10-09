@@ -16,6 +16,7 @@ import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { authRequired } from './middleware/helpers';
 
 import clientRoutes from './routes/client';
+import noticeRoutes from './routes/notice';
 import siteRoutes from './routes/site';
 import adminAuthRoutes from './routes/admin/auth';
 import adminKeyRoutes from './routes/admin/keys';
@@ -55,7 +56,16 @@ app.use(
     credentials: false,
   })
 );
-app.use(compression());
+// 公告 SSE 长连接路径：不压缩（compression 会缓冲流式响应导致事件延迟）
+const NOTICE_STREAM_PATH = `${API_PREFIX}/notice/stream`;
+app.use(
+  compression({
+    filter: (req, res) => {
+      if (req.path === NOTICE_STREAM_PATH) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
 app.use(express.json({ limit: '5mb' }));
 app.use(express.urlencoded({ extended: true, limit: '5mb' }));
 
@@ -74,7 +84,7 @@ const generalLimiter = rateLimit({
   message: { code: 429, msg: '请求过于频繁，请稍后再试', data: null },
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.path === '/health',
+  skip: (req) => req.path === '/health' || req.path === NOTICE_STREAM_PATH,
 });
 app.use(generalLimiter);
 
@@ -101,6 +111,9 @@ app.use('/api/uploads', express.static(uploadRoot, { maxAge: '7d', fallthrough: 
 
 // ==================== 客户端接口（无需登录） ====================
 app.use(API_PREFIX, clientRoutes);
+
+// ==================== 系统公告实时推送（SSE 长连接，无需登录） ====================
+app.use(API_PREFIX, noticeRoutes);
 
 // ==================== 官网公开只读接口（无需登录） ====================
 app.use('/api/site', siteRoutes);

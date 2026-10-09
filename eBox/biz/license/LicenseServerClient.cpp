@@ -861,6 +861,135 @@ namespace biz
 			return result;
 		}
 
+		// 服务端系统公告实时推送（SSE 长连接）。
+		//   连接 GET /api/v1/notice/stream?code=&machineFp=，服务端连上即下发当前公告快照，
+		//   之后在公告变更时实时推送；每 25s 发送 ": ping" 保活注释。
+		//   本函数阻塞式读取事件流：每收到一条 data 事件即回调 onNotice（空串=公告已撤下）。
+		//   stopToken 触发或连接断开/出错时返回。
+		//   返回 true 表示曾成功建立连接（读流正常结束），false 表示建连/鉴权失败（调用方据此退避重连）。
+		bool listenNoticeStream(const std::wstring& code, const std::wstring& machineFp,
+		                        std::stop_token stopToken,
+		                        const std::function<void(const std::wstring&)>& onNotice)
+		{
+			const std::wstring url = serverBaseUrl() + L"/api/v1/notice/stream?code=" + code +
+			                         L"&machineFp=" + machineFp;
+			ParsedUrl parsed;
+			if (!parseUrl(url, parsed))
+			{
+				return false;
+			}
+
+			HINTERNET hSession = WinHttpOpen(L"eBox License Agent", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY,
+			                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+			if (!hSession)
+			{
+				return false;
+			}
+			// 接收超时必须大于服务端保活间隔（25s），否则空闲时会被误判超时断开
+			WinHttpSetTimeouts(hSession, 10000, 10000, 30000, 60000);
+
+			HINTERNET hConnect = WinHttpConnect(hSession, parsed.host.c_str(), parsed.port, 0);
+			if (!hConnect)
+			{
+				WinHttpCloseHandle(hSession);
+				return false;
+			}
+
+			const DWORD flags = parsed.secure ? WINHTTP_FLAG_SECURE : 0;
+			HINTERNET hRequest = WinHttpOpenRequest(hConnect, L"GET", parsed.path.c_str(),
+			                                        nullptr, WINHTTP_NO_REFERER,
+			                                        WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
+			if (!hRequest)
+			{
+				WinHttpCloseHandle(hConnect);
+				WinHttpCloseHandle(hSession);
+				return false;
+			}
+			if (parsed.secure)
+			{
+				DWORD secFlags = SECURITY_FLAG_IGNORE_UNKNOWN_CA | SECURITY_FLAG_IGNORE_CERT_DATE_INVALID |
+				                 SECURITY_FLAG_IGNORE_CERT_CN_INVALID | SECURITY_FLAG_IGNORE_CERT_WRONG_USAGE;
+				WinHttpSetOption(hRequest, WINHTTP_OPTION_SECURITY_FLAGS, &secFlags, sizeof(secFlags));
+			}
+
+			constexpr wchar_t kHeaders[] = L"Accept: text/event-stream\r\nCache-Control: no-cache\r\n";
+			const BOOL sent = WinHttpSendRequest(hRequest, kHeaders, static_cast<DWORD>(std::size(kHeaders) - 1),
+			                                     WINHTTP_NO_REQUEST_DATA, 0, 0, 0);
+			if (!sent || !WinHttpReceiveResponse(hRequest, nullptr))
+			{
+				WinHttpCloseHandle(hRequest);
+				WinHttpCloseHandle(hConnect);
+				WinHttpCloseHandle(hSession);
+				return false;
+			}
+
+			DWORD statusCode = 0;
+			DWORD statusSize = sizeof(statusCode);
+			WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+			                    WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &statusSize, WINHTTP_NO_HEADER_INDEX);
+			if (statusCode != 200)
+			{
+				// 鉴权失败（403）或服务异常：视为未建立连接，交由调用方退避重连
+				WinHttpCloseHandle(hRequest);
+				WinHttpCloseHandle(hConnect);
+				WinHttpCloseHandle(hSession);
+				return false;
+			}
+
+			// 流式读取：按 '\n' 分行解析 SSE 事件（忽略 ": ping" 注释与空行）
+			std::string buffer;
+			while (!stopToken.stop_requested())
+			{
+				DWORD available = 0;
+				if (!WinHttpQueryDataAvailable(hRequest, &available) || available == 0)
+				{
+					break; // 出错或服务端关闭连接
+				}
+				std::vector<char> buf(available);
+				DWORD read = 0;
+				if (!WinHttpReadData(hRequest, buf.data(), available, &read) || read == 0)
+				{
+					break;
+				}
+				buffer.append(buf.data(), read);
+
+				std::size_t pos = 0;
+				while ((pos = buffer.find('\n')) != std::string::npos)
+				{
+					std::string line = buffer.substr(0, pos);
+					buffer.erase(0, pos + 1);
+					if (!line.empty() && line.back() == '\r')
+					{
+						line.pop_back();
+					}
+					if (line.rfind("data:", 0) != 0)
+					{
+						continue; // 注释或空行
+					}
+					std::string_view payload{line};
+					payload.remove_prefix(5);
+					if (!payload.empty() && payload.front() == ' ')
+					{
+						payload.remove_prefix(1);
+					}
+					Json root;
+					if (JsonParser(payload).parse(root))
+					{
+						const std::wstring notice = utf8ToWide(root.stringValue("notice"));
+						if (onNotice)
+						{
+							onNotice(notice);
+						}
+					}
+				}
+			}
+
+			WinHttpCloseHandle(hRequest);
+			WinHttpCloseHandle(hConnect);
+			WinHttpCloseHandle(hSession);
+			return true;
+		}
+
 		UnbindResult unbind(const std::wstring& code, const std::wstring& machineFp,
 		                    const std::wstring& appVersion)
 		{

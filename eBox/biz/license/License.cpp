@@ -1274,6 +1274,46 @@ namespace biz
 					}
 				}
 			}
+
+			// 服务端公告实时推送线程（SSE 长连接）
+			//   与心跳相互独立：心跳周期下发公告作为兜底，本线程负责"秒级"实时刷新公告栏。
+			std::jthread g_noticeThread;
+
+			// 公告推送线程体：SSE 长连接监听服务端公告，收到变更即刷新公告栏；断线自动退避重连
+			void noticeStreamLoop(std::stop_token stopToken)
+			{
+				const std::wstring code = loadStoredCode();
+				if (code.empty())
+				{
+					return; // 未激活，无需监听
+				}
+				const std::wstring fp = machineFingerprint();
+				while (!stopToken.stop_requested())
+				{
+					const bool established = licenseserver::listenNoticeStream(
+						code, fp, stopToken,
+						[](const std::wstring& notice)
+						{
+							// 与服务端公告比对，变化才落盘并通知 UI（空串=服务端已撤下公告）
+							if (notice != licenseserver::currentNotice())
+							{
+								licenseserver::storeNotice(notice);
+								PostMessageW(FindWindowW(kMainWindowClassName, nullptr),
+								             WM_APP_LICENSENOTICE, 0, 0);
+							}
+						});
+					if (stopToken.stop_requested())
+					{
+						break;
+					}
+					// 建连失败或断线：退避后重连（曾建连 5s，鉴权/网络失败 15s，避免空转）
+					const int backoffSeconds = established ? 5 : 15;
+					for (int slept = 0; slept < backoffSeconds && !stopToken.stop_requested(); ++slept)
+					{
+						std::this_thread::sleep_for(std::chrono::seconds(1));
+					}
+				}
+			}
 		}
 
 		void startHeartbeatLoop()
@@ -1299,6 +1339,32 @@ namespace biz
 			if (g_heartbeatThread.joinable())
 			{
 				g_heartbeatThread.request_stop();
+			}
+		}
+
+		void startNoticeStream()
+		{
+			if (g_noticeThread.joinable())
+			{
+				return; // 已在运行
+			}
+			g_noticeThread = std::jthread(noticeStreamLoop);
+		}
+
+		void stopNoticeStream()
+		{
+			if (g_noticeThread.joinable())
+			{
+				g_noticeThread.request_stop();
+				g_noticeThread.join();
+			}
+		}
+
+		void requestStopNoticeStream()
+		{
+			if (g_noticeThread.joinable())
+			{
+				g_noticeThread.request_stop();
 			}
 		}
 	}

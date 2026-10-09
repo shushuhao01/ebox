@@ -1,5 +1,6 @@
 import { AppDataSource } from '../config/database';
 import { SystemConfig } from '../entities/SystemConfig';
+import { broadcastNotice } from './NoticeBroadcaster';
 
 const DEFAULTS: Record<string, string> = {
   heartbeat_interval_hours: '6',
@@ -46,4 +47,8 @@ export async function setConfigValue(key: string, value: string): Promise<void> 
     row.cfgValue = value;
   }
   await repo().save(row);
+  // 公告变更：向所有在线客户端实时广播（SSE）；心跳下发仍作兜底
+  if (key === 'notice') {
+    broadcastNotice(value);
+  }
 }
