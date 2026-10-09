@@ -1,20 +1,20 @@
 {
-    "latestVersion": "v3.1.6",
-    "latestVersionCode": 30106,
+    "latestVersion": "v3.1.7",
+    "latestVersionCode": 30107,
     "releaseDate": "2026/10/9",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "ba747d7537dfc9a0d8322cd680cb10ac8c188f279fe6340badfabd1e0ee77a86",
-    "downloadSize": 3090432,
+    "downloadSha256": "032b0c08dd0c8391886b9231134ed743208d3dc7773d48701ba0c3c8f0c81d59",
+    "downloadSize": 3098112,
     "changelog": [
-        "新增「访问官网」入口：主界面顶部工具栏「授权」右侧新增纯文字「官网」按钮",
-        "授权信息弹窗「复制激活码」下方新增「访问官网」按钮",
-        "帮助(FAQ)弹窗底部「联系客服」左侧新增「访问官网」按钮",
-        "版本号更新至 v3.1.6"
+        "新增「实时公告」推送：服务端公告变更时，客户端公告栏秒级刷新，无需等待下一次心跳",
+        "客户端新增公告实时监听长连接（服务端保活、断线自动重连）",
+        "服务端新增公告事件流端点 /notice/stream，按激活码 + 机器指纹双重校验，仅已绑定设备可订阅",
+        "版本号更新至 v3.1.7"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.1.6/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.1.7/eBox.exe"
     ]
 }
