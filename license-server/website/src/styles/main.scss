@@ -260,6 +260,37 @@ button {
   text-decoration: underline;
 }
 
+/* 表格：与后台富文本编辑器（.re-body table）保持一致——边框、列对齐、内边距 */
+.rich-content table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 18px 0;
+  font-size: 15px;
+}
+
+.rich-content th,
+.rich-content td {
+  border: 1px solid var(--border);
+  padding: 6px 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.rich-content thead th {
+  background: var(--bg-soft);
+  font-weight: 600;
+  color: var(--text-1);
+}
+
+/* 窄屏下允许表格横向滚动，避免内容被挤压变形 */
+@media (max-width: 640px) {
+  .rich-content table {
+    display: block;
+    overflow-x: auto;
+    white-space: nowrap;
+  }
+}
+
 /* ---------- 淡入动画 ---------- */
 .fade-up {
   animation: fadeUp 0.5s ease both;
