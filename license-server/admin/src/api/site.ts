@@ -351,6 +351,11 @@ export function getSiteAnalytics(days = 30) {
   return get<SiteAnalytics>('/site/analytics', { days })
 }
 
+/** 官网实时在线访客数（最近 N 分钟内有访问行为的去重访客） */
+export function getSiteOnline(minutes = 5) {
+  return get<{ online: number; minutes: number }>('/site/online', { minutes })
+}
+
 /** 官网访问明细分页查询 */
 export function getSiteVisits(params: {
   page?: number

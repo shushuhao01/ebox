@@ -3,7 +3,7 @@ import type { RouteRecordRaw } from 'vue-router'
 import App from './App.vue'
 import { routes } from './router'
 import { loadSiteData } from './composables/useSite'
-import { getAllArticleSlugs, trackPageview } from './api'
+import { getAllArticleSlugs, trackPageview, sendHeartbeat } from './api'
 import './styles/main.scss'
 
 export const createApp = ViteSSG(
@@ -29,6 +29,14 @@ export const createApp = ViteSSG(
     router.afterEach((to) => {
       trackPageview(to.fullPath)
     })
+
+    // 在线心跳：每 60 秒上报一次，仅在页面可见时发送，供后台「实时在线」统计
+    const heartbeat = () => {
+      if (document.visibilityState === 'visible') sendHeartbeat()
+    }
+    window.setInterval(heartbeat, 60 * 1000)
+    // 切回前台时立即补报一次，避免后台窗口期间被判定为离线
+    document.addEventListener('visibilitychange', heartbeat)
   },
 )
 

@@ -30,7 +30,7 @@ import adminSiteRoutes from './routes/admin/site';
 import { markExpiredKeys } from './services/KeyService';
 import { getConfigValue } from './services/ConfigService';
 import { cleanExpiredData } from './services/LogService';
-import { cleanSiteVisitLogs } from './services/SiteAnalyticsService';
+import { cleanSiteVisitLogs, cleanSiteOnline } from './services/SiteAnalyticsService';
 
 const app = express();
 const PORT = env.port;
@@ -174,6 +174,8 @@ async function main() {
       try {
         const n = await cleanSiteVisitLogs(90);
         if (n > 0) log.info(`官网访问明细清理：删除 ${n} 条超过 90 天的记录`);
+        const o = await cleanSiteOnline(24);
+        if (o > 0) log.info(`官网在线状态清理：删除 ${o} 条超过 24 小时的在线上报记录`);
       } catch (e) {
         log.error('官网访问明细清理失败', e);
       }

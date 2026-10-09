@@ -22,6 +22,7 @@ import { SiteDownloadMirror } from '../entities/SiteDownloadMirror';
 import { SiteAccessRule } from '../entities/SiteAccessRule';
 import { SiteStatsDaily } from '../entities/SiteStatsDaily';
 import { SiteVisitLog } from '../entities/SiteVisitLog';
+import { SiteOnline } from '../entities/SiteOnline';
 
 export const AppDataSource = new DataSource({
   type: 'mysql',
@@ -36,7 +37,7 @@ export const AppDataSource = new DataSource({
     Heartbeat, UnbindLog, RevokeLog, OperationLog, SystemConfig, KeyBatch,
     SiteSetting, SiteArticle, SiteCase, SiteNav, SiteContact,
     SiteMedia, SiteDownloadMirror, SiteAccessRule, SiteStatsDaily,
-    SiteVisitLog,
+    SiteVisitLog, SiteOnline,
   ],
   synchronize: false, // 表结构由 database/schema.sql 管理，禁止自动同步
   logging: false,

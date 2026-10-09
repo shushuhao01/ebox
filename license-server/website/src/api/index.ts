@@ -223,3 +223,11 @@ export function trackPageview(path: string): void {
     })
     .catch(() => undefined)
 }
+
+/** 在线心跳：停留页面期间定期上报，供后台「实时在线」统计（不计入 PV，失败不影响前台） */
+export function sendHeartbeat(): void {
+  if (typeof window === 'undefined') return
+  http
+    .post('/api/site/track', { type: 'hb', visitorId: getVisitorId() })
+    .catch(() => undefined)
+}

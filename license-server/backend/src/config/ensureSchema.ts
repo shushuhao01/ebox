@@ -5,6 +5,7 @@ import { log } from './logger';
 /**
  * 启动时结构自愈：
  * - site_visit_log 表不存在 → 自动创建（含索引）；字段不全 → 自动补齐
+ * - site_online 表不存在 → 自动创建（实时在线状态）；字段不全 → 自动补齐
  * - site_articles 表已存在但字段不全 → 自动补齐（如 expire_at / link_url）
  * 其余表结构仍由 database/schema.sql 统一管理（synchronize: false 不变）。
  */
@@ -40,6 +41,23 @@ ${VISIT_COLUMNS.map((c) => `  \`${c.name}\` ${c.ddl}`).join(',\n')},
   KEY \`idx_svl_path\` (\`path\`),
   KEY \`idx_svl_visitor\` (\`visitor_id\`),
   KEY \`idx_svl_created\` (\`created_at\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+
+// ==================== 官网实时在线状态表 ====================
+
+const ONLINE_TABLE = 'site_online';
+
+/** 表内除主键外的全部字段定义（用于表已存在时补列） */
+const ONLINE_COLUMNS: Array<{ name: string; ddl: string }> = [
+  { name: 'ip', ddl: "VARCHAR(64) NOT NULL DEFAULT ''" },
+  { name: 'last_seen', ddl: 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP' },
+];
+
+const CREATE_ONLINE_SQL = `
+CREATE TABLE IF NOT EXISTS \`${ONLINE_TABLE}\` (
+  \`visitor_id\` VARCHAR(64) NOT NULL PRIMARY KEY,
+${ONLINE_COLUMNS.map((c) => `  \`${c.name}\` ${c.ddl}`).join(',\n')},
+  KEY \`idx_so_last_seen\` (\`last_seen\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
 
 /** 需要幂等补列的表（表结构由 schema.sql 创建，此处仅补缺失字段） */
@@ -80,6 +98,8 @@ export async function ensureSchema(): Promise<void> {
   try {
     await runner.query(CREATE_SQL);
     await ensureColumns(runner, VISIT_TABLE, VISIT_COLUMNS);
+    await runner.query(CREATE_ONLINE_SQL);
+    await ensureColumns(runner, ONLINE_TABLE, ONLINE_COLUMNS);
     for (const t of PATCH_TABLES) {
       await ensureColumns(runner, t.table, t.columns);
     }

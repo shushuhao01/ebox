@@ -6,9 +6,17 @@
         <el-radio-button :value="30">近 30 天</el-radio-button>
         <el-radio-button :value="90">近 90 天</el-radio-button>
       </el-radio-group>
-      <el-button :icon="Refresh" @click="reload">刷新</el-button>
+      <el-button @click="reload">
+        <template #icon>
+          <el-icon :class="{ spinning: refreshing }"><Refresh /></el-icon>
+        </template>
+        刷新
+      </el-button>
       <span class="range-tip" v-if="analytics">统计区间：{{ analytics.range.start }} ~ {{ analytics.range.end }}</span>
       <div class="sub-toolbar-right">
+        <span class="online-badge" :title="`最近 ${onlineMinutes} 分钟内有访问的访客数`">
+          <span class="online-dot"></span>实时在线 {{ onlineCount }}
+        </span>
         <el-button :icon="RefreshRight" :loading="syncing" @click="handleSyncRelease">同步版本信息</el-button>
       </div>
     </div>
@@ -201,6 +209,7 @@ import * as echarts from 'echarts'
 import {
   getSiteAnalytics,
   getSiteVisits,
+  getSiteOnline,
   syncRelease,
   type NameValue,
   type SiteAnalytics,
@@ -212,7 +221,13 @@ const days = ref(30)
 const activeTab = ref('overview')
 const loading = ref(false)
 const syncing = ref(false)
+const refreshing = ref(false)
 const analytics = ref<SiteAnalytics | null>(null)
+
+// 实时在线（最近 N 分钟内有访问行为的去重访客）
+const onlineMinutes = 5
+const onlineCount = ref(0)
+let onlineTimer: number | undefined
 
 const DEVICE_LABEL: Record<string, string> = {
   desktop: '桌面端',
@@ -461,8 +476,23 @@ async function loadAnalytics() {
 }
 
 async function reload() {
-  await loadAnalytics()
-  await loadVisits()
+  refreshing.value = true
+  try {
+    await loadAnalytics()
+    await loadVisits()
+    await loadOnline()
+  } finally {
+    refreshing.value = false
+  }
+}
+
+async function loadOnline() {
+  try {
+    const r = await getSiteOnline(onlineMinutes)
+    onlineCount.value = r.online
+  } catch {
+    // 静默失败：保留上一次数值，避免轮询报错打断页面
+  }
 }
 
 async function handleSyncRelease() {
@@ -493,20 +523,37 @@ function padHour(h: number): string {
 onMounted(async () => {
   await reload()
   window.addEventListener('resize', resizeCharts)
+  // 实时在线数据每 30 秒轮询一次
+  onlineTimer = window.setInterval(loadOnline, 30000)
 })
 
 onBeforeUnmount(() => {
   window.removeEventListener('resize', resizeCharts)
+  if (onlineTimer) window.clearInterval(onlineTimer)
   Object.values(charts).forEach((c) => disposeChart(c))
 })
 </script>
 
 <style scoped lang="scss">
+// 刷新按钮点击后图标旋转动画
+@keyframes refresh-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .sub-toolbar {
   display: flex;
   align-items: center;
   gap: 10px;
   margin-bottom: 14px;
+
+  .spinning {
+    animation: refresh-spin 0.8s linear infinite;
+  }
 
   .range-tip {
     font-size: 12px;
@@ -515,6 +562,32 @@ onBeforeUnmount(() => {
 
   .sub-toolbar-right {
     margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .online-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--el-border-color);
+    border-radius: var(--el-border-radius-base);
+    background: var(--el-fill-color-blank);
+    color: var(--el-text-color-regular);
+    font-size: 14px;
+    line-height: 1;
+    white-space: nowrap;
+
+    .online-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #22c55e;
+      box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15);
+    }
   }
 }
 

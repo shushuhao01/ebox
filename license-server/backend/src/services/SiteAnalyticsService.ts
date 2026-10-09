@@ -2,6 +2,7 @@ import { Repository, In } from 'typeorm';
 import { AppDataSource } from '../config/database';
 import { SiteVisitLog } from '../entities/SiteVisitLog';
 import { SiteStatsDaily } from '../entities/SiteStatsDaily';
+import { SiteOnline } from '../entities/SiteOnline';
 import { bumpStat } from './SiteService';
 import { defaultDbFile, loadContentFromFile, newWithBuffer, isValidIp } from 'ip2region-ts';
 
@@ -14,6 +15,7 @@ export interface NameValue {
 
 const repo = (): Repository<SiteVisitLog> => AppDataSource.getRepository(SiteVisitLog);
 const statsRepo = (): Repository<SiteStatsDaily> => AppDataSource.getRepository(SiteStatsDaily);
+const onlineRepo = (): Repository<SiteOnline> => AppDataSource.getRepository(SiteOnline);
 
 // ==================== 时间工具（本地时区，与 SiteService.today 保持一致） ====================
 
@@ -500,6 +502,44 @@ export async function getSiteAnalytics(days = 30): Promise<SiteAnalytics> {
     }),
     daily,
   };
+}
+
+// ==================== 实时在线 ====================
+
+const ONLINE_WINDOW_MIN = 5;
+
+/** 刷新某访客的在线状态（visitor_id 优先，回退 ip），用于页面访问与心跳上报 */
+export async function touchOnline(visitorId: string, ip: string): Promise<void> {
+  const key = (visitorId || '').trim() || `ip:${(ip || '').trim()}`;
+  if (key === 'ip:') return; // 既无访客标识也无 IP，忽略
+  await onlineRepo()
+    .createQueryBuilder()
+    .insert()
+    .into(SiteOnline)
+    .values({ visitorId: key.slice(0, 64), ip: (ip || '').slice(0, 64), lastSeen: new Date() })
+    .orUpdate(['ip', 'last_seen'], ['visitor_id'])
+    .execute();
+}
+
+/** 实时在线访客数：最近 N 分钟内有过活跃上报的在线记录数 */
+export async function getSiteOnlineCount(minutes = ONLINE_WINDOW_MIN): Promise<number> {
+  const win = Math.min(1440, Math.max(1, Math.floor(minutes) || ONLINE_WINDOW_MIN));
+  const n = await onlineRepo()
+    .createQueryBuilder('o')
+    .where('o.last_seen >= DATE_SUB(NOW(), INTERVAL :min MINUTE)', { min: win })
+    .getCount();
+  return n;
+}
+
+/** 清理在线表中过期记录（仅保留最近 hours 小时的在线状态） */
+export async function cleanSiteOnline(hours = 24): Promise<number> {
+  const h = Math.max(1, Math.floor(hours) || 24);
+  const res = await onlineRepo()
+    .createQueryBuilder()
+    .delete()
+    .where('last_seen < DATE_SUB(NOW(), INTERVAL :h HOUR)', { h })
+    .execute();
+  return res.affected || 0;
 }
 
 // ==================== 访问明细查询 ====================

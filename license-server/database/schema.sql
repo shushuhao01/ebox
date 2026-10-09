@@ -321,3 +321,11 @@ CREATE TABLE IF NOT EXISTS `site_visit_log` (
   KEY `idx_svl_visitor` (`visitor_id`),
   KEY `idx_svl_created` (`created_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 官网实时在线状态（按访客标识记录最近活跃时间，用于「实时在线」统计）
+CREATE TABLE IF NOT EXISTS `site_online` (
+  `visitor_id` VARCHAR(64) NOT NULL PRIMARY KEY,  -- 访客标识（缺失时回退为 ip:xxx）
+  `ip` VARCHAR(64) NOT NULL DEFAULT '',
+  `last_seen` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  KEY `idx_so_last_seen` (`last_seen`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

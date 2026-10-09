@@ -21,7 +21,7 @@ import {
   clearAccessRuleCache,
   getRecentStats,
 } from '../../services/SiteService';
-import { getSiteAnalytics, listSiteVisits } from '../../services/SiteAnalyticsService';
+import { getSiteAnalytics, listSiteVisits, getSiteOnlineCount } from '../../services/SiteAnalyticsService';
 
 const router = Router();
 
@@ -717,6 +717,13 @@ router.get('/analytics', async (req, res) => {
   const days = Math.min(90, Math.max(1, parseInt(String(req.query.days || '30'), 10) || 30));
   const data = await getSiteAnalytics(days);
   ok(res, data);
+});
+
+// 官网实时在线访客数（最近 N 分钟，默认 5 分钟）
+router.get('/online', async (req, res) => {
+  const minutes = Math.min(1440, Math.max(1, parseInt(String(req.query.minutes || '5'), 10) || 5));
+  const online = await getSiteOnlineCount(minutes);
+  ok(res, { online, minutes });
 });
 
 // 官网访问明细分页查询

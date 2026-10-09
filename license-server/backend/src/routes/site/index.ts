@@ -12,7 +12,7 @@ import {
   bumpStat,
   getSiteSetting,
 } from '../../services/SiteService';
-import { recordVisit } from '../../services/SiteAnalyticsService';
+import { recordVisit, touchOnline } from '../../services/SiteAnalyticsService';
 
 const router = Router();
 
@@ -228,17 +228,35 @@ router.post('/track', async (req, res) => {
 
   // 页面访问：写入访问明细（IP / 来源 / 设备 / 地域 / 时间），并累加 PV、当日首访累加 UV
   if (type === 'pv') {
+    const ip = clientIp(req);
+    const visitorId = String(req.body?.visitorId || '');
     try {
       await recordVisit({
-        ip: clientIp(req),
+        ip,
         ua: String(req.headers['user-agent'] || ''),
         referer: String(req.headers.referer || req.body?.referer || ''),
         path: String(req.body?.path || '/'),
-        visitorId: String(req.body?.visitorId || ''),
+        visitorId,
         host: String(req.headers.host || ''),
       });
     } catch {
       // 统计失败不影响前台
+    }
+    try {
+      // 访问同时刷新实时在线状态
+      await touchOnline(visitorId, ip);
+    } catch {
+      // 在线统计失败不影响前台
+    }
+    return ok(res, null);
+  }
+
+  // 在线心跳：仅刷新「实时在线」在线状态，不计入 PV / UV
+  if (type === 'hb') {
+    try {
+      await touchOnline(String(req.body?.visitorId || ''), clientIp(req));
+    } catch {
+      // 在线统计失败不影响前台
     }
     return ok(res, null);
   }
