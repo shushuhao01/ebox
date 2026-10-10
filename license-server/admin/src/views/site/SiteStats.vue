@@ -6,7 +6,15 @@
         <el-radio-button :value="30">近 30 天</el-radio-button>
         <el-radio-button :value="90">近 90 天</el-radio-button>
       </el-radio-group>
+      <el-button :type="isCustomRange ? 'primary' : 'default'" plain @click="toggleCustomPicker">
+        <template #icon>
+          <el-icon><Calendar /></el-icon>
+        </template>
+        {{ isCustomRange && customRange ? `${customRange[0]} ~ ${customRange[1]}` : '自定义日期' }}
+      </el-button>
       <el-date-picker
+        v-show="customPickerOpen"
+        ref="customPickerRef"
         v-model="customRange"
         type="daterange"
         value-format="YYYY-MM-DD"
@@ -328,7 +336,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Refresh, RefreshRight, Search, Plus, Edit, Delete, DataAnalysis, Picture, ArrowLeft } from '@element-plus/icons-vue'
+import { Refresh, RefreshRight, Search, Plus, Edit, Delete, DataAnalysis, Picture, ArrowLeft, Calendar } from '@element-plus/icons-vue'
 import {
   getSiteAnalytics,
   getSiteVisits,
@@ -351,6 +359,8 @@ import VisitCharts from '@/components/VisitCharts.vue'
 
 const days = ref(30)
 const customRange = ref<[string, string] | null>(null)
+const customPickerOpen = ref(false)
+const customPickerRef = ref()
 const activeTab = ref('overview')
 const loading = ref(false)
 const syncing = ref(false)
@@ -395,11 +405,20 @@ const effectiveRange = computed(() => {
 // 快捷日期 / 自定义日期切换
 function onQuickRange() {
   customRange.value = null
+  customPickerOpen.value = false
   reload()
 }
+function toggleCustomPicker() {
+  customPickerOpen.value = !customPickerOpen.value
+  if (customPickerOpen.value) nextTick(() => customPickerRef.value?.focus?.())
+}
 function onCustomRange() {
-  if (isCustomRange.value) days.value = 0
-  else if (!days.value) days.value = 30
+  if (isCustomRange.value) {
+    days.value = 0
+    customPickerOpen.value = false
+  } else if (!days.value) {
+    days.value = 30
+  }
   reload()
 }
 
@@ -434,9 +453,14 @@ const channelDetailTab = ref<'chart' | 'visits'>('chart')
 
 function onTabChange(name: string | number) {
   nextTick(() => {
-    if (name === 'overview') overviewChartsRef.value?.resize()
-    else if (name === 'channels' && channelView.value === 'detail' && channelDetailTab.value === 'chart') {
-      channelChartsRef.value?.resize()
+    if (name === 'overview') {
+      overviewChartsRef.value?.resize()
+    } else if (name === 'channels') {
+      if (channelView.value === 'list') {
+        if (!channelsLoaded.value) loadChannels()
+      } else if (channelDetailTab.value === 'chart') {
+        channelChartsRef.value?.resize()
+      }
     }
   })
 }
@@ -498,6 +522,7 @@ function resetFilters() {
 
 const channelView = ref<'list' | 'detail'>('list')
 const channels = ref<ChannelLink[]>([])
+const channelsLoaded = ref(false)
 const channelLoading = ref(false)
 const channelPage = ref(1)
 const channelPageSize = ref(20)
@@ -530,6 +555,7 @@ async function loadChannels() {
     channelTotal.value = res.total
   } finally {
     channelLoading.value = false
+    channelsLoaded.value = true
   }
 }
 

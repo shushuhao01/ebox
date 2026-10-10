@@ -3,7 +3,6 @@
     <div class="container channel-redirect-inner">
       <div class="channel-redirect-spinner" />
       <p class="channel-redirect-text">{{ tip }}</p>
-      <RouterLink v-if="failed" class="btn btn-primary channel-redirect-home" to="/">返回首页</RouterLink>
     </div>
   </div>
 </template>
@@ -17,15 +16,14 @@ import { usePageHead } from '@/composables/usePageHead'
 const route = useRoute()
 const router = useRouter()
 const tip = ref('正在跳转…')
-const failed = ref(false)
 
 usePageHead('跳转中', undefined, { canonical: false })
 
 onMounted(async () => {
   const code = normalizeChannel(route.params.code)
   if (!code) {
-    failed.value = true
-    tip.value = '链接无效或已停用'
+    // 编码非法：仍跳首页，避免用户流失
+    router.replace('/')
     return
   }
   // 先落地渠道来源，确保跳转后的页面埋点能带上渠道码
@@ -36,8 +34,8 @@ onMounted(async () => {
     const sep = target.includes('?') ? '&' : '?'
     router.replace(`${target}${sep}ch=${encodeURIComponent(code)}`)
   } catch {
-    failed.value = true
-    tip.value = '链接无效或已停用'
+    // 渠道已停用 / 已删除 / 解析失败：仍重定向到首页，避免用户流失
+    router.replace('/')
   }
 })
 </script>
@@ -70,10 +68,6 @@ onMounted(async () => {
   margin-top: 20px;
   color: var(--text-2);
   font-size: 16px;
-}
-
-.channel-redirect-home {
-  margin-top: 24px;
 }
 
 @keyframes channel-spin {
