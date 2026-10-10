@@ -13,7 +13,7 @@
         {{ isCustomRange && customRange ? `${customRange[0]} ~ ${customRange[1]}` : '自定义日期' }}
       </el-button>
       <el-date-picker
-        v-show="dateMode === 'custom'"
+        v-if="dateMode === 'custom'"
         ref="customPickerRef"
         v-model="customRange"
         type="daterange"
