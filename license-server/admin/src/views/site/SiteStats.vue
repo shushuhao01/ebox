@@ -6,14 +6,14 @@
         <el-radio-button :value="30">近 30 天</el-radio-button>
         <el-radio-button :value="90">近 90 天</el-radio-button>
       </el-radio-group>
-      <el-button :type="isCustomRange ? 'primary' : 'default'" plain @click="toggleCustomPicker">
+      <el-button :type="dateMode === 'custom' ? 'primary' : 'default'" plain @click="toggleCustomPicker">
         <template #icon>
           <el-icon><Calendar /></el-icon>
         </template>
         {{ isCustomRange && customRange ? `${customRange[0]} ~ ${customRange[1]}` : '自定义日期' }}
       </el-button>
       <el-date-picker
-        v-show="customPickerOpen"
+        v-show="dateMode === 'custom'"
         ref="customPickerRef"
         v-model="customRange"
         type="daterange"
@@ -359,7 +359,7 @@ import VisitCharts from '@/components/VisitCharts.vue'
 
 const days = ref(30)
 const customRange = ref<[string, string] | null>(null)
-const customPickerOpen = ref(false)
+const dateMode = ref<'quick' | 'custom'>('quick')
 const customPickerRef = ref()
 const activeTab = ref('overview')
 const loading = ref(false)
@@ -402,21 +402,31 @@ const effectiveRange = computed(() => {
   return { days: d, start, end }
 })
 
-// 快捷日期 / 自定义日期切换
+// 快捷日期 / 自定义日期切换（二者互斥）
 function onQuickRange() {
+  dateMode.value = 'quick'
   customRange.value = null
-  customPickerOpen.value = false
   reload()
 }
 function toggleCustomPicker() {
-  customPickerOpen.value = !customPickerOpen.value
-  if (customPickerOpen.value) nextTick(() => customPickerRef.value?.focus?.())
+  if (dateMode.value === 'custom') {
+    // 再次点击：退出自定义，回到快捷日期
+    dateMode.value = 'quick'
+    customRange.value = null
+    days.value = 30
+    reload()
+    return
+  }
+  dateMode.value = 'custom'
+  days.value = 0
+  nextTick(() => customPickerRef.value?.focus?.())
 }
 function onCustomRange() {
   if (isCustomRange.value) {
+    dateMode.value = 'custom'
     days.value = 0
-    customPickerOpen.value = false
-  } else if (!days.value) {
+  } else {
+    dateMode.value = 'quick'
     days.value = 30
   }
   reload()
