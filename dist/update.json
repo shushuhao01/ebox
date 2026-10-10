@@ -1,20 +1,21 @@
 {
-    "latestVersion": "v3.1.7",
-    "latestVersionCode": 30107,
-    "releaseDate": "2026/10/9",
+    "latestVersion": "v3.1.8",
+    "latestVersionCode": 30108,
+    "releaseDate": "2026/10/10",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "032b0c08dd0c8391886b9231134ed743208d3dc7773d48701ba0c3c8f0c81d59",
-    "downloadSize": 3098112,
+    "downloadSha256": "3bd0815ec2d8a673e058f1b544e6f0e195d6d21191270c14ef9d6ba06fd07402",
+    "downloadSize": 3099648,
     "changelog": [
-        "新增「实时公告」推送：服务端公告变更时，客户端公告栏秒级刷新，无需等待下一次心跳",
-        "客户端新增公告实时监听长连接（服务端保活、断线自动重连）",
-        "服务端新增公告事件流端点 /notice/stream，按激活码 + 机器指纹双重校验，仅已绑定设备可订阅",
-        "版本号更新至 v3.1.7"
+        "v3.1.8 更新内容：",
+        "后台渠道链接列表「状态」列改为启用/停用开关，一键控制渠道生效状态",
+        "客户端「官网」入口（工具栏「官网」、常见问题「访问官网」、授权信息「访问官网」）统一更新为渠道推广链接",
+        "官网数据分析与渠道数据分析支持自定义日期区间（可自定义起止日期）",
+        "版本号更新至 v3.1.8"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.1.7/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.1.8/eBox.exe"
     ]
 }
