@@ -52,6 +52,10 @@ export class SiteVisitLog {
   @Column({ type: 'varchar', length: 64, name: 'visitor_id', default: '' })
   visitorId!: string;
 
+  @Index()
+  @Column({ type: 'varchar', length: 32, name: 'channel_code', default: '' })
+  channelCode!: string;
+
   @Column({ type: 'varchar', length: 255, name: 'user_agent', default: '' })
   userAgent!: string;
 

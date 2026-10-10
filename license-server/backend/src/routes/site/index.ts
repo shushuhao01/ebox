@@ -10,9 +10,11 @@ import {
   getAccessRules,
   getLatestRelease,
   bumpStat,
+  bumpChannelStat,
   getSiteSetting,
 } from '../../services/SiteService';
 import { recordVisit, touchOnline } from '../../services/SiteAnalyticsService';
+import { resolveChannel } from '../../services/ChannelService';
 
 const router = Router();
 
@@ -222,9 +224,23 @@ router.get('/latest-release', async (_req, res) => {
   ok(res, data);
 });
 
+/** 短链解析：/c/{code} 命中启用渠道时记录点击并返回跳转目标 */
+router.get('/channel/resolve/:code', async (req, res) => {
+  const code = String(req.params.code || '');
+  const result = await resolveChannel(
+    code,
+    clientIp(req),
+    String(req.headers['user-agent'] || ''),
+    String(req.headers.referer || '')
+  ).catch(() => null);
+  if (!result) return fail(res, '渠道不存在或已停用', 1004);
+  ok(res, result);
+});
+
 /** 埋点：页面访问（PV/UV+明细）/ 下载点击 / 购买点击 */
 router.post('/track', async (req, res) => {
   const type = String(req.body?.type || '');
+  const channelCode = String(req.body?.channelCode || '');
 
   // 页面访问：写入访问明细（IP / 来源 / 设备 / 地域 / 时间），并累加 PV、当日首访累加 UV
   if (type === 'pv') {
@@ -238,6 +254,7 @@ router.post('/track', async (req, res) => {
         path: String(req.body?.path || '/'),
         visitorId,
         host: String(req.headers.host || ''),
+        channelCode,
       });
     } catch {
       // 统计失败不影响前台
@@ -268,6 +285,10 @@ router.post('/track', async (req, res) => {
   if (!field) return fail(res, '参数错误', 400);
   try {
     await bumpStat(field, 1);
+    // 带渠道码的下载 / 购买点击同时累加渠道维度聚合
+    if (channelCode && (type === 'download' || type === 'buy')) {
+      await bumpChannelStat(channelCode, type === 'download' ? 'downloads' : 'buyClicks', 1);
+    }
   } catch {
     // 统计失败不影响前台
   }

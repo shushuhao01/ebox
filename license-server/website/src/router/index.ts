@@ -13,6 +13,7 @@ import Agreement from '@/pages/Agreement.vue'
 import Privacy from '@/pages/Privacy.vue'
 import Maintenance from '@/pages/Maintenance.vue'
 import NotFound from '@/pages/NotFound.vue'
+import ChannelRedirect from '@/pages/ChannelRedirect.vue'
 
 export const routes: RouteRecordRaw[] = [
   { path: '/', name: 'home', component: Home, meta: { title: '首页' } },
@@ -27,6 +28,7 @@ export const routes: RouteRecordRaw[] = [
   { path: '/agreement', name: 'agreement', component: Agreement, meta: { title: '用户协议' } },
   { path: '/privacy', name: 'privacy', component: Privacy, meta: { title: '隐私政策' } },
   { path: '/maintenance', name: 'maintenance', component: Maintenance, meta: { title: '维护中' } },
+  { path: '/c/:code', name: 'channel', component: ChannelRedirect, meta: { title: '跳转中' } },
   { path: '/:pathMatch(.*)*', name: 'not-found', component: NotFound, meta: { title: '页面不存在' } },
 ]
 

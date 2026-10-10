@@ -23,6 +23,9 @@ import { SiteAccessRule } from '../entities/SiteAccessRule';
 import { SiteStatsDaily } from '../entities/SiteStatsDaily';
 import { SiteVisitLog } from '../entities/SiteVisitLog';
 import { SiteOnline } from '../entities/SiteOnline';
+import { SiteChannelLink } from '../entities/SiteChannelLink';
+import { SiteChannelClick } from '../entities/SiteChannelClick';
+import { SiteChannelStatsDaily } from '../entities/SiteChannelStatsDaily';
 
 export const AppDataSource = new DataSource({
   type: 'mysql',
@@ -38,6 +41,7 @@ export const AppDataSource = new DataSource({
     SiteSetting, SiteArticle, SiteCase, SiteNav, SiteContact,
     SiteMedia, SiteDownloadMirror, SiteAccessRule, SiteStatsDaily,
     SiteVisitLog, SiteOnline,
+    SiteChannelLink, SiteChannelClick, SiteChannelStatsDaily,
   ],
   synchronize: false, // 表结构由 database/schema.sql 管理，禁止自动同步
   logging: false,

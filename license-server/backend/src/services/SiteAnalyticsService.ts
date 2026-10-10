@@ -1,7 +1,8 @@
-import { Repository, In } from 'typeorm';
+import { Repository, In, SelectQueryBuilder } from 'typeorm';
 import { AppDataSource } from '../config/database';
 import { SiteVisitLog } from '../entities/SiteVisitLog';
 import { SiteStatsDaily } from '../entities/SiteStatsDaily';
+import { SiteChannelStatsDaily } from '../entities/SiteChannelStatsDaily';
 import { SiteOnline } from '../entities/SiteOnline';
 import { bumpStat } from './SiteService';
 import { defaultDbFile, loadContentFromFile, newWithBuffer, isValidIp } from 'ip2region-ts';
@@ -182,6 +183,12 @@ export interface RecordVisitInput {
   path: string;
   visitorId: string;
   host: string;
+  channelCode?: string;
+}
+
+/** 渠道编码归一化：去空格 + 转小写 + 限长 32（与 ChannelService 保持一致） */
+function normalizeChannelValue(v: unknown): string {
+  return String(v ?? '').trim().toLowerCase().slice(0, 32);
 }
 
 /** 当日是否该访客首次访问（UV 去重；visitorId 为空时按 IP 兜底） */
@@ -218,6 +225,7 @@ export async function recordVisit(input: RecordVisitInput): Promise<void> {
     referer: (input.referer || '').slice(0, 512),
     path: (input.path || '/').slice(0, 255),
     visitorId: (input.visitorId || '').slice(0, 64),
+    channelCode: normalizeChannelValue(input.channelCode),
     userAgent: (input.ua || '').slice(0, 255),
   });
   await repo().save(row);
@@ -293,112 +301,119 @@ function toNum(v: unknown): number {
   return Number(v) || 0;
 }
 
-/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间等多维度聚合） */
-export async function getSiteAnalytics(days = 30): Promise<SiteAnalytics> {
+/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间等多维度聚合；传入 channelCode 时按渠道维度过滤） */
+export async function getSiteAnalytics(days = 30, channelCode = ''): Promise<SiteAnalytics> {
   const range = Math.min(90, Math.max(1, Math.floor(days) || 30));
   const now = new Date();
   const start = fmtDate(addDays(now, -(range - 1)));
   const end = fmtDate(now);
   const today = end;
+  const ch = normalizeChannelValue(channelCode);
 
   const r = repo();
 
+  /** 追加渠道过滤条件（须在 where 之后调用，避免覆盖既有条件） */
+  const applyChannel = (qb: SelectQueryBuilder<SiteVisitLog>): SelectQueryBuilder<SiteVisitLog> => {
+    if (ch) qb.andWhere('v.channel_code = :channelCode', { channelCode: ch });
+    return qb;
+  };
+
   const [sumRow, trendRows, hourRows, sourceRows, deviceRows, osRows, browserRows, regionRows, ispRows, pageRows, ipRows, todayRow] =
     await Promise.all([
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('COUNT(*)', 'pv')
         .addSelect(UV_EXPR, 'uv')
         .addSelect('COUNT(DISTINCT v.ip)', 'ips')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .getRawOne<{ pv: string; uv: string; ips: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select("DATE_FORMAT(v.visit_date, '%Y-%m-%d')", 'date')
         .addSelect('COUNT(*)', 'pv')
         .addSelect(UV_EXPR, 'uv')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.visit_date')
         .orderBy('v.visit_date', 'ASC')
         .getRawMany<{ date: string; pv: string; uv: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.visit_hour', 'hour')
         .addSelect('COUNT(*)', 'pv')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.visit_hour')
         .orderBy('v.visit_hour', 'ASC')
         .getRawMany<{ hour: number; pv: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.source', 'name')
         .addSelect('COUNT(*)', 'value')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.source')
         .orderBy('value', 'DESC')
         .limit(10)
         .getRawMany<{ name: string; value: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.device', 'name')
         .addSelect('COUNT(*)', 'value')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.device')
         .orderBy('value', 'DESC')
         .limit(10)
         .getRawMany<{ name: string; value: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.os', 'name')
         .addSelect('COUNT(*)', 'value')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.os')
         .orderBy('value', 'DESC')
         .limit(10)
         .getRawMany<{ name: string; value: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.browser', 'name')
         .addSelect('COUNT(*)', 'value')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.browser')
         .orderBy('value', 'DESC')
         .limit(10)
         .getRawMany<{ name: string; value: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.province', 'name')
         .addSelect('COUNT(*)', 'value')
         .where('v.visit_date >= :start', { start })
-        .andWhere("v.province != ''")
+        .andWhere("v.province != ''"))
         .groupBy('v.province')
         .orderBy('value', 'DESC')
         .limit(10)
         .getRawMany<{ name: string; value: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.isp', 'name')
         .addSelect('COUNT(*)', 'value')
         .where('v.visit_date >= :start', { start })
-        .andWhere("v.isp != ''")
+        .andWhere("v.isp != ''"))
         .groupBy('v.isp')
         .orderBy('value', 'DESC')
         .limit(10)
         .getRawMany<{ name: string; value: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.path', 'path')
         .addSelect('COUNT(*)', 'pv')
         .addSelect(UV_EXPR, 'uv')
-        .where('v.visit_date >= :start', { start })
+        .where('v.visit_date >= :start', { start }))
         .groupBy('v.path')
         .orderBy('pv', 'DESC')
         .limit(10)
         .getRawMany<{ path: string; pv: string; uv: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('v.ip', 'ip')
         .addSelect('COUNT(*)', 'pv')
         .addSelect('MAX(v.id)', 'lastId')
         .where('v.visit_date >= :start', { start })
-        .andWhere("v.ip != ''")
+        .andWhere("v.ip != ''"))
         .groupBy('v.ip')
         .orderBy('pv', 'DESC')
         .limit(50)
         .getRawMany<{ ip: string; pv: string; lastId: string }>(),
-      r.createQueryBuilder('v')
+      applyChannel(r.createQueryBuilder('v')
         .select('COUNT(*)', 'pv')
         .addSelect(UV_EXPR, 'uv')
-        .where('v.visit_date = :today', { today })
+        .where('v.visit_date = :today', { today }))
         .getRawOne<{ pv: string; uv: string }>(),
     ]);
 
@@ -410,15 +425,28 @@ export async function getSiteAnalytics(days = 30): Promise<SiteAnalytics> {
     for (const d of details) detailMap.set(String(d.id), d);
   }
 
-  // 下载 / 购买点击来自日聚合表
-  const statRows = await statsRepo()
-    .createQueryBuilder('s')
-    .where('s.stat_date >= :start', { start })
-    .getMany();
-  const statMap = new Map<string, SiteStatsDaily>();
-  for (const s of statRows) statMap.set(s.statDate, s);
-  const downloads = statRows.reduce((a, s) => a + (s.downloads || 0), 0);
-  const buyClicks = statRows.reduce((a, s) => a + (s.buyClicks || 0), 0);
+  // 下载 / 购买点击：渠道视图读渠道日聚合表，总览读全站日聚合表
+  const statMap = new Map<string, { downloads: number; buyClicks: number }>();
+  let downloads = 0;
+  let buyClicks = 0;
+  if (ch) {
+    const chRows = await AppDataSource.getRepository(SiteChannelStatsDaily)
+      .createQueryBuilder('s')
+      .where('s.stat_date >= :start', { start })
+      .andWhere('s.channel_code = :channelCode', { channelCode: ch })
+      .getMany();
+    for (const s of chRows) statMap.set(s.statDate, { downloads: s.downloads || 0, buyClicks: s.buyClicks || 0 });
+    downloads = chRows.reduce((a, s) => a + (s.downloads || 0), 0);
+    buyClicks = chRows.reduce((a, s) => a + (s.buyClicks || 0), 0);
+  } else {
+    const statRows = await statsRepo()
+      .createQueryBuilder('s')
+      .where('s.stat_date >= :start', { start })
+      .getMany();
+    for (const s of statRows) statMap.set(s.statDate, { downloads: s.downloads || 0, buyClicks: s.buyClicks || 0 });
+    downloads = statRows.reduce((a, s) => a + (s.downloads || 0), 0);
+    buyClicks = statRows.reduce((a, s) => a + (s.buyClicks || 0), 0);
+  }
 
   // 补齐日期序列
   const dates: string[] = [];
@@ -554,6 +582,7 @@ export interface VisitQuery {
   keyword?: string;
   start?: string;
   end?: string;
+  channelCode?: string;
 }
 
 export interface VisitListResult {
@@ -581,6 +610,7 @@ export async function listSiteVisits(q: VisitQuery): Promise<VisitListResult> {
   }
   if (q.start) qb.andWhere('v.visit_date >= :start', { start: q.start });
   if (q.end) qb.andWhere('v.visit_date <= :end', { end: q.end });
+  if (q.channelCode) qb.andWhere('v.channel_code = :channelCode', { channelCode: normalizeChannelValue(q.channelCode) });
 
   const total = await qb.getCount();
   const list = await qb

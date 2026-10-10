@@ -5,6 +5,7 @@ import { SiteSetting } from '../entities/SiteSetting';
 import { SiteDownloadMirror } from '../entities/SiteDownloadMirror';
 import { SiteAccessRule } from '../entities/SiteAccessRule';
 import { SiteStatsDaily } from '../entities/SiteStatsDaily';
+import { SiteChannelStatsDaily } from '../entities/SiteChannelStatsDaily';
 
 /** 官网站点设置默认值（键值均为字符串，复杂结构用 JSON 字符串） */
 export const SITE_DEFAULTS: Record<string, string> = {
@@ -25,6 +26,8 @@ export const SITE_DEFAULTS: Record<string, string> = {
   doc_title: '使用手册',
   doc_target: '_blank',
   github_url: '',
+  // 渠道链接：短链域名（为空时回退请求 Host 拼接待用）
+  site_domain: '',
   // 首页文案
   home_hero_title: '一台电脑，多开任意应用',
   home_hero_subtitle: '环境独立隔离 · 免扫码自动登录 · 体积小不卡顿',
@@ -53,6 +56,7 @@ const PUBLIC_KEYS = [
   'site_name', 'site_logo', 'site_favicon', 'primary_color',
   'site_description', 'site_keywords', 'icp', 'police_icp', 'copyright',
   'purchase_url', 'doc_url', 'doc_title', 'doc_target', 'github_url',
+  'site_domain',
   'home_hero_title', 'home_hero_subtitle', 'home_hero_images', 'home_stats',
   'seo_title', 'seo_desc', 'statistics_code', 'maintenance_mode',
 ];
@@ -268,4 +272,22 @@ export async function getRecentStats(days = 30): Promise<SiteStatsDaily[]> {
   const repo = AppDataSource.getRepository(SiteStatsDaily);
   const rows = await repo.find({ order: { statDate: 'DESC' }, take: days });
   return rows.reverse();
+}
+
+/** 累加今日渠道统计字段（downloads/buyClicks），按 渠道 + 日期 聚合 */
+export async function bumpChannelStat(
+  channelCode: string,
+  field: 'downloads' | 'buyClicks',
+  delta = 1
+): Promise<void> {
+  const code = String(channelCode || '').trim().toLowerCase().slice(0, 32);
+  if (!code) return;
+  const repo = AppDataSource.getRepository(SiteChannelStatsDaily);
+  const date = today();
+  let row = await repo.findOneBy({ statDate: date, channelCode: code });
+  if (!row) {
+    row = repo.create({ statDate: date, channelCode: code, downloads: 0, buyClicks: 0 });
+  }
+  row[field] = (row[field] || 0) + delta;
+  await repo.save(row);
 }

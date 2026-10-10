@@ -370,3 +370,75 @@ export function getSiteVisits(params: {
 }) {
   return get<PageResult<SiteVisitLog>>('/site/visits', params)
 }
+
+// ==================== 渠道链接 ====================
+
+/** 渠道链接（含完整短链地址） */
+export interface ChannelLink {
+  id: string
+  code: string
+  name: string
+  channel: string
+  targetPath: string
+  remark: string | null
+  enabled: number
+  clickCount: number
+  uniqueClickCount: number
+  createdAt: string
+  updatedAt: string
+  shortUrl: string
+}
+
+/** 渠道新建 / 更新入参 */
+export interface ChannelPayload {
+  name: string
+  code?: string
+  channel?: string
+  targetPath?: string
+  remark?: string | null
+  enabled?: number
+}
+
+/** 渠道访问明细查询参数（与全站明细一致；用 type 以获得隐式索引签名，兼容 get 参数类型） */
+export type ChannelVisitQuery = {
+  page?: number
+  pageSize?: number
+  ip?: string
+  path?: string
+  device?: string
+  source?: string
+  keyword?: string
+  start?: string
+  end?: string
+}
+
+export function getChannels(params: { page?: number; pageSize?: number; keyword?: string }) {
+  return get<PageResult<ChannelLink>>('/site/channels', params)
+}
+
+export function createChannel(data: ChannelPayload) {
+  return post<ChannelLink>('/site/channels', data)
+}
+
+export function updateChannel(id: string, data: Partial<ChannelPayload>) {
+  return put<ChannelLink>(`/site/channels/${id}`, data)
+}
+
+export function deleteChannel(id: string) {
+  return del<{ id: string }>(`/site/channels/${id}`)
+}
+
+/** 渠道流量分析（复用全站分析，按渠道过滤） */
+export function getChannelAnalytics(code: string, days = 30) {
+  return get<SiteAnalytics>(`/site/channels/${encodeURIComponent(code)}/analytics`, { days })
+}
+
+/** 渠道访问明细（复用全站明细，按渠道过滤） */
+export function getChannelVisits(code: string, params: ChannelVisitQuery) {
+  return get<PageResult<SiteVisitLog>>(`/site/channels/${encodeURIComponent(code)}/visits`, params)
+}
+
+/** 渠道二维码（后端返回 PNG DataURL，前端 <img> 直接展示） */
+export function getChannelQrcode(code: string) {
+  return get<{ code: string; url: string; dataUrl: string }>(`/site/channels/${encodeURIComponent(code)}/qrcode`)
+}

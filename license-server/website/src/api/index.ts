@@ -191,9 +191,61 @@ export function getLatestRelease(): Promise<LatestRelease> {
   return http.get('/api/site/latest-release') as unknown as Promise<LatestRelease>
 }
 
+/** 渠道短链解析结果 */
+export interface ChannelResolveResult {
+  code: string
+  name: string
+  channel: string
+  targetPath: string
+}
+
+/** 渠道编码归一化（与后端保持一致：去空格 + 转小写 + 限长 32） */
+export function normalizeChannel(v: unknown): string {
+  return String(v ?? '').trim().toLowerCase().slice(0, 32)
+}
+
+const CH_COOKIE = 'ch_ref'
+const CH_TTL_DAYS = 30
+
+/** 写入渠道来源 Cookie（30 天归因窗口，path=/ 全站可用） */
+export function setChannelCookie(code: string): void {
+  if (typeof document === 'undefined') return
+  const c = normalizeChannel(code)
+  if (!c) return
+  const maxAge = CH_TTL_DAYS * 24 * 60 * 60
+  document.cookie = `${CH_COOKIE}=${encodeURIComponent(c)}; path=/; max-age=${maxAge}; SameSite=Lax`
+}
+
+/** 读取渠道来源 Cookie */
+export function getChannelCode(): string {
+  if (typeof document === 'undefined') return ''
+  const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${CH_COOKIE}=([^;]+)`))
+  return m ? normalizeChannel(decodeURIComponent(m[1])) : ''
+}
+
+/** 解析当前渠道码：URL ?ch= 优先（并写入 Cookie），其次读取 Cookie */
+export function resolveChannelCode(): string {
+  if (typeof window === 'undefined') return ''
+  try {
+    const fromUrl = normalizeChannel(new URLSearchParams(window.location.search).get('ch'))
+    if (fromUrl) {
+      setChannelCookie(fromUrl)
+      return fromUrl
+    }
+  } catch {
+    // 忽略 URL 解析异常
+  }
+  return getChannelCode()
+}
+
+/** 解析渠道短链：命中返回跳转信息，否则抛错 */
+export function resolveChannel(code: string): Promise<ChannelResolveResult> {
+  return http.get(`/api/site/channel/resolve/${encodeURIComponent(normalizeChannel(code))}`) as unknown as Promise<ChannelResolveResult>
+}
+
 /** 埋点：pv / uv / download / buy（失败不影响前台） */
 export function track(type: 'pv' | 'uv' | 'download' | 'buy'): void {
-  http.post('/api/site/track', { type }).catch(() => undefined)
+  http.post('/api/site/track', { type, channelCode: resolveChannelCode() }).catch(() => undefined)
 }
 
 /** 生成 / 读取本地访客标识（用于 UV 去重，仅存浏览器本地） */
@@ -211,7 +263,7 @@ function getVisitorId(): string {
   }
 }
 
-/** 页面访问埋点：携带路径 / 来源 / 访客标识，供后台流量分析（失败不影响前台） */
+/** 页面访问埋点：携带路径 / 来源 / 访客标识 / 渠道码，供后台流量分析（失败不影响前台） */
 export function trackPageview(path: string): void {
   if (typeof window === 'undefined') return
   http
@@ -220,6 +272,7 @@ export function trackPageview(path: string): void {
       path: path || window.location.pathname + window.location.search,
       referer: document.referrer || '',
       visitorId: getVisitorId(),
+      channelCode: resolveChannelCode(),
     })
     .catch(() => undefined)
 }

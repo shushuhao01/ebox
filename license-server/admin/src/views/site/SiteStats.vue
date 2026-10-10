@@ -24,108 +24,7 @@
     <el-tabs v-model="activeTab" class="stats-tabs" @tab-change="onTabChange">
       <!-- ==================== 流量分析 ==================== -->
       <el-tab-pane label="流量分析" name="overview">
-        <el-row :gutter="12" class="stat-cards">
-          <el-col v-for="c in cards" :key="c.label" :xs="12" :sm="8" :md="6" :lg="3">
-            <div class="stat-card">
-              <div class="stat-num">{{ c.value }}</div>
-              <div class="stat-lbl">{{ c.label }}</div>
-            </div>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :md="16">
-            <el-card shadow="never" class="chart-card">
-              <template #header>
-                <span class="chart-title">访问趋势</span>
-                <span class="chart-sub">{{ days }} 天 · PV / UV</span>
-              </template>
-              <div ref="trendRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-          <el-col :xs="24" :md="8">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">流量来源</span></template>
-              <div ref="sourceRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :md="16">
-            <el-card shadow="never" class="chart-card">
-              <template #header>
-                <span class="chart-title">时段分布（0-23 时）</span>
-                <span class="chart-sub" v-if="summary.peakHourPv">高峰 {{ padHour(summary.peakHour) }} · {{ summary.peakHourPv }} 次</span>
-              </template>
-              <div ref="hourRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-          <el-col :xs="24" :md="8">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">设备类型</span></template>
-              <div ref="deviceRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :md="12">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">操作系统</span></template>
-              <div ref="osRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-          <el-col :xs="24" :md="12">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">浏览器</span></template>
-              <div ref="browserRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :md="12">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">地域分布 Top 10</span></template>
-              <div ref="regionRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-          <el-col :xs="24" :md="12">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">网络运营商 Top 10</span></template>
-              <div ref="ispRef" class="chart-box" v-loading="loading" />
-            </el-card>
-          </el-col>
-        </el-row>
-
-        <el-row :gutter="16">
-          <el-col :xs="24" :md="12">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">热门页面 Top 10</span></template>
-              <el-table :data="analytics?.pages || []" size="small" stripe>
-                <el-table-column type="index" label="#" width="48" />
-                <el-table-column label="页面路径" prop="path" min-width="160" show-overflow-tooltip />
-                <el-table-column label="PV" prop="pv" width="80" align="right" />
-                <el-table-column label="UV" prop="uv" width="80" align="right" />
-              </el-table>
-            </el-card>
-          </el-col>
-          <el-col :xs="24" :md="12">
-            <el-card shadow="never" class="chart-card">
-              <template #header><span class="chart-title">活跃 IP Top 50</span></template>
-              <el-table :data="analytics?.ips || []" size="small" stripe height="330">
-                <el-table-column type="index" label="#" width="48" />
-                <el-table-column label="IP" prop="ip" min-width="130" />
-                <el-table-column label="归属地" min-width="140">
-                  <template #default="{ row }">{{ [row.province, row.city].filter(Boolean).join(' ') || '-' }}</template>
-                </el-table-column>
-                <el-table-column label="运营商" prop="isp" min-width="90" show-overflow-tooltip />
-                <el-table-column label="次数" prop="pv" width="70" align="right" />
-              </el-table>
-            </el-card>
-          </el-col>
-        </el-row>
+        <VisitCharts ref="overviewChartsRef" :analytics="analytics" :days="days" :loading="loading" />
       </el-tab-pane>
 
       <!-- ==================== 访问明细 ==================== -->
@@ -197,25 +96,232 @@
           />
         </div>
       </el-tab-pane>
+
+      <!-- ==================== 渠道链接 ==================== -->
+      <el-tab-pane label="渠道链接" name="channels">
+        <!-- 渠道列表 -->
+        <template v-if="channelView === 'list'">
+          <div class="visit-filter">
+            <el-input
+              v-model="channelKeyword"
+              placeholder="名称 / 编码 / 渠道标识"
+              clearable
+              style="width: 220px"
+              @keyup.enter="searchChannels"
+            />
+            <el-button type="primary" :icon="Search" @click="searchChannels">查询</el-button>
+            <el-button type="primary" :icon="Plus" @click="openCreateChannel">新建渠道链接</el-button>
+          </div>
+
+          <el-table v-loading="channelLoading" :data="channels" stripe>
+            <el-table-column label="渠道名称" prop="name" min-width="150" show-overflow-tooltip />
+            <el-table-column label="渠道编码" width="130">
+              <template #default="{ row }">
+                <el-tag size="small" effect="plain">{{ row.code }}</el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="推广短链" min-width="240">
+              <template #default="{ row }">
+                <span class="short-url" @click="copyText(row.shortUrl, '短链已复制')">{{ row.shortUrl }}</span>
+              </template>
+            </el-table-column>
+            <el-table-column label="渠道标识" prop="channel" width="110" show-overflow-tooltip />
+            <el-table-column label="落地页" prop="targetPath" min-width="150" show-overflow-tooltip />
+            <el-table-column label="点击 / 去重" width="120" align="right">
+              <template #default="{ row }">{{ row.clickCount }} / {{ row.uniqueClickCount }}</template>
+            </el-table-column>
+            <el-table-column label="状态" width="80">
+              <template #default="{ row }">
+                <el-tag size="small" :type="row.enabled === 1 ? 'success' : 'info'">
+                  {{ row.enabled === 1 ? '启用' : '停用' }}
+                </el-tag>
+              </template>
+            </el-table-column>
+            <el-table-column label="操作" width="270" fixed="right">
+              <template #default="{ row }">
+                <el-button link type="primary" :icon="DataAnalysis" @click="openChannelDetail(row)">分析</el-button>
+                <el-button link type="primary" :icon="Picture" @click="openQrcode(row)">二维码</el-button>
+                <el-button link type="primary" :icon="Edit" @click="openEditChannel(row)">编辑</el-button>
+                <el-button link type="danger" :icon="Delete" @click="removeChannel(row)">删除</el-button>
+              </template>
+            </el-table-column>
+          </el-table>
+          <el-empty v-if="!channels.length && !channelLoading" description="暂无渠道链接" />
+
+          <div class="visit-pager">
+            <el-pagination
+              v-model:current-page="channelPage"
+              v-model:page-size="channelPageSize"
+              :total="channelTotal"
+              :page-sizes="[20, 50, 100]"
+              layout="total, sizes, prev, pager, next, jumper"
+              background
+              @current-change="loadChannels"
+              @size-change="searchChannels"
+            />
+          </div>
+        </template>
+
+        <!-- 渠道分析 -->
+        <template v-else>
+          <div class="channel-detail-head">
+            <el-button link :icon="ArrowLeft" @click="backToChannelList">返回列表</el-button>
+            <span class="channel-detail-name">{{ currentChannel?.name }}</span>
+            <el-tag size="small" effect="plain">{{ currentChannel?.code }}</el-tag>
+            <span class="channel-detail-url" @click="copyText(currentChannel?.shortUrl || '', '短链已复制')">
+              {{ currentChannel?.shortUrl }}
+            </span>
+          </div>
+
+          <VisitCharts
+            ref="channelChartsRef"
+            :analytics="channelAnalytics"
+            :days="days"
+            :loading="channelAnalyticsLoading"
+          />
+
+          <el-card shadow="never" class="chart-card">
+            <template #header><span class="chart-title">访问明细</span></template>
+            <div class="visit-filter">
+              <el-date-picker
+                v-model="channelFilters.dateRange"
+                type="daterange"
+                value-format="YYYY-MM-DD"
+                range-separator="至"
+                start-placeholder="开始日期"
+                end-placeholder="结束日期"
+                style="width: 250px"
+              />
+              <el-input v-model="channelFilters.ip" placeholder="IP" clearable style="width: 140px" />
+              <el-input
+                v-model="channelFilters.keyword"
+                placeholder="IP / 路径 / 归属地 / UA 关键字"
+                clearable
+                style="width: 200px"
+                @keyup.enter="searchChannelVisits"
+              />
+              <el-button type="primary" :icon="Search" @click="searchChannelVisits">查询</el-button>
+              <el-button @click="resetChannelFilters">重置</el-button>
+            </div>
+
+            <el-table v-loading="channelVisitLoading" :data="channelVisits" stripe>
+              <el-table-column label="时间" width="170">
+                <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+              </el-table-column>
+              <el-table-column label="IP" prop="ip" width="140" />
+              <el-table-column label="归属地" min-width="150">
+                <template #default="{ row }">
+                  {{ [row.country, row.province, row.city].filter((v) => v && v !== '中国').join(' ') || '-' }}
+                </template>
+              </el-table-column>
+              <el-table-column label="运营商" prop="isp" min-width="100" show-overflow-tooltip />
+              <el-table-column label="设备 / 系统 / 浏览器" min-width="200">
+                <template #default="{ row }">
+                  <el-tag size="small" type="info" class="mr4">{{ deviceLabel(row.device) }}</el-tag>
+                  <span class="dim">{{ [row.os, row.browser].filter(Boolean).join(' · ') || '-' }}</span>
+                </template>
+              </el-table-column>
+              <el-table-column label="访问路径" prop="path" min-width="180" show-overflow-tooltip />
+              <el-table-column label="来源页" prop="referer" min-width="180" show-overflow-tooltip>
+                <template #default="{ row }">{{ row.referer || '直接访问' }}</template>
+              </el-table-column>
+            </el-table>
+            <el-empty v-if="!channelVisits.length && !channelVisitLoading" description="暂无访问明细" />
+
+            <div class="visit-pager">
+              <el-pagination
+                v-model:current-page="channelVisitPage"
+                v-model:page-size="channelVisitPageSize"
+                :total="channelVisitTotal"
+                :page-sizes="[20, 50, 100]"
+                layout="total, sizes, prev, pager, next, jumper"
+                background
+                @current-change="loadChannelVisits"
+                @size-change="searchChannelVisits"
+              />
+            </div>
+          </el-card>
+        </template>
+      </el-tab-pane>
     </el-tabs>
+
+    <!-- ==================== 新建 / 编辑渠道链接 ==================== -->
+    <el-dialog
+      v-model="channelDialogVisible"
+      :title="channelDialogMode === 'create' ? '新建渠道链接' : '编辑渠道链接'"
+      width="520px"
+      destroy-on-close
+    >
+      <el-form ref="channelFormRef" :model="channelForm" :rules="channelRules" label-width="90px">
+        <el-form-item label="渠道名称" prop="name">
+          <el-input v-model="channelForm.name" placeholder="如：微博推广 / 春季活动" maxlength="128" />
+        </el-form-item>
+        <el-form-item label="渠道编码" prop="code">
+          <el-input v-model="channelForm.code" placeholder="留空自动生成 6 位随机码（小写字母/数字/_-）" maxlength="32" />
+        </el-form-item>
+        <el-form-item label="渠道标识" prop="channel">
+          <el-input v-model="channelForm.channel" placeholder="可选，如：weibo / wechat / douyin" maxlength="64" />
+        </el-form-item>
+        <el-form-item label="落地页" prop="targetPath">
+          <el-input v-model="channelForm.targetPath" placeholder="如：/ 或 /download" maxlength="255" />
+        </el-form-item>
+        <el-form-item label="备注" prop="remark">
+          <el-input v-model="channelForm.remark" type="textarea" :rows="2" placeholder="可选" maxlength="512" />
+        </el-form-item>
+        <el-form-item label="状态">
+          <el-switch v-model="channelForm.enabled" :active-value="1" :inactive-value="0" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="channelDialogVisible = false">取消</el-button>
+        <el-button type="primary" :loading="channelSaving" @click="submitChannel">保存</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ==================== 渠道二维码 ==================== -->
+    <el-dialog v-model="qrcodeVisible" title="渠道二维码" width="360px">
+      <div class="qrcode-box" v-loading="qrcodeLoading">
+        <img v-if="qrcodeData?.dataUrl" :src="qrcodeData.dataUrl" alt="渠道二维码" class="qrcode-img" />
+        <div v-if="qrcodeData" class="qrcode-url">{{ qrcodeData.url }}</div>
+      </div>
+      <template #footer>
+        <el-button @click="copyText(qrcodeData?.url || '', '短链已复制')">复制短链</el-button>
+        <a
+          v-if="qrcodeData?.dataUrl"
+          class="el-button el-button--primary"
+          :href="qrcodeData.dataUrl"
+          :download="`channel-${qrcodeData.code}.png`"
+        >
+          下载二维码
+        </a>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, nextTick } from 'vue'
-import { ElMessage } from 'element-plus'
-import { Refresh, RefreshRight, Search } from '@element-plus/icons-vue'
-import * as echarts from 'echarts'
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
+import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
+import { Refresh, RefreshRight, Search, Plus, Edit, Delete, DataAnalysis, Picture, ArrowLeft } from '@element-plus/icons-vue'
 import {
   getSiteAnalytics,
   getSiteVisits,
   getSiteOnline,
   syncRelease,
-  type NameValue,
+  getChannels,
+  createChannel,
+  updateChannel,
+  deleteChannel,
+  getChannelAnalytics,
+  getChannelVisits,
+  getChannelQrcode,
   type SiteAnalytics,
   type SiteVisitLog,
+  type ChannelLink,
+  type ChannelPayload,
 } from '@/api/site'
-import { initChart, setChartOption, disposeChart, PALETTE, AXIS_TEXT, type EChartsOption } from '@/utils/echarts'
+import { copyText } from '@/utils/format'
+import VisitCharts from '@/components/VisitCharts.vue'
 
 const days = ref(30)
 const activeTab = ref('overview')
@@ -247,172 +353,16 @@ function deviceLabel(v: string): string {
   return DEVICE_LABEL[v] || v || '未知'
 }
 
-const EMPTY_SUMMARY = {
-  pv: 0, uv: 0, ips: 0, downloads: 0, buyClicks: 0,
-  todayPv: 0, todayUv: 0, avgPv: 0, peakHour: 0, peakHourPv: 0,
-}
-const summary = computed(() => analytics.value?.summary ?? EMPTY_SUMMARY)
-const cards = computed(() => {
-  const s = summary.value
-  return [
-    { label: '今日访问 (PV)', value: s.todayPv },
-    { label: '今日访客 (UV)', value: s.todayUv },
-    { label: '区间访问 (PV)', value: s.pv },
-    { label: '区间访客 (UV)', value: s.uv },
-    { label: '独立 IP', value: s.ips },
-    { label: '下载点击', value: s.downloads },
-    { label: '购买点击', value: s.buyClicks },
-    { label: '日均访问', value: s.avgPv },
-  ]
-})
 const sourceOptions = computed(() => (analytics.value?.sources || []).map((s) => s.name))
 
-// ==================== 图表 ====================
-
-const trendRef = ref<HTMLElement>()
-const sourceRef = ref<HTMLElement>()
-const hourRef = ref<HTMLElement>()
-const deviceRef = ref<HTMLElement>()
-const osRef = ref<HTMLElement>()
-const browserRef = ref<HTMLElement>()
-const regionRef = ref<HTMLElement>()
-const ispRef = ref<HTMLElement>()
-
-const charts: Record<string, echarts.ECharts | null> = {}
-
-function upsert(key: string, el: HTMLElement | undefined, option: EChartsOption) {
-  if (!el) return
-  if (!charts[key]) charts[key] = initChart(el, option)
-  else setChartOption(charts[key], option)
-}
-
-function emptyOption(text = '暂无数据'): EChartsOption {
-  return {
-    title: { text, left: 'center', top: 'center', textStyle: { color: '#9CA3AF', fontSize: 13, fontWeight: 'normal' } },
-  }
-}
-
-function pieOption(list: NameValue[]): EChartsOption {
-  return {
-    tooltip: { trigger: 'item', formatter: '{b}: {c} ({d}%)' },
-    legend: { bottom: 0, type: 'scroll', textStyle: { color: AXIS_TEXT, fontSize: 11 } },
-    color: PALETTE,
-    series: [
-      {
-        type: 'pie',
-        radius: ['42%', '68%'],
-        center: ['50%', '44%'],
-        data: list.map((x) => ({ name: x.name, value: x.value })),
-        itemStyle: { borderRadius: 6, borderColor: '#fff', borderWidth: 2 },
-        label: { show: false },
-        emphasis: { label: { show: true, fontSize: 13, fontWeight: 'bold' } },
-      },
-    ],
-  }
-}
-
-function hbarOption(list: NameValue[]): EChartsOption {
-  if (!list.length) return emptyOption()
-  const items = list.slice().reverse()
-  return {
-    tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' } },
-    grid: { left: 96, right: 32, top: 16, bottom: 16 },
-    xAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f2f7' } }, axisLabel: { color: AXIS_TEXT } },
-    yAxis: {
-      type: 'category',
-      data: items.map((x) => x.name),
-      axisLine: { lineStyle: { color: '#e5e7eb' } },
-      axisLabel: { color: AXIS_TEXT, fontSize: 11 },
-    },
-    series: [
-      {
-        type: 'bar',
-        data: items.map((x) => x.value),
-        barMaxWidth: 16,
-        itemStyle: {
-          borderRadius: [0, 4, 4, 0],
-          color: {
-            type: 'linear', x: 0, y: 0, x2: 1, y2: 0,
-            colorStops: [{ offset: 0, color: '#3A7AFE' }, { offset: 1, color: '#93B5FE' }],
-          },
-        },
-      },
-    ],
-  }
-}
-
-function renderCharts() {
-  const a = analytics.value
-  if (!a) return
-
-  if (!a.trend.dates.length) upsert('trend', trendRef.value, emptyOption())
-  else {
-    upsert('trend', trendRef.value, {
-      tooltip: { trigger: 'axis' },
-      legend: { data: ['访问量(PV)', '访客数(UV)'], top: 0, left: 'center', textStyle: { color: AXIS_TEXT } },
-      grid: { left: 48, right: 24, top: 40, bottom: 24 },
-      xAxis: {
-        type: 'category', data: a.trend.dates, boundaryGap: false,
-        axisLine: { lineStyle: { color: '#e5e7eb' } },
-        axisLabel: { color: AXIS_TEXT, fontSize: 11 },
-      },
-      yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f2f7' } }, axisLabel: { color: AXIS_TEXT } },
-      series: [
-        {
-          name: '访问量(PV)', type: 'line', smooth: true, showSymbol: false, data: a.trend.pv,
-          itemStyle: { color: '#3A7AFE' }, areaStyle: { color: 'rgba(58,122,254,0.12)' },
-        },
-        {
-          name: '访客数(UV)', type: 'line', smooth: true, showSymbol: false, data: a.trend.uv,
-          itemStyle: { color: '#22C55E' }, areaStyle: { color: 'rgba(34,197,94,0.10)' },
-        },
-      ],
-    })
-  }
-
-  upsert('source', sourceRef.value, a.sources.length ? pieOption(a.sources) : emptyOption())
-
-  const hourTotal = a.hours.pv.reduce((s, v) => s + v, 0)
-  if (!hourTotal) upsert('hour', hourRef.value, emptyOption())
-  else {
-    upsert('hour', hourRef.value, {
-      tooltip: { trigger: 'axis' },
-      grid: { left: 44, right: 16, top: 24, bottom: 28 },
-      xAxis: {
-        type: 'category', data: a.hours.labels,
-        axisLine: { lineStyle: { color: '#e5e7eb' } },
-        axisLabel: { color: AXIS_TEXT, fontSize: 10, interval: 2 },
-      },
-      yAxis: { type: 'value', splitLine: { lineStyle: { color: '#f0f2f7' } }, axisLabel: { color: AXIS_TEXT } },
-      series: [
-        {
-          name: '访问量', type: 'bar', data: a.hours.pv, barMaxWidth: 22,
-          itemStyle: {
-            borderRadius: [4, 4, 0, 0],
-            color: {
-              type: 'linear', x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [{ offset: 0, color: '#3A7AFE' }, { offset: 1, color: '#93B5FE' }],
-            },
-          },
-        },
-      ],
-    })
-  }
-
-  const devices = a.devices.map((d) => ({ name: deviceLabel(d.name), value: d.value }))
-  upsert('device', deviceRef.value, devices.length ? pieOption(devices) : emptyOption())
-  upsert('os', osRef.value, a.os.length ? pieOption(a.os) : emptyOption())
-  upsert('browser', browserRef.value, a.browsers.length ? pieOption(a.browsers) : emptyOption())
-  upsert('region', regionRef.value, hbarOption(a.regions))
-  upsert('isp', ispRef.value, hbarOption(a.isps))
-}
-
-function resizeCharts() {
-  Object.values(charts).forEach((c) => c?.resize())
-}
+const overviewChartsRef = ref<InstanceType<typeof VisitCharts>>()
+const channelChartsRef = ref<InstanceType<typeof VisitCharts>>()
 
 function onTabChange(name: string | number) {
-  if (name === 'overview') nextTick(() => resizeCharts())
+  nextTick(() => {
+    if (name === 'overview') overviewChartsRef.value?.resize()
+    else if (name === 'channels' && channelView.value === 'detail') channelChartsRef.value?.resize()
+  })
 }
 
 // ==================== 访问明细 ====================
@@ -462,14 +412,218 @@ function resetFilters() {
   searchVisits()
 }
 
+// ==================== 渠道链接 ====================
+
+const channelView = ref<'list' | 'detail'>('list')
+const channels = ref<ChannelLink[]>([])
+const channelLoading = ref(false)
+const channelPage = ref(1)
+const channelPageSize = ref(20)
+const channelTotal = ref(0)
+const channelKeyword = ref('')
+const currentChannel = ref<ChannelLink | null>(null)
+
+const channelAnalytics = ref<SiteAnalytics | null>(null)
+const channelAnalyticsLoading = ref(false)
+const channelVisits = ref<SiteVisitLog[]>([])
+const channelVisitLoading = ref(false)
+const channelVisitPage = ref(1)
+const channelVisitPageSize = ref(20)
+const channelVisitTotal = ref(0)
+const channelFilters = ref<{ dateRange: [string, string] | null; ip: string; keyword: string }>({
+  dateRange: null,
+  ip: '',
+  keyword: '',
+})
+
+async function loadChannels() {
+  channelLoading.value = true
+  try {
+    const res = await getChannels({
+      page: channelPage.value,
+      pageSize: channelPageSize.value,
+      keyword: channelKeyword.value || undefined,
+    })
+    channels.value = res.list
+    channelTotal.value = res.total
+  } finally {
+    channelLoading.value = false
+  }
+}
+
+function searchChannels() {
+  channelPage.value = 1
+  loadChannels()
+}
+
+async function openChannelDetail(row: ChannelLink) {
+  currentChannel.value = row
+  channelView.value = 'detail'
+  channelVisitPage.value = 1
+  channelFilters.value = { dateRange: null, ip: '', keyword: '' }
+  await Promise.all([loadChannelAnalytics(), loadChannelVisits()])
+  await nextTick()
+  channelChartsRef.value?.resize()
+}
+
+function backToChannelList() {
+  channelView.value = 'list'
+  currentChannel.value = null
+}
+
+async function loadChannelAnalytics() {
+  if (!currentChannel.value) return
+  channelAnalyticsLoading.value = true
+  try {
+    channelAnalytics.value = await getChannelAnalytics(currentChannel.value.code, days.value)
+  } finally {
+    channelAnalyticsLoading.value = false
+  }
+}
+
+async function loadChannelVisits() {
+  if (!currentChannel.value) return
+  channelVisitLoading.value = true
+  try {
+    const res = await getChannelVisits(currentChannel.value.code, {
+      page: channelVisitPage.value,
+      pageSize: channelVisitPageSize.value,
+      ip: channelFilters.value.ip || undefined,
+      keyword: channelFilters.value.keyword || undefined,
+      start: channelFilters.value.dateRange?.[0],
+      end: channelFilters.value.dateRange?.[1],
+    })
+    channelVisits.value = res.list
+    channelVisitTotal.value = res.total
+  } finally {
+    channelVisitLoading.value = false
+  }
+}
+
+function searchChannelVisits() {
+  channelVisitPage.value = 1
+  loadChannelVisits()
+}
+
+function resetChannelFilters() {
+  channelFilters.value = { dateRange: null, ip: '', keyword: '' }
+  searchChannelVisits()
+}
+
+// ---------- 新建 / 编辑 ----------
+
+interface ChannelForm {
+  name: string
+  code: string
+  channel: string
+  targetPath: string
+  remark: string
+  enabled: number
+}
+
+const channelDialogVisible = ref(false)
+const channelDialogMode = ref<'create' | 'edit'>('create')
+const channelSaving = ref(false)
+const channelFormRef = ref<FormInstance>()
+const channelForm = ref<ChannelForm>({
+  name: '',
+  code: '',
+  channel: '',
+  targetPath: '/',
+  remark: '',
+  enabled: 1,
+})
+const channelRules: FormRules = {
+  name: [{ required: true, message: '请输入渠道名称', trigger: 'blur' }],
+}
+
+function openCreateChannel() {
+  channelDialogMode.value = 'create'
+  channelForm.value = { name: '', code: '', channel: '', targetPath: '/', remark: '', enabled: 1 }
+  channelDialogVisible.value = true
+}
+
+function openEditChannel(row: ChannelLink) {
+  channelDialogMode.value = 'edit'
+  channelForm.value = {
+    name: row.name,
+    code: row.code,
+    channel: row.channel,
+    targetPath: row.targetPath,
+    remark: row.remark || '',
+    enabled: row.enabled,
+  }
+  currentChannel.value = row
+  channelDialogVisible.value = true
+}
+
+async function submitChannel() {
+  const form = channelFormRef.value
+  if (!form) return
+  const valid = await form.validate().catch(() => false)
+  if (!valid) return
+  channelSaving.value = true
+  try {
+    if (channelDialogMode.value === 'create') {
+      await createChannel(channelForm.value)
+      ElMessage.success('渠道链接已创建')
+    } else if (currentChannel.value) {
+      await updateChannel(currentChannel.value.id, channelForm.value)
+      ElMessage.success('渠道链接已更新')
+    }
+    channelDialogVisible.value = false
+    await loadChannels()
+  } catch {
+    // 拦截器已提示
+  } finally {
+    channelSaving.value = false
+  }
+}
+
+async function removeChannel(row: ChannelLink) {
+  try {
+    await ElMessageBox.confirm(`确定删除渠道链接「${row.name}」吗？删除后短链将失效。`, '删除确认', {
+      type: 'warning',
+      confirmButtonText: '删除',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  try {
+    await deleteChannel(row.id)
+    ElMessage.success('已删除')
+    await loadChannels()
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+// ---------- 二维码 ----------
+
+const qrcodeVisible = ref(false)
+const qrcodeLoading = ref(false)
+const qrcodeData = ref<{ code: string; url: string; dataUrl: string } | null>(null)
+
+async function openQrcode(row: ChannelLink) {
+  qrcodeVisible.value = true
+  qrcodeLoading.value = true
+  qrcodeData.value = null
+  try {
+    qrcodeData.value = await getChannelQrcode(row.code)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    qrcodeLoading.value = false
+  }
+}
+
 // ==================== 加载 ====================
 
 async function loadAnalytics() {
   loading.value = true
   try {
     analytics.value = await getSiteAnalytics(days.value)
-    await nextTick()
-    renderCharts()
   } finally {
     loading.value = false
   }
@@ -481,6 +635,10 @@ async function reload() {
     await loadAnalytics()
     await loadVisits()
     await loadOnline()
+    if (activeTab.value === 'channels') {
+      if (channelView.value === 'list') await loadChannels()
+      else await Promise.all([loadChannelAnalytics(), loadChannelVisits()])
+    }
   } finally {
     refreshing.value = false
   }
@@ -516,21 +674,15 @@ function fmtTime(s: string): string {
   const p = (n: number) => String(n).padStart(2, '0')
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
 }
-function padHour(h: number): string {
-  return `${String(h).padStart(2, '0')}:00`
-}
 
 onMounted(async () => {
   await reload()
-  window.addEventListener('resize', resizeCharts)
   // 实时在线数据每 30 秒轮询一次
   onlineTimer = window.setInterval(loadOnline, 30000)
 })
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', resizeCharts)
   if (onlineTimer) window.clearInterval(onlineTimer)
-  Object.values(charts).forEach((c) => disposeChart(c))
 })
 </script>
 
@@ -597,47 +749,12 @@ onBeforeUnmount(() => {
   }
 }
 
-.stat-cards {
-  margin-bottom: 4px;
-}
-
-.stat-card {
-  background: #f7f9fc;
-  border-radius: 8px;
-  padding: 14px 10px;
-  text-align: center;
-  margin-bottom: 12px;
-
-  .stat-num {
-    font-size: 24px;
-    font-weight: 700;
-    color: var(--primary-color);
-    line-height: 1.2;
-  }
-
-  .stat-lbl {
-    margin-top: 4px;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-}
-
 .chart-card {
   margin-bottom: 16px;
 
   .chart-title {
     font-weight: 600;
   }
-
-  .chart-sub {
-    margin-left: 8px;
-    font-size: 12px;
-    color: var(--text-secondary);
-  }
-}
-
-.chart-box {
-  height: 300px;
 }
 
 .visit-filter {
@@ -660,5 +777,57 @@ onBeforeUnmount(() => {
 
 .dim {
   color: var(--text-secondary);
+}
+
+.short-url {
+  color: var(--primary-color);
+  cursor: pointer;
+  word-break: break-all;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.channel-detail-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 14px;
+
+  .channel-detail-name {
+    font-size: 16px;
+    font-weight: 600;
+  }
+
+  .channel-detail-url {
+    color: var(--primary-color);
+    cursor: pointer;
+    font-size: 13px;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+}
+
+.qrcode-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  min-height: 220px;
+
+  .qrcode-img {
+    width: 240px;
+    height: 240px;
+  }
+
+  .qrcode-url {
+    font-size: 12px;
+    color: var(--text-secondary);
+    word-break: break-all;
+    text-align: center;
+  }
 }
 </style>

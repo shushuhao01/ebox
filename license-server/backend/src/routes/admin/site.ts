@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, Request } from 'express';
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -22,6 +22,16 @@ import {
   getRecentStats,
 } from '../../services/SiteService';
 import { getSiteAnalytics, listSiteVisits, getSiteOnlineCount } from '../../services/SiteAnalyticsService';
+import {
+  listChannels,
+  createChannel,
+  updateChannel,
+  deleteChannel,
+  getChannelAnalytics,
+  listChannelVisits,
+  buildShortUrl,
+} from '../../services/ChannelService';
+import QRCode from 'qrcode';
 
 const router = Router();
 
@@ -741,6 +751,134 @@ router.get('/visits', async (req, res) => {
     end: str(req.query.end),
   });
   ok(res, data);
+});
+
+// ==================== 官网渠道链接 ====================
+
+/** 计算短链展示根地址：优先 site_domain，为空时回退请求 Host */
+async function channelBase(req: Request): Promise<string> {
+  const domain = ((await getSiteSettings()).site_domain || '').trim();
+  if (domain) return domain;
+  const host = String(req.headers.host || '');
+  if (!host) return '';
+  const proto = String(req.headers['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  return `${proto}://${host}`;
+}
+
+/** 渠道列表（含完整短链地址） */
+router.get('/channels', async (req, res) => {
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const data = await listChannels({
+    page: parseInt(String(req.query.page || '1'), 10) || 1,
+    pageSize: parseInt(String(req.query.pageSize || '20'), 10) || 20,
+    keyword: str(req.query.keyword),
+  });
+  const base = await channelBase(req);
+  const list = data.list.map((r) => ({ ...r, shortUrl: buildShortUrl(r.code, base) }));
+  ok(res, { ...data, list });
+});
+
+/** 新建渠道链接 */
+router.post('/channels', async (req, res) => {
+  const { error, value } = Joi.object({
+    name: Joi.string().trim().min(1).max(128).required(),
+    code: Joi.string().trim().allow('', null).max(32).default(''),
+    channel: Joi.string().trim().allow('', null).max(64).default(''),
+    targetPath: Joi.string().trim().allow('', null).max(255).default('/'),
+    remark: Joi.string().trim().allow('', null).max(512).default(''),
+    enabled: Joi.number().integer().valid(0, 1).default(1),
+  }).validate(req.body);
+  if (error) return fail(res, `参数错误：${error.message}`, 400);
+  const v = value as Record<string, unknown>;
+  try {
+    const row = await createChannel({
+      name: String(v.name || ''),
+      code: String(v.code || ''),
+      channel: String(v.channel || ''),
+      targetPath: String(v.targetPath || '/'),
+      remark: v.remark ? String(v.remark) : null,
+      enabled: Number(v.enabled) === 0 ? 0 : 1,
+    });
+    await writeOperationLog(req.auth!.userId, '官网-新建渠道链接', row.name, `编码=${row.code}`, clientIp(req));
+    const base = await channelBase(req);
+    ok(res, { ...row, shortUrl: buildShortUrl(row.code, base) });
+  } catch (e) {
+    return fail(res, e instanceof Error ? e.message : '创建失败', 400);
+  }
+});
+
+/** 更新渠道链接 */
+router.put('/channels/:id', async (req, res) => {
+  const { error, value } = Joi.object({
+    name: Joi.string().trim().min(1).max(128),
+    code: Joi.string().trim().min(1).max(32),
+    channel: Joi.string().trim().allow('', null).max(64),
+    targetPath: Joi.string().trim().allow('', null).max(255),
+    remark: Joi.string().trim().allow('', null).max(512),
+    enabled: Joi.number().integer().valid(0, 1),
+  }).validate(req.body);
+  if (error) return fail(res, `参数错误：${error.message}`, 400);
+  const v = value as Record<string, unknown>;
+  try {
+    const row = await updateChannel(req.params.id, {
+      name: v.name === undefined ? undefined : String(v.name),
+      code: v.code === undefined ? undefined : String(v.code),
+      channel: v.channel === undefined ? undefined : String(v.channel),
+      targetPath: v.targetPath === undefined ? undefined : String(v.targetPath),
+      remark: v.remark === undefined ? undefined : v.remark ? String(v.remark) : null,
+      enabled: v.enabled === undefined ? undefined : Number(v.enabled) === 0 ? 0 : 1,
+    });
+    await writeOperationLog(req.auth!.userId, '官网-更新渠道链接', row.name, `编码=${row.code}`, clientIp(req));
+    const base = await channelBase(req);
+    ok(res, { ...row, shortUrl: buildShortUrl(row.code, base) });
+  } catch (e) {
+    return fail(res, e instanceof Error ? e.message : '更新失败', 400);
+  }
+});
+
+/** 删除渠道链接 */
+router.delete('/channels/:id', async (req, res) => {
+  const okDel = await deleteChannel(req.params.id);
+  if (!okDel) return fail(res, '渠道链接不存在', 1004);
+  await writeOperationLog(req.auth!.userId, '官网-删除渠道链接', req.params.id, null, clientIp(req));
+  ok(res, { id: req.params.id });
+});
+
+/** 渠道流量分析（复用全站分析，按渠道过滤） */
+router.get('/channels/:code/analytics', async (req, res) => {
+  const days = Math.min(90, Math.max(1, parseInt(String(req.query.days || '30'), 10) || 30));
+  const data = await getChannelAnalytics(String(req.params.code || ''), days);
+  ok(res, data);
+});
+
+/** 渠道访问明细（复用全站明细，按渠道过滤） */
+router.get('/channels/:code/visits', async (req, res) => {
+  const str = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+  const data = await listChannelVisits(String(req.params.code || ''), {
+    page: parseInt(String(req.query.page || '1'), 10) || 1,
+    pageSize: parseInt(String(req.query.pageSize || '20'), 10) || 20,
+    ip: str(req.query.ip),
+    path: str(req.query.path),
+    device: str(req.query.device),
+    source: str(req.query.source),
+    keyword: str(req.query.keyword),
+    start: str(req.query.start),
+    end: str(req.query.end),
+  });
+  ok(res, data);
+});
+
+/** 渠道二维码（返回 PNG DataURL，前端 <img> 直接展示） */
+router.get('/channels/:code/qrcode', async (req, res) => {
+  const code = String(req.params.code || '');
+  const base = await channelBase(req);
+  const url = buildShortUrl(code, base);
+  try {
+    const dataUrl = await QRCode.toDataURL(url, { width: 320, margin: 2, errorCorrectionLevel: 'M' });
+    ok(res, { code, url, dataUrl });
+  } catch (e) {
+    return fail(res, e instanceof Error ? e.message : '二维码生成失败', 500, 500);
+  }
 });
 
 export default router;

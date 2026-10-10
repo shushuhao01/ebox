@@ -32,6 +32,7 @@ import { markExpiredKeys } from './services/KeyService';
 import { getConfigValue } from './services/ConfigService';
 import { cleanExpiredData } from './services/LogService';
 import { cleanSiteVisitLogs, cleanSiteOnline } from './services/SiteAnalyticsService';
+import { cleanChannelClicks } from './services/ChannelService';
 
 const app = express();
 const PORT = env.port;
@@ -189,6 +190,8 @@ async function main() {
         if (n > 0) log.info(`官网访问明细清理：删除 ${n} 条超过 90 天的记录`);
         const o = await cleanSiteOnline(24);
         if (o > 0) log.info(`官网在线状态清理：删除 ${o} 条超过 24 小时的在线上报记录`);
+        const c = await cleanChannelClicks(90);
+        if (c > 0) log.info(`官网渠道点击明细清理：删除 ${c} 条超过 90 天的记录`);
       } catch (e) {
         log.error('官网访问明细清理失败', e);
       }
