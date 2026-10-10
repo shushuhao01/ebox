@@ -33,6 +33,19 @@ function addDays(base: Date, n: number): Date {
   return d;
 }
 
+/** 解析 YYYY-MM-DD 为本地时区日期 */
+function parseYmd(s: string): Date {
+  const [y, m, d] = s.split('-').map((n) => parseInt(n, 10));
+  return new Date(y || 1970, (m || 1) - 1, d || 1);
+}
+
+/** 计算两个 YYYY-MM-DD 相差的天数（b - a） */
+function diffDays(a: string, b: string): number {
+  return Math.round((parseYmd(b).getTime() - parseYmd(a).getTime()) / 86400000);
+}
+
+const YMD_RE = /^\d{4}-\d{2}-\d{2}$/;
+
 // ==================== IP 归属地（离线 ip2region，懒加载） ====================
 
 export interface IpLocation {
@@ -301,13 +314,31 @@ function toNum(v: unknown): number {
   return Number(v) || 0;
 }
 
-/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间等多维度聚合；传入 channelCode 时按渠道维度过滤） */
-export async function getSiteAnalytics(days = 30, channelCode = ''): Promise<SiteAnalytics> {
-  const range = Math.min(90, Math.max(1, Math.floor(days) || 30));
+/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间等多维度聚合；传入 channelCode 时按渠道维度过滤；传入 start/end 时按自定义日期区间统计） */
+export async function getSiteAnalytics(
+  days = 30,
+  channelCode = '',
+  startDate = '',
+  endDate = ''
+): Promise<SiteAnalytics> {
   const now = new Date();
-  const start = fmtDate(addDays(now, -(range - 1)));
-  const end = fmtDate(now);
-  const today = end;
+  const today = fmtDate(now);
+  let start: string;
+  let end: string;
+  if (YMD_RE.test(startDate) && YMD_RE.test(endDate) && startDate <= endDate) {
+    start = startDate;
+    end = endDate;
+  } else {
+    const d = Math.min(90, Math.max(1, Math.floor(days) || 30));
+    start = fmtDate(addDays(now, -(d - 1)));
+    end = today;
+  }
+  let range = diffDays(start, end) + 1;
+  if (range > 366) {
+    start = fmtDate(addDays(parseYmd(end), -365));
+    range = 366;
+  }
+  if (range < 1) range = 1;
   const ch = normalizeChannelValue(channelCode);
 
   const r = repo();
@@ -450,7 +481,7 @@ export async function getSiteAnalytics(days = 30, channelCode = ''): Promise<Sit
 
   // 补齐日期序列
   const dates: string[] = [];
-  for (let i = 0; i < range; i += 1) dates.push(fmtDate(addDays(now, -(range - 1 - i))));
+  for (let i = 0; i < range; i += 1) dates.push(fmtDate(addDays(parseYmd(start), i)));
   const trendPvMap = new Map<string, number>();
   const trendUvMap = new Map<string, number>();
   for (const row of trendRows) {

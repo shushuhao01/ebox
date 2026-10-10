@@ -224,9 +224,14 @@ export async function recordChannelClick(code: string, ip: string, ua: string, r
 
 // ==================== 渠道维度的分析 / 明细 ====================
 
-/** 渠道流量分析（复用全站分析，按渠道过滤） */
-export async function getChannelAnalytics(code: string, days = 30): Promise<SiteAnalytics> {
-  return getSiteAnalytics(days, normalizeChannel(code));
+/** 渠道流量分析（复用全站分析，按渠道过滤；支持自定义日期区间） */
+export async function getChannelAnalytics(
+  code: string,
+  days = 30,
+  start = '',
+  end = ''
+): Promise<SiteAnalytics> {
+  return getSiteAnalytics(days, normalizeChannel(code), start, end);
 }
 
 /** 渠道访问明细（复用全站明细，按渠道过滤） */

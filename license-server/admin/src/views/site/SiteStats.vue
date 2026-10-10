@@ -1,11 +1,21 @@
 <template>
   <div class="site-panel">
     <div class="sub-toolbar">
-      <el-radio-group v-model="days" size="default" @change="reload">
+      <el-radio-group v-model="days" size="default" @change="onQuickRange">
         <el-radio-button :value="7">近 7 天</el-radio-button>
         <el-radio-button :value="30">近 30 天</el-radio-button>
         <el-radio-button :value="90">近 90 天</el-radio-button>
       </el-radio-group>
+      <el-date-picker
+        v-model="customRange"
+        type="daterange"
+        value-format="YYYY-MM-DD"
+        range-separator="至"
+        start-placeholder="开始日期"
+        end-placeholder="结束日期"
+        style="width: 240px"
+        @change="onCustomRange"
+      />
       <el-button @click="reload">
         <template #icon>
           <el-icon :class="{ spinning: refreshing }"><Refresh /></el-icon>
@@ -24,7 +34,7 @@
     <el-tabs v-model="activeTab" class="stats-tabs" @tab-change="onTabChange">
       <!-- ==================== 流量分析 ==================== -->
       <el-tab-pane label="流量分析" name="overview">
-        <VisitCharts ref="overviewChartsRef" :analytics="analytics" :days="days" :loading="loading" />
+        <VisitCharts ref="overviewChartsRef" :analytics="analytics" :days="effectiveRange.days" :loading="loading" />
       </el-tab-pane>
 
       <!-- ==================== 访问明细 ==================== -->
@@ -114,7 +124,11 @@
           </div>
 
           <el-table v-loading="channelLoading" :data="channels" stripe>
-            <el-table-column label="渠道名称" prop="name" min-width="150" show-overflow-tooltip />
+            <el-table-column label="渠道名称" min-width="150" show-overflow-tooltip>
+              <template #default="{ row }">
+                <span class="channel-name-link" @click="openChannelDetail(row)">{{ row.name }}</span>
+              </template>
+            </el-table-column>
             <el-table-column label="渠道编码" width="130">
               <template #default="{ row }">
                 <el-tag size="small" effect="plain">{{ row.code }}</el-tag>
@@ -130,19 +144,33 @@
             <el-table-column label="点击 / 去重" width="120" align="right">
               <template #default="{ row }">{{ row.clickCount }} / {{ row.uniqueClickCount }}</template>
             </el-table-column>
-            <el-table-column label="状态" width="80">
+            <el-table-column label="状态" width="90" align="center">
               <template #default="{ row }">
-                <el-tag size="small" :type="row.enabled === 1 ? 'success' : 'info'">
-                  {{ row.enabled === 1 ? '启用' : '停用' }}
-                </el-tag>
+                <el-switch
+                  v-model="row.enabled"
+                  :active-value="1"
+                  :inactive-value="0"
+                  :loading="!!channelSwitchLoading[row.id]"
+                  @change="toggleChannelEnabled(row)"
+                />
               </template>
             </el-table-column>
-            <el-table-column label="操作" width="270" fixed="right">
+            <el-table-column label="操作" width="160" fixed="right" align="center">
               <template #default="{ row }">
-                <el-button link type="primary" :icon="DataAnalysis" @click="openChannelDetail(row)">分析</el-button>
-                <el-button link type="primary" :icon="Picture" @click="openQrcode(row)">二维码</el-button>
-                <el-button link type="primary" :icon="Edit" @click="openEditChannel(row)">编辑</el-button>
-                <el-button link type="danger" :icon="Delete" @click="removeChannel(row)">删除</el-button>
+                <span class="op-icons">
+                  <el-tooltip content="流量分析" placement="top">
+                    <el-button link type="primary" :icon="DataAnalysis" @click="openChannelDetail(row)" />
+                  </el-tooltip>
+                  <el-tooltip content="二维码" placement="top">
+                    <el-button link type="primary" :icon="Picture" @click="openQrcode(row)" />
+                  </el-tooltip>
+                  <el-tooltip content="编辑" placement="top">
+                    <el-button link type="primary" :icon="Edit" @click="openEditChannel(row)" />
+                  </el-tooltip>
+                  <el-tooltip content="删除" placement="top">
+                    <el-button link type="danger" :icon="Delete" @click="removeChannel(row)" />
+                  </el-tooltip>
+                </span>
               </template>
             </el-table-column>
           </el-table>
@@ -173,74 +201,72 @@
             </span>
           </div>
 
-          <VisitCharts
-            ref="channelChartsRef"
-            :analytics="channelAnalytics"
-            :days="days"
-            :loading="channelAnalyticsLoading"
-          />
-
-          <el-card shadow="never" class="chart-card">
-            <template #header><span class="chart-title">访问明细</span></template>
-            <div class="visit-filter">
-              <el-date-picker
-                v-model="channelFilters.dateRange"
-                type="daterange"
-                value-format="YYYY-MM-DD"
-                range-separator="至"
-                start-placeholder="开始日期"
-                end-placeholder="结束日期"
-                style="width: 250px"
+          <el-tabs v-model="channelDetailTab" class="channel-detail-tabs" @tab-change="onChannelDetailTabChange">
+            <!-- 渠道流量分析 -->
+            <el-tab-pane label="渠道流量分析" name="chart">
+              <VisitCharts
+                ref="channelChartsRef"
+                :analytics="channelAnalytics"
+                :days="effectiveRange.days"
+                :loading="channelAnalyticsLoading"
               />
-              <el-input v-model="channelFilters.ip" placeholder="IP" clearable style="width: 140px" />
-              <el-input
-                v-model="channelFilters.keyword"
-                placeholder="IP / 路径 / 归属地 / UA 关键字"
-                clearable
-                style="width: 200px"
-                @keyup.enter="searchChannelVisits"
-              />
-              <el-button type="primary" :icon="Search" @click="searchChannelVisits">查询</el-button>
-              <el-button @click="resetChannelFilters">重置</el-button>
-            </div>
+            </el-tab-pane>
 
-            <el-table v-loading="channelVisitLoading" :data="channelVisits" stripe>
-              <el-table-column label="时间" width="170">
-                <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
-              </el-table-column>
-              <el-table-column label="IP" prop="ip" width="140" />
-              <el-table-column label="归属地" min-width="150">
-                <template #default="{ row }">
-                  {{ [row.country, row.province, row.city].filter((v) => v && v !== '中国').join(' ') || '-' }}
-                </template>
-              </el-table-column>
-              <el-table-column label="运营商" prop="isp" min-width="100" show-overflow-tooltip />
-              <el-table-column label="设备 / 系统 / 浏览器" min-width="200">
-                <template #default="{ row }">
-                  <el-tag size="small" type="info" class="mr4">{{ deviceLabel(row.device) }}</el-tag>
-                  <span class="dim">{{ [row.os, row.browser].filter(Boolean).join(' · ') || '-' }}</span>
-                </template>
-              </el-table-column>
-              <el-table-column label="访问路径" prop="path" min-width="180" show-overflow-tooltip />
-              <el-table-column label="来源页" prop="referer" min-width="180" show-overflow-tooltip>
-                <template #default="{ row }">{{ row.referer || '直接访问' }}</template>
-              </el-table-column>
-            </el-table>
-            <el-empty v-if="!channelVisits.length && !channelVisitLoading" description="暂无访问明细" />
+            <!-- 渠道访问明细 -->
+            <el-tab-pane label="渠道访问明细" name="visits">
+              <el-card shadow="never" class="chart-card">
+                <div class="visit-filter">
+                  <el-input v-model="channelFilters.ip" placeholder="IP" clearable style="width: 140px" />
+                  <el-input
+                    v-model="channelFilters.keyword"
+                    placeholder="IP / 路径 / 归属地 / UA 关键字"
+                    clearable
+                    style="width: 200px"
+                    @keyup.enter="searchChannelVisits"
+                  />
+                  <el-button type="primary" :icon="Search" @click="searchChannelVisits">查询</el-button>
+                  <el-button @click="resetChannelFilters">重置</el-button>
+                </div>
 
-            <div class="visit-pager">
-              <el-pagination
-                v-model:current-page="channelVisitPage"
-                v-model:page-size="channelVisitPageSize"
-                :total="channelVisitTotal"
-                :page-sizes="[20, 50, 100]"
-                layout="total, sizes, prev, pager, next, jumper"
-                background
-                @current-change="loadChannelVisits"
-                @size-change="searchChannelVisits"
-              />
-            </div>
-          </el-card>
+                <el-table v-loading="channelVisitLoading" :data="channelVisits" stripe>
+                  <el-table-column label="时间" width="170">
+                    <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+                  </el-table-column>
+                  <el-table-column label="IP" prop="ip" width="140" />
+                  <el-table-column label="归属地" min-width="150">
+                    <template #default="{ row }">
+                      {{ [row.country, row.province, row.city].filter((v) => v && v !== '中国').join(' ') || '-' }}
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="运营商" prop="isp" min-width="100" show-overflow-tooltip />
+                  <el-table-column label="设备 / 系统 / 浏览器" min-width="200">
+                    <template #default="{ row }">
+                      <el-tag size="small" type="info" class="mr4">{{ deviceLabel(row.device) }}</el-tag>
+                      <span class="dim">{{ [row.os, row.browser].filter(Boolean).join(' · ') || '-' }}</span>
+                    </template>
+                  </el-table-column>
+                  <el-table-column label="访问路径" prop="path" min-width="180" show-overflow-tooltip />
+                  <el-table-column label="来源页" prop="referer" min-width="180" show-overflow-tooltip>
+                    <template #default="{ row }">{{ row.referer || '直接访问' }}</template>
+                  </el-table-column>
+                </el-table>
+                <el-empty v-if="!channelVisits.length && !channelVisitLoading" description="暂无访问明细" />
+
+                <div class="visit-pager">
+                  <el-pagination
+                    v-model:current-page="channelVisitPage"
+                    v-model:page-size="channelVisitPageSize"
+                    :total="channelVisitTotal"
+                    :page-sizes="[20, 50, 100]"
+                    layout="total, sizes, prev, pager, next, jumper"
+                    background
+                    @current-change="loadChannelVisits"
+                    @size-change="searchChannelVisits"
+                  />
+                </div>
+              </el-card>
+            </el-tab-pane>
+          </el-tabs>
         </template>
       </el-tab-pane>
     </el-tabs>
@@ -324,11 +350,58 @@ import { copyText } from '@/utils/format'
 import VisitCharts from '@/components/VisitCharts.vue'
 
 const days = ref(30)
+const customRange = ref<[string, string] | null>(null)
 const activeTab = ref('overview')
 const loading = ref(false)
 const syncing = ref(false)
 const refreshing = ref(false)
 const analytics = ref<SiteAnalytics | null>(null)
+
+// 日期辅助：与后端保持 YYYY-MM-DD 本地时区口径
+function fmtYmd(d: Date): string {
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`
+}
+function addDays(d: Date, n: number): Date {
+  const r = new Date(d)
+  r.setDate(r.getDate() + n)
+  return r
+}
+function parseYmd(s: string): Date {
+  const [y, m, d] = s.split('-').map((n) => parseInt(n, 10))
+  return new Date(y || 1970, (m || 1) - 1, d || 1)
+}
+function diffDays(a: string, b: string): number {
+  return Math.round((parseYmd(b).getTime() - parseYmd(a).getTime()) / 86400000)
+}
+
+// 是否处于自定义日期区间
+const isCustomRange = computed(
+  () => Array.isArray(customRange.value) && customRange.value.length === 2 && !!customRange.value[0] && !!customRange.value[1],
+)
+
+// 顶部筛选器对应的有效区间（供图表与明细统一使用）
+const effectiveRange = computed(() => {
+  if (isCustomRange.value && customRange.value) {
+    const [start, end] = customRange.value
+    return { days: Math.max(1, diffDays(start, end) + 1), start, end }
+  }
+  const d = Math.max(1, days.value)
+  const end = fmtYmd(new Date())
+  const start = fmtYmd(addDays(new Date(), -(d - 1)))
+  return { days: d, start, end }
+})
+
+// 快捷日期 / 自定义日期切换
+function onQuickRange() {
+  customRange.value = null
+  reload()
+}
+function onCustomRange() {
+  if (isCustomRange.value) days.value = 0
+  else if (!days.value) days.value = 30
+  reload()
+}
 
 // 实时在线（最近 N 分钟内有访问行为的去重访客）
 const onlineMinutes = 5
@@ -357,11 +430,20 @@ const sourceOptions = computed(() => (analytics.value?.sources || []).map((s) =>
 
 const overviewChartsRef = ref<InstanceType<typeof VisitCharts>>()
 const channelChartsRef = ref<InstanceType<typeof VisitCharts>>()
+const channelDetailTab = ref<'chart' | 'visits'>('chart')
 
 function onTabChange(name: string | number) {
   nextTick(() => {
     if (name === 'overview') overviewChartsRef.value?.resize()
-    else if (name === 'channels' && channelView.value === 'detail') channelChartsRef.value?.resize()
+    else if (name === 'channels' && channelView.value === 'detail' && channelDetailTab.value === 'chart') {
+      channelChartsRef.value?.resize()
+    }
+  })
+}
+
+function onChannelDetailTabChange(name: string | number) {
+  nextTick(() => {
+    if (name === 'chart') channelChartsRef.value?.resize()
   })
 }
 
@@ -422,6 +504,7 @@ const channelPageSize = ref(20)
 const channelTotal = ref(0)
 const channelKeyword = ref('')
 const currentChannel = ref<ChannelLink | null>(null)
+const channelSwitchLoading = ref<Record<string, boolean>>({})
 
 const channelAnalytics = ref<SiteAnalytics | null>(null)
 const channelAnalyticsLoading = ref(false)
@@ -430,8 +513,7 @@ const channelVisitLoading = ref(false)
 const channelVisitPage = ref(1)
 const channelVisitPageSize = ref(20)
 const channelVisitTotal = ref(0)
-const channelFilters = ref<{ dateRange: [string, string] | null; ip: string; keyword: string }>({
-  dateRange: null,
+const channelFilters = ref<{ ip: string; keyword: string }>({
   ip: '',
   keyword: '',
 })
@@ -456,11 +538,26 @@ function searchChannels() {
   loadChannels()
 }
 
+/** 状态开关：切换渠道启用 / 停用（失败时还原） */
+async function toggleChannelEnabled(row: ChannelLink) {
+  const target = row.enabled
+  channelSwitchLoading.value[row.id] = true
+  try {
+    await updateChannel(row.id, { enabled: target })
+    ElMessage.success(target === 1 ? '已启用' : '已停用')
+  } catch {
+    row.enabled = target === 1 ? 0 : 1
+  } finally {
+    channelSwitchLoading.value[row.id] = false
+  }
+}
+
 async function openChannelDetail(row: ChannelLink) {
   currentChannel.value = row
   channelView.value = 'detail'
+  channelDetailTab.value = 'chart'
   channelVisitPage.value = 1
-  channelFilters.value = { dateRange: null, ip: '', keyword: '' }
+  channelFilters.value = { ip: '', keyword: '' }
   await Promise.all([loadChannelAnalytics(), loadChannelVisits()])
   await nextTick()
   channelChartsRef.value?.resize()
@@ -475,7 +572,13 @@ async function loadChannelAnalytics() {
   if (!currentChannel.value) return
   channelAnalyticsLoading.value = true
   try {
-    channelAnalytics.value = await getChannelAnalytics(currentChannel.value.code, days.value)
+    const r = effectiveRange.value
+    channelAnalytics.value = await getChannelAnalytics(
+      currentChannel.value.code,
+      r.days,
+      r.start || undefined,
+      r.end || undefined,
+    )
   } finally {
     channelAnalyticsLoading.value = false
   }
@@ -485,13 +588,14 @@ async function loadChannelVisits() {
   if (!currentChannel.value) return
   channelVisitLoading.value = true
   try {
+    const r = effectiveRange.value
     const res = await getChannelVisits(currentChannel.value.code, {
       page: channelVisitPage.value,
       pageSize: channelVisitPageSize.value,
       ip: channelFilters.value.ip || undefined,
       keyword: channelFilters.value.keyword || undefined,
-      start: channelFilters.value.dateRange?.[0],
-      end: channelFilters.value.dateRange?.[1],
+      start: r.start || undefined,
+      end: r.end || undefined,
     })
     channelVisits.value = res.list
     channelVisitTotal.value = res.total
@@ -506,7 +610,7 @@ function searchChannelVisits() {
 }
 
 function resetChannelFilters() {
-  channelFilters.value = { dateRange: null, ip: '', keyword: '' }
+  channelFilters.value = { ip: '', keyword: '' }
   searchChannelVisits()
 }
 
@@ -623,7 +727,8 @@ async function openQrcode(row: ChannelLink) {
 async function loadAnalytics() {
   loading.value = true
   try {
-    analytics.value = await getSiteAnalytics(days.value)
+    const r = effectiveRange.value
+    analytics.value = await getSiteAnalytics(r.days, r.start || undefined, r.end || undefined)
   } finally {
     loading.value = false
   }
@@ -786,6 +891,32 @@ onBeforeUnmount(() => {
 
   &:hover {
     text-decoration: underline;
+  }
+}
+
+.channel-name-link {
+  color: var(--primary-color);
+  cursor: pointer;
+
+  &:hover {
+    text-decoration: underline;
+  }
+}
+
+.op-icons {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  white-space: nowrap;
+
+  :deep(.el-button + .el-button) {
+    margin-left: 0;
+  }
+}
+
+.channel-detail-tabs {
+  :deep(.el-tabs__header) {
+    margin-bottom: 14px;
   }
 }
 

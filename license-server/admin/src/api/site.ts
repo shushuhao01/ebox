@@ -346,9 +346,9 @@ export interface SiteAnalytics {
   daily: { date: string; pv: number; uv: number; downloads: number; buyClicks: number }[]
 }
 
-/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间多维聚合） */
-export function getSiteAnalytics(days = 30) {
-  return get<SiteAnalytics>('/site/analytics', { days })
+/** 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间多维聚合；可传 start/end 自定义日期区间） */
+export function getSiteAnalytics(days = 30, start?: string, end?: string) {
+  return get<SiteAnalytics>('/site/analytics', { days, start, end })
 }
 
 /** 官网实时在线访客数（最近 N 分钟内有访问行为的去重访客） */
@@ -428,9 +428,9 @@ export function deleteChannel(id: string) {
   return del<{ id: string }>(`/site/channels/${id}`)
 }
 
-/** 渠道流量分析（复用全站分析，按渠道过滤） */
-export function getChannelAnalytics(code: string, days = 30) {
-  return get<SiteAnalytics>(`/site/channels/${encodeURIComponent(code)}/analytics`, { days })
+/** 渠道流量分析（复用全站分析，按渠道过滤；可传 start/end 自定义日期区间） */
+export function getChannelAnalytics(code: string, days = 30, start?: string, end?: string) {
+  return get<SiteAnalytics>(`/site/channels/${encodeURIComponent(code)}/analytics`, { days, start, end })
 }
 
 /** 渠道访问明细（复用全站明细，按渠道过滤） */

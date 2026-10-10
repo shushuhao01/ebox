@@ -725,7 +725,9 @@ router.get('/stats', async (req, res) => {
 // 官网数据分析（流量 / 来源 / 地域 / 设备 / 时间多维聚合）
 router.get('/analytics', async (req, res) => {
   const days = Math.min(90, Math.max(1, parseInt(String(req.query.days || '30'), 10) || 30));
-  const data = await getSiteAnalytics(days);
+  const start = String(req.query.start || '').trim();
+  const end = String(req.query.end || '').trim();
+  const data = await getSiteAnalytics(days, '', start, end);
   ok(res, data);
 });
 
@@ -844,10 +846,12 @@ router.delete('/channels/:id', async (req, res) => {
   ok(res, { id: req.params.id });
 });
 
-/** 渠道流量分析（复用全站分析，按渠道过滤） */
+/** 渠道流量分析（复用全站分析，按渠道过滤；支持自定义日期区间） */
 router.get('/channels/:code/analytics', async (req, res) => {
   const days = Math.min(90, Math.max(1, parseInt(String(req.query.days || '30'), 10) || 30));
-  const data = await getChannelAnalytics(String(req.params.code || ''), days);
+  const start = String(req.query.start || '').trim();
+  const end = String(req.query.end || '').trim();
+  const data = await getChannelAnalytics(String(req.params.code || ''), days, start, end);
   ok(res, data);
 });
 
