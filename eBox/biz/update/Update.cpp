@@ -677,8 +677,11 @@ namespace biz::update
 		batContent += L"  if !wait_count! geq 30 (\r\n";
 		batContent += L"    goto abort\r\n";
 		batContent += L"  )\r\n";
-		batContent += L"  timeout /t 1 /nobreak >nul\r\n";
-		batContent += L"  goto wait\r\n";
+		// 注意：本批处理以 CREATE_NO_WINDOW 方式运行（无控制台），此时 timeout /t 会因
+		// "输入重定向不受支持" 立即返回，导致等待循环瞬间跑满 30 次而误判超时并回滚。
+		// 改用 ping 作为与控制台无关的约 1 秒延时。
+		batContent += L"  ping -n 2 127.0.0.1 >nul\r\n";
+	batContent += L"  goto wait\r\n";
 		batContent += L")\r\n";
 		batContent += L"\r\n";
 		batContent += L":: overwrite exe\r\n";

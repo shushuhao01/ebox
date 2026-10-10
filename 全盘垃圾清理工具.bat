@@ -136,6 +136,9 @@ function Draw-ProgressBars {
             if (($null -ne $s.Mode) -and ($s.Mode -eq 'size')) {
                 # 统计大小型槽: Found=已统计 MB, 显示当前扫描路径
                 [void]$lines.Add(('  [{0}] {1}{2} | 已统计 {3} MB | {4}' -f $s.Label, $bar, $pctTxt, $s.Found, $cur))
+            } elseif (($null -ne $s.Mode) -and ($s.Mode -eq 'count')) {
+                # 计数型槽(回收站等无法预估总量的遍历): Count=已扫描目录数, 让海量小文件阶段画面持续有动静
+                [void]$lines.Add(('  [{0}] {1}{2} | 已扫描 {3} 项 | {4}' -f $s.Label, $bar, $pctTxt, $s.Count, $cur))
             } else {
                 [void]$lines.Add(('  [{0}] {1}{2} | 已处理 {3} | 发现 {4} | {5}' -f $s.Label, $bar, $pctTxt, $s.Count, $s.Found, $cur))
             }
@@ -324,7 +327,7 @@ function Get-DirSize {
     while ($stack.Count -gt 0) {
         $d = [string]$stack.Pop()
         $n++
-        if (($null -ne $Slot) -and (($n % 200) -eq 0)) { $Slot.Current = $d }
+        if (($null -ne $Slot) -and (($n % 200) -eq 0)) { $Slot.Current = $d; $Slot.Count = $n }
         $di = $null
         try { $di = New-Object System.IO.DirectoryInfo($d) } catch { continue }
         try {
@@ -1321,13 +1324,33 @@ $meta = @(
 $targets = New-Object System.Collections.ArrayList
 
 # 回收站 (每个磁盘)
+# 并行统计各盘回收站大小并显示实时进度: 回收站常含删掉的项目(如 node_modules)海量小文件,
+# 单盘遍历可能耗时数分钟, 原"串行且无任何进度输出"的实现会被误判为"扫到 eBox 环境后就卡死"。
+$rbTasks = New-Object System.Collections.ArrayList
 foreach ($dv in $drives) {
     $rb = "$dv`:\`$RECYCLE.BIN"
-    if (Test-Path -LiteralPath $rb) {
-        $rsz = Get-DirSize $rb
+    if (Test-Path -LiteralPath $rb) { [void]$rbTasks.Add(@{ Drive = $dv; Path = $rb }) }
+}
+if ($rbTasks.Count -gt 0) {
+    $rbSlots = New-Object System.Collections.ArrayList
+    for ($i = 0; $i -lt $rbTasks.Count; $i++) {
+        [void]$rbSlots.Add(@{ Label = ($rbTasks[$i].Drive + ' 盘回收站'); Mode = 'count'; Count = 0; Found = 0; Current = '扫描中...'; Done = $false; DoneFlags = $null; Total = 0 })
+        $rbTasks[$i]['Slot'] = $rbSlots[$i]
+    }
+    $rbWorker = {
+        param($task)
+        $slot = $null
+        if ($task.ContainsKey('Slot')) { $slot = $task['Slot'] }
+        $s = Get-DirSize $task['Path'] $slot
+        if ($null -ne $slot) { $slot.Done = $true; $slot.Current = '' }
+        return @{ Size = $s }
+    }
+    $rbSizes = @(Invoke-Parallel -InputObjects @($rbTasks) -ScriptBlock $rbWorker -FunctionNames @('Get-DirSize') -Throttle $parallelDegree -ProgressActivity '正在统计回收站大小(含海量小文件时较慢, 请稍候)' -ProgressSlots @($rbSlots))
+    for ($i = 0; $i -lt $rbTasks.Count; $i++) {
+        $rsz = $rbSizes[$i]['Size']
         if ($rsz -gt 0) {
             [void]$targets.Add((New-Obj @{
-                Group='回收站'; Name=("$dv 盘回收站(彻底清空)"); Paths=@($rb); Files=@();
+                Group='回收站'; Name=($rbTasks[$i].Drive + ' 盘回收站(彻底清空)'); Paths=@($rbTasks[$i].Path); Files=@();
                 Mode='RecycleBin'; Selected=$true; Note='永久删除,无法恢复'; Size=$rsz; TakeOwn=$false
             }))
         }
