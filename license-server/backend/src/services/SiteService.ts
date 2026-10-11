@@ -40,7 +40,7 @@ export const SITE_DEFAULTS: Record<string, string> = {
   site_origin: 'https://www.abc222.cn',
   seo_push_enabled: '1',
   baidu_push_token: '',
-  indexnow_key: 'a3f8c1e0b47d92f6a1c5e8d30b6f2741',
+  indexnow_key: '6f3b4323a59949a79a5eca7d576dc4e0',
   // 统计代码
   statistics_code: '',
   // 访问安全（仅后台可见）
