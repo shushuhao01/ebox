@@ -61,11 +61,14 @@ update.json
 !dist/update.json
 releases/
 
-# ===== 宣传/PPT 素材（本地创作，不入库）=====
-docs/ebox_ppt/
-docs/ebox_ppt_project/
-docs/*.log
-docs/*.pptx
+# ===== 文档与创作素材（本地创作，不入库）=====
+docs/
+marketing/
+
+# ===== 本地调试杂项（不入库）=====
+_mdbg.py
+logs/*.dmp
+logs/*.txt
 
 # ===== 客户分发文件夹（含 exe 安装包，不入库）=====
 /eBox万能多开/
