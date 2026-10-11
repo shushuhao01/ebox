@@ -6,6 +6,7 @@ module;
 #include <commctrl.h>
 #include <richedit.h>
 #include <windowsx.h>
+#include <tlhelp32.h>
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "comctl32.lib")
 module UI.Core;
@@ -5285,5 +5286,328 @@ namespace ui
 	void show_privacy_agreement_dialog(HWND hOwner)
 	{
 		show_agreement_dialog(hOwner, nullptr, L"eBox 隐私协议", AGREEMENT_TEXT_PRIVACY);
+	}
+
+	// ---- 易歪歪安装位置检测：命中被重定向的系统用户目录 → 提示改装到非系统盘 ----
+	// 背景：易歪歪若安装在"文档"/AppData 等被 eBox 环境隔离重定向的系统用户目录内，
+	// 多开的企业微信可能读取不到其图片文件，导致话术只发文字。此处仅做"检测 + 提示"，
+	// 不改动任何隔离/重定向核心逻辑，用户可选择"不再提示"（持久化到 HKCU\Software\eBox）。
+	namespace
+	{
+		// 与 MemoryDll GlobalData::initializeKnownFolderPath 保持一致的被重定向已知文件夹。
+		// 注意：Program Files / 其他盘普通目录不在其中，装到那里不受影响。
+		const KNOWNFOLDERID* const kRedirectedFolderIds[] = {
+			&FOLDERID_LocalAppData,
+			&FOLDERID_LocalAppDataLow,
+			&FOLDERID_RoamingAppData,
+			&FOLDERID_SavedGames,
+			&FOLDERID_ProgramData,
+			&FOLDERID_Documents,
+		};
+
+		std::wstring normalize_path_lower(std::wstring p)
+		{
+			std::transform(p.begin(), p.end(), p.begin(),
+			               [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+			while (p.size() > 3 && (p.back() == L'\\' || p.back() == L'/'))
+			{
+				p.pop_back();
+			}
+			return p;
+		}
+
+		// dir 是否位于任一被重定向的已知文件夹内（含等于该目录）
+		bool path_in_redirected_folder(const std::wstring& dir)
+		{
+			const std::wstring d = normalize_path_lower(dir);
+			if (d.empty())
+			{
+				return false;
+			}
+			for (const KNOWNFOLDERID* id : kRedirectedFolderIds)
+			{
+				PWSTR raw = nullptr;
+				if (FAILED(SHGetKnownFolderPath(*id, 0, nullptr, &raw)) || !raw)
+				{
+					continue;
+				}
+				const std::wstring folder = normalize_path_lower(raw);
+				CoTaskMemFree(raw);
+				if (!folder.empty() && (d == folder || d.starts_with(folder + L"\\")))
+				{
+					return true;
+				}
+			}
+			return false;
+		}
+
+		bool is_yiwaiwai_name(std::wstring name)
+		{
+			std::transform(name.begin(), name.end(), name.begin(),
+			               [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+			return name.find(L"易歪歪") != std::wstring::npos ||
+			       name.find(L"yiwaiwai") != std::wstring::npos;
+		}
+
+		std::wstring parent_dir_of(const std::wstring& filePath)
+		{
+			const std::size_t pos = filePath.find_last_of(L"\\/");
+			return pos == std::wstring::npos ? std::wstring{} : filePath.substr(0, pos);
+		}
+
+		// 注册表卸载项：DisplayName 命中"易歪歪"时，取安装目录 / DisplayIcon 所在目录
+		void collect_yiwaiwai_from_registry(std::vector<std::wstring>& out)
+		{
+			constexpr std::wstring_view subKey{L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"};
+			const HKEY hRoots[] = {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
+			const REGSAM views[] = {KEY_WOW64_64KEY, KEY_WOW64_32KEY};
+			for (const HKEY hRoot : hRoots)
+			{
+				for (const REGSAM view : views)
+				{
+					HKEY hKey = nullptr;
+					if (RegOpenKeyExW(hRoot, subKey.data(), 0, KEY_READ | view, &hKey) != ERROR_SUCCESS)
+					{
+						continue;
+					}
+					wchar_t subName[256]{};
+					for (DWORD i = 0;; ++i)
+					{
+						DWORD subLen = 256;
+						if (RegEnumKeyExW(hKey, i, subName, &subLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+						{
+							break;
+						}
+						HKEY hSub = nullptr;
+						if (RegOpenKeyExW(hKey, subName, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+						{
+							continue;
+						}
+						const auto readStr = [&](const wchar_t* value, std::wstring& outStr) -> bool
+						{
+							DWORD type = 0;
+							DWORD size = 0;
+							if (RegQueryValueExW(hSub, value, nullptr, &type, nullptr, &size) != ERROR_SUCCESS || size == 0)
+							{
+								return false;
+							}
+							std::wstring s(size / sizeof(wchar_t) + 1, L'\0');
+							DWORD got = size;
+							if (RegQueryValueExW(hSub, value, nullptr, &type, reinterpret_cast<LPBYTE>(s.data()), &got) != ERROR_SUCCESS)
+							{
+								return false;
+							}
+							if (s[0] == L'\0')
+							{
+								return false;
+							}
+							outStr = s.c_str();
+							return true;
+						};
+						std::wstring displayName, installLoc, displayIcon;
+						readStr(L"DisplayName", displayName);
+						readStr(L"InstallLocation", installLoc);
+						readStr(L"DisplayIcon", displayIcon);
+						RegCloseKey(hSub);
+
+						if (!is_yiwaiwai_name(displayName) && !is_yiwaiwai_name(installLoc))
+						{
+							continue;
+						}
+						if (!installLoc.empty())
+						{
+							out.push_back(installLoc);
+						}
+						if (!displayIcon.empty())
+						{
+							// DisplayIcon 形如 "C:\...\yiwaiwai.exe,0" 或带引号 → 清洗成目录
+							std::wstring exe = displayIcon;
+							const std::size_t comma = exe.find_last_of(L',');
+							if (comma != std::wstring::npos &&
+							    exe.substr(comma + 1).find_first_not_of(L"0123456789") == std::wstring::npos)
+							{
+								exe = exe.substr(0, comma);
+							}
+							if (exe.size() >= 2 && exe.front() == L'"' && exe.back() == L'"')
+							{
+								exe = exe.substr(1, exe.size() - 2);
+							}
+							out.push_back(parent_dir_of(exe));
+						}
+					}
+					RegCloseKey(hKey);
+				}
+			}
+		}
+
+		// 运行中的进程：进程名命中"易歪歪"时取其 exe 所在目录
+		void collect_yiwaiwai_from_processes(std::vector<std::wstring>& out)
+		{
+			const HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+			if (snap == INVALID_HANDLE_VALUE)
+			{
+				return;
+			}
+			PROCESSENTRY32W pe{};
+			pe.dwSize = sizeof(pe);
+			if (Process32FirstW(snap, &pe))
+			{
+				do
+				{
+					if (!is_yiwaiwai_name(pe.szExeFile))
+					{
+						continue;
+					}
+					const HANDLE hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pe.th32ProcessID);
+					if (!hProc)
+					{
+						continue;
+					}
+					wchar_t buf[MAX_PATH * 2]{};
+					DWORD n = static_cast<DWORD>(std::size(buf));
+					if (QueryFullProcessImageNameW(hProc, 0, buf, &n))
+					{
+						out.push_back(parent_dir_of(buf));
+					}
+					CloseHandle(hProc);
+				} while (Process32NextW(snap, &pe));
+			}
+			CloseHandle(snap);
+		}
+
+		// 兜底：常见安装根目录下直接叫"易歪歪"的一级子目录
+		void collect_yiwaiwai_from_common_dirs(std::vector<std::wstring>& out)
+		{
+			const wchar_t* envs[] = {L"LOCALAPPDATA", L"ProgramFiles", L"ProgramFiles(x86)", L"USERPROFILE"};
+			for (const wchar_t* env : envs)
+			{
+				wchar_t buf[MAX_PATH]{};
+				const DWORD n = GetEnvironmentVariableW(env, buf, MAX_PATH);
+				if (n == 0 || n >= MAX_PATH)
+				{
+					continue;
+				}
+				std::error_code ec;
+				const std::filesystem::path base{buf};
+				if (!std::filesystem::exists(base, ec) || ec)
+				{
+					continue;
+				}
+				for (const auto& entry : std::filesystem::directory_iterator(base, ec))
+				{
+					if (ec)
+					{
+						break;
+					}
+					std::error_code ec2;
+					if (entry.is_directory(ec2) && is_yiwaiwai_name(entry.path().filename().wstring()))
+					{
+						out.push_back(entry.path().wstring());
+					}
+				}
+			}
+		}
+
+		constexpr wchar_t kYiWaiWaiTipRegValue[] = L"YiWaiWaiPathTipDismissed";
+
+		bool yiwaiwai_tip_dismissed()
+		{
+			HKEY hKey = nullptr;
+			if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\eBox", 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+			{
+				return false;
+			}
+			DWORD type = 0;
+			DWORD value = 0;
+			DWORD size = sizeof(value);
+			const LONG r = RegQueryValueExW(hKey, kYiWaiWaiTipRegValue, nullptr, &type,
+			                                reinterpret_cast<LPBYTE>(&value), &size);
+			RegCloseKey(hKey);
+			return r == ERROR_SUCCESS && type == REG_DWORD && value != 0;
+		}
+
+		void set_yiwaiwai_tip_dismissed()
+		{
+			HKEY hKey = nullptr;
+			if (RegCreateKeyExW(HKEY_CURRENT_USER, L"Software\\eBox", 0, nullptr,
+			                    REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
+			{
+				return;
+			}
+			const DWORD value = 1;
+			RegSetValueExW(hKey, kYiWaiWaiTipRegValue, 0, REG_DWORD,
+			               reinterpret_cast<const BYTE*>(&value), sizeof(value));
+			RegCloseKey(hKey);
+		}
+
+		// 找到一个"易歪歪已安装在重定向目录内"的目录路径；未命中返回空
+		std::wstring find_yiwaiwai_redirected_dir()
+		{
+			std::vector<std::wstring> candidates;
+			collect_yiwaiwai_from_registry(candidates);
+			collect_yiwaiwai_from_processes(candidates);
+
+			for (const auto& c : candidates)
+			{
+				if (!c.empty() && path_in_redirected_folder(c))
+				{
+					return c;
+				}
+			}
+
+			std::vector<std::wstring> dirs;
+			collect_yiwaiwai_from_common_dirs(dirs);
+			for (const auto& d : dirs)
+			{
+				if (path_in_redirected_folder(d))
+				{
+					return d;
+				}
+			}
+			return {};
+		}
+	}
+
+	void maybe_show_yiwaiwai_path_tip(const WindowBase* owner)
+	{
+		if (yiwaiwai_tip_dismissed())
+		{
+			return;
+		}
+		const std::wstring hitDir = find_yiwaiwai_redirected_dir();
+		if (hitDir.empty())
+		{
+			return; // 未检测到易歪歪，或未落在被重定向的用户目录内 → 不打扰
+		}
+
+		TASKDIALOGCONFIG cfg{};
+		cfg.cbSize = sizeof(cfg);
+		cfg.hwndParent = owner ? owner->nativeHandle() : nullptr;
+		cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION;
+		cfg.pszWindowTitle = MainApp::appName.data();
+		cfg.pszMainIcon = TD_WARNING_ICON;
+		cfg.pszMainInstruction = L"检测到易歪歪安装在系统用户目录，可能导致图片发送失败";
+		const std::wstring content =
+			std::wstring{L"易歪歪当前位置：\n"} + hitDir +
+			L"\n\n该目录属于 eBox 环境隔离重定向的系统用户目录（如“文档”/AppData/ProgramData）。"
+			L"多开环境下企业微信可能读取不到此处的图片，导致话术只发出文字、图片发不出去。\n\n"
+			L"建议：将易歪歪卸载后重新安装到一个非系统目录即可正常发送图片，例如：\n"
+			L"  • D 盘（或其他非系统盘），如 D:\\易歪歪；\n"
+			L"  • 若没有 D 盘，也可装到 C 盘的非系统目录，如 C:\\易歪歪。\n"
+			L"只要不落在系统用户目录（如 文档/AppData/ProgramData/Saved Games 等），发送图片就不受影响。";
+		cfg.pszContent = content.c_str();
+		cfg.pszVerificationText = L"不再提示";
+		static constexpr TASKDIALOG_BUTTON buttons[] = {
+			{100, L"我知道了"},
+		};
+		cfg.cButtons = ARRAYSIZE(buttons);
+		cfg.pButtons = buttons;
+		cfg.nDefaultButton = 100;
+
+		BOOL verificationChecked = FALSE;
+		if (SUCCEEDED(TaskDialogIndirect(&cfg, nullptr, nullptr, &verificationChecked)) && verificationChecked)
+		{
+			set_yiwaiwai_tip_dismissed();
+		}
 	}
 }

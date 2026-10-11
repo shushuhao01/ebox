@@ -7,6 +7,7 @@ import :Advapi32;
 import :Shell32;
 import :User32;
 import :Ole32;
+import :Clipboard;
 import :Iphlpapi;
 import :Netapi32;
 
@@ -20,6 +21,7 @@ namespace hook
 		hook_shell32();
 		hook_user32();
 		hook_ole32();
+		hook_clipboard();
 		hook_iphlpapi();
 		hook_netapi32();
 		

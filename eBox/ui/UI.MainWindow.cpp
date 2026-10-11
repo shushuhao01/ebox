@@ -42,6 +42,8 @@ namespace ui
 	static constexpr UINT WM_APP_LICENSEINVALID = WM_USER + 9530;
 	// 退出清理（后台线程）已完成 → UI 线程销毁窗口并退出（保证进程终止先于应用退出）
 	static constexpr UINT WM_APP_EXIT_AFTER_KILL = WM_USER + 9531;
+	// 易歪歪安装位置检测提示：窗口显示后再弹（避免构造期弹窗跑到主界面之前）
+	static constexpr UINT WM_APP_YIWAIIWAI_TIP = WM_USER + 9532;
 
 	// 同步悬浮提示工具：首次注册；之后仅矩形/文字变化时才发消息更新。
 	// 不能每帧 DELTOOL+ADDTOOL——那会重置 tooltip 弹出计时器，持续渲染的主窗口提示永远弹不出来。
@@ -127,6 +129,8 @@ namespace ui
 					MessageBoxW(nativeHandle(), L"续期成功，感谢支持！", L"激活成功", MB_OK | MB_ICONINFORMATION);
 					// 重新打开授权信息弹窗：续期（尤其更换新激活码）后，授权页需同步刷新解绑次数/可解绑次数与到期时间
 					ui::license_info_dialog(this);
+					// 续期成功后：检测易歪歪安装位置（命中重定向目录才提示）
+					PostMessageW(nativeHandle(), WM_APP_YIWAIIWAI_TIP, 0, 0);
 				}
 			}
 			else if (infoResult == ui::LicenseInfoResult::Unbound)
@@ -231,10 +235,14 @@ namespace ui
 			}
 			// 激活成功：刷新标题显示到期时间
 			reinitWindow();
+			// 首次激活成功后：检测易歪歪安装位置（命中重定向目录才提示）
+			PostMessageW(nativeHandle(), WM_APP_YIWAIIWAI_TIP, 0, 0);
 			return;
 		}
 		changePageTo<HomePage>();
 		startUpdateCheck();
+		// 每次启动：检测易歪歪安装位置（命中重定向目录才提示，用户可勾选"不再提示"）
+		PostMessageW(nativeHandle(), WM_APP_YIWAIIWAI_TIP, 0, 0);
 		// 每 6 小时复检一次（调度器周期任务，窗口销毁时 request_stop 取消）
 		app().get_scheduler().addPeriodicTimer(std::chrono::hours(6), [this]
 		{
@@ -1212,6 +1220,11 @@ namespace ui
 				            MB_OK | MB_ICONWARNING | MB_TASKMODAL);
 			}
 		}
+		else if (message == WM_APP_YIWAIIWAI_TIP)
+		{
+			// 窗口已显示：检测易歪歪安装位置，命中被重定向的系统用户目录才提示
+			ui::maybe_show_yiwaiwai_path_tip(this);
+		}
 	}
 
 	void MainWindow::initWindow()
@@ -1234,7 +1247,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.1.8   更新时间：2026/10/10   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.1.9   更新时间：2026/10/11   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1444,16 +1457,16 @@ namespace ui
 
 	// ===== 自动升级实现 =====
 
-	void MainWindow::startUpdateCheck()
+	void MainWindow::startUpdateCheck(bool forceShow)
 	{
-		m_updateScope.spawn(checkUpdateTask());
+		m_updateScope.spawn(checkUpdateTask(forceShow));
 	}
 
-	coro::LazyTask<void> MainWindow::checkUpdateTask()
+	coro::LazyTask<void> MainWindow::checkUpdateTask(bool forceShow)
 	{
 		// 挂接取消令牌：窗口析构 request_stop 时中断进行中的网络拉取，避免 join 阻塞
 		co_await coro::set_cancellation_token(m_updateTimerStop.get_token());
-		biz::update::CheckOutcome outcome = co_await biz::update::checkUpdateAsync();
+		biz::update::CheckOutcome outcome = co_await biz::update::checkUpdateAsync(forceShow);
 		// 协程在 IO 线程完成：PostMessage 回 UI 线程（不依赖 scheduler，避免析构死锁）
 		auto* pOutcome = new biz::update::CheckOutcome(std::move(outcome));
 		if (!PostMessageW(nativeHandle(), WM_UPDATE_CHECK_DONE, reinterpret_cast<WPARAM>(pOutcome), 0))
@@ -1519,7 +1532,7 @@ namespace ui
 				return;  // 已有实时检查在进行，忽略重复点击
 			}
 			m_manualCheckPending = true;
-			startUpdateCheck();
+			startUpdateCheck(true);  // 手动点击更新：强制绕过"已忽略此版本"，保证随时可更新
 			return;
 		}
 		const auto& manifest = *m_pendingUpdate;

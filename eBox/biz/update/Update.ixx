@@ -73,7 +73,8 @@ namespace biz
 
 		// 拉取 manifest + 版本比较 + 查忽略状态
 		// 失败/无更新时 manifest 字段保持默认空值
-		export coro::LazyTask<CheckOutcome> checkUpdateAsync();
+		// forceShow=true（用户手动点"更新"）时忽略"已跳过此版本"状态，始终返回 HasUpdate，保证随时可更新
+		export coro::LazyTask<CheckOutcome> checkUpdateAsync(bool forceShow = false);
 
 		// 下载更新包到 %TEMP%\eBox_update_v<code>.exe 并做 SHA-256 校验
 		// progressCb 在工作线程回调；支持 LazyTask 取消（co_await get_current_cancellation_token）

@@ -54,8 +54,9 @@ namespace ui
 		bool ncBtnHitTest(POINT pt) const;
 
 		// ===== 自动升级 =====
-		void startUpdateCheck();
-		coro::LazyTask<void> checkUpdateTask();
+		// forceShow=true（用户手动点"更新"）时绕过"已忽略此版本"状态，保证随时可更新
+		void startUpdateCheck(bool forceShow = false);
+		coro::LazyTask<void> checkUpdateTask(bool forceShow);
 		void onCheckUpdateDone(biz::update::CheckOutcome outcome);
 		void showUpdateDialog();
 		void startDownloadAndApply(biz::update::UpdateManifest manifest);

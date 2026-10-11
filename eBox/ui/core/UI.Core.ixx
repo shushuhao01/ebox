@@ -703,6 +703,11 @@ namespace ui
 	// 常见问题对话框：左侧分类（常见问题 / 妙用小技巧），右侧手风琴式问题列表。
 	export void faq_dialog(const WindowBase* owner);
 
+	// 易歪歪安装位置检测提示：若检测到易歪歪安装在会被环境隔离重定向的系统用户目录内
+	// （文档 / AppData 等），弹出提示建议改装到非系统盘。命中才弹，用户可勾选"不再提示"
+	// （持久化到 HKCU\Software\eBox）。不改动任何隔离/重定向核心逻辑。
+	export void maybe_show_yiwaiwai_path_tip(const WindowBase* owner);
+
 	// 上次"启动新进程"所选应用的路径（注册表记忆），未设置或已清除时返回空串
 	export std::wstring get_last_app_path();
 

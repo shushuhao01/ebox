@@ -349,7 +349,7 @@ namespace biz::update
 	}
 
 	// ===== 检查更新 =====
-	coro::LazyTask<CheckOutcome> checkUpdateAsync()
+	coro::LazyTask<CheckOutcome> checkUpdateAsync(bool forceShow)
 	{
 		CheckOutcome outcome;
 		outcome.result = CheckResult::NetworkError;
@@ -417,11 +417,12 @@ namespace biz::update
 
 			// 查忽略状态：若用户曾忽略此版本且非强制，返回 SkippedThisVersion
 			// forceUpdate 或本地版本 <= minSkipVersionCode 时不允许跳过（如修复关键 bug 的版本）
+			// forceShow=true（用户手动点"更新"）时绕过"已跳过"状态，始终返回 HasUpdate，保证随时可更新
 			const DWORD ignored = readRegDword(kRegIgnoredVer, 0);
 			const bool cannotSkip = manifest.forceUpdate ||
 			                        (manifest.minSkipVersionCode > 0 &&
 			                         MainApp::kVerCode <= manifest.minSkipVersionCode);
-			if (!cannotSkip && static_cast<int>(ignored) == manifest.latestVersionCode)
+			if (!cannotSkip && !forceShow && static_cast<int>(ignored) == manifest.latestVersionCode)
 			{
 				outcome.result = CheckResult::SkippedThisVersion;
 				co_return outcome;
