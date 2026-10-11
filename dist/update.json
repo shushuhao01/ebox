@@ -1,21 +1,21 @@
 {
-    "latestVersion": "v3.1.8",
-    "latestVersionCode": 30108,
-    "releaseDate": "2026/10/10",
+    "latestVersion": "v3.1.9",
+    "latestVersionCode": 30109,
+    "releaseDate": "2026/10/11",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "3bd0815ec2d8a673e058f1b544e6f0e195d6d21191270c14ef9d6ba06fd07402",
-    "downloadSize": 3099648,
+    "downloadSha256": "cd410fc745fa7c6f4ffbeb5a3503076e87e1e6e6f6ba4de58803af06d63fed17",
+    "downloadSize": 3181056,
     "changelog": [
-        "v3.1.8 更新内容：",
-        "后台渠道链接列表「状态」列改为启用/停用开关，一键控制渠道生效状态",
-        "客户端「官网」入口（工具栏「官网」、常见问题「访问官网」、授权信息「访问官网」）统一更新为渠道推广链接",
-        "官网数据分析与渠道数据分析支持自定义日期区间（可自定义起止日期）",
-        "版本号更新至 v3.1.8"
+        "v3.1.9 更新内容：",
+        "新增跨环境剪贴板支持：在 A 环境复制图片/文件后，可直接粘贴到 B 环境",
+        "新增易歪歪安装位置检测：若易歪歪安装在会被环境隔离重定向的系统目录，启动时提示并引导迁移到非系统目录，避免发送图片失败",
+        "修复：关闭（忽略）更新提示后，手动点击更新按钮仍可正常检查并升级",
+        "版本号更新至 v3.1.9"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.1.8/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.1.9/eBox.exe"
     ]
 }
