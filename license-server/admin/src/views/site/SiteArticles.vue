@@ -120,12 +120,14 @@
         </el-form-item>
         <el-form-item label="封面图">
           <div class="cover-row">
-            <el-input v-model="form.cover" placeholder="图片地址，可点击右侧上传" />
+            <el-input v-model="form.cover" placeholder="图片地址，可从素材库选择或上传" />
+            <el-button :icon="Picture" @click="mediaPickerVisible = true">素材库</el-button>
             <el-upload :show-file-list="false" :http-request="uploadCover" accept="image/*">
               <el-button :icon="Upload" :loading="coverUploading">上传</el-button>
             </el-upload>
           </div>
           <img v-if="form.cover" :src="form.cover" class="cover-preview" alt="封面预览" />
+          <MediaPicker v-model="mediaPickerVisible" @select="onPickCover" />
         </el-form-item>
         <el-form-item label="摘要">
           <el-input v-model="form.summary" type="textarea" :rows="2" maxlength="500" show-word-limit placeholder="列表页展示的简短描述" />
@@ -154,7 +156,7 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type UploadRequestOptions } from 'element-plus'
-import { Plus, Refresh, Upload, Top } from '@element-plus/icons-vue'
+import { Plus, Refresh, Upload, Top, Picture } from '@element-plus/icons-vue'
 import {
   getArticles,
   getArticle,
@@ -166,6 +168,7 @@ import {
 } from '@/api/site'
 import { formatTime } from '@/utils/format'
 import RichEditor from '@/components/RichEditor.vue'
+import MediaPicker from '@/components/MediaPicker.vue'
 
 const props = withDefaults(
   defineProps<{ categories?: string; fixedCategory?: boolean }>(),
@@ -217,6 +220,7 @@ function reload() {
 const drawerVisible = ref(false)
 const saving = ref(false)
 const coverUploading = ref(false)
+const mediaPickerVisible = ref(false)
 
 const form = reactive({
   id: '',
@@ -299,6 +303,10 @@ async function uploadCover(opt: UploadRequestOptions) {
   } finally {
     coverUploading.value = false
   }
+}
+
+function onPickCover(url: string) {
+  form.cover = url
 }
 
 async function submit() {

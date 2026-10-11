@@ -24,6 +24,7 @@
       <button type="button" title="上传图片" @mousedown.prevent="pickImage">
         {{ uploading ? '上传中…' : '图片' }}
       </button>
+      <button type="button" title="从素材库选择图片" @mousedown.prevent="openLibrary">素材库</button>
       <button type="button" title="清除格式" @mousedown.prevent="exec('removeFormat')">清除</button>
       <input ref="fileInput" type="file" accept="image/*" style="display: none" @change="onPickImage" />
     </div>
@@ -35,7 +36,8 @@
       @blur="emitContent"
       @paste="onPaste"
     ></div>
-    <div class="re-tip">支持标题 / 加粗 / 斜体 / 列表 / 引用 / 表格 / 链接 / 对齐；可上传图片，或直接粘贴图片（自动上传）</div>
+    <div class="re-tip">支持标题 / 加粗 / 斜体 / 列表 / 引用 / 表格 / 链接 / 对齐；可上传图片、从素材库选择，或直接粘贴图片（自动上传）</div>
+    <MediaPicker v-model="pickerVisible" @select="onPickFromLibrary" />
   </div>
 </template>
 
@@ -43,6 +45,7 @@
 import { onMounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { uploadSiteImage } from '@/api/site'
+import MediaPicker from '@/components/MediaPicker.vue'
 
 const props = withDefaults(
   defineProps<{ modelValue?: string; disabled?: boolean }>(),
@@ -53,6 +56,9 @@ const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>()
 const editable = ref<HTMLDivElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const uploading = ref(false)
+const pickerVisible = ref(false)
+/** 打开素材库前记录的选区，用于弹窗关闭后把图片插回原位置 */
+let savedRange: Range | null = null
 
 function emitContent() {
   if (!editable.value) return
@@ -101,6 +107,32 @@ async function onPickImage(e: Event) {
   } finally {
     uploading.value = false
   }
+}
+
+/** 打开素材库前记录当前选区，弹窗中选择后插回光标处 */
+function openLibrary() {
+  if (props.disabled) return
+  const sel = window.getSelection()
+  if (sel && sel.rangeCount && editable.value?.contains(sel.anchorNode)) {
+    savedRange = sel.getRangeAt(0).cloneRange()
+  } else {
+    savedRange = null
+  }
+  pickerVisible.value = true
+}
+
+function onPickFromLibrary(url: string) {
+  if (props.disabled) return
+  editable.value?.focus()
+  const sel = window.getSelection()
+  if (savedRange && sel) {
+    sel.removeAllRanges()
+    sel.addRange(savedRange)
+  }
+  document.execCommand('insertHTML', false, `<img src="${url}" style="max-width:100%;height:auto;" />`)
+  savedRange = null
+  emitContent()
+  ElMessage.success('图片已插入')
 }
 
 /** 匹配 src 为 base64 内联图的 <img> 标签 */

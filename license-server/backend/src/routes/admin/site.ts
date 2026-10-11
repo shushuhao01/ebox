@@ -1,5 +1,6 @@
 import { Router, Request } from 'express';
 import express from 'express';
+import { Like } from 'typeorm';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
@@ -539,8 +540,15 @@ const mediaRepo = () => AppDataSource.getRepository(SiteMedia);
 router.get('/media', async (req, res) => {
   const page = Math.max(1, parseInt(String(req.query.page || '1'), 10) || 1);
   const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || '24'), 10) || 24));
-  const total = await mediaRepo().count();
-  const list = await mediaRepo().find({ order: { id: 'DESC' }, skip: (page - 1) * pageSize, take: pageSize });
+  const keyword = String(req.query.keyword || '').trim();
+  const where = keyword ? { filename: Like(`%${keyword}%`) } : {};
+  const total = await mediaRepo().count({ where });
+  const list = await mediaRepo().find({
+    where,
+    order: { id: 'DESC' },
+    skip: (page - 1) * pageSize,
+    take: pageSize,
+  });
   ok(res, { total, page, pageSize, list });
 });
 

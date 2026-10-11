@@ -243,7 +243,7 @@ export function deleteAccessRule(id: string) {
 
 // ==================== 媒体库 ====================
 
-export function getMediaList(params: { page?: number; pageSize?: number }) {
+export function getMediaList(params: { page?: number; pageSize?: number; keyword?: string }) {
   return get<PageResult<SiteMedia>>('/site/media', params)
 }
 
