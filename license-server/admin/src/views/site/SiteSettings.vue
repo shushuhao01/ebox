@@ -115,15 +115,17 @@
         <el-switch v-model="pushEnabled" active-text="新建/发布文章时自动推送" inactive-text="关闭" />
       </el-form-item>
       <el-form-item label="百度推送 Token">
-        <el-input v-model="form.baidu_push_token" placeholder="百度搜索资源平台 - 普通收录 - 推送接口的 token" />
+        <el-input v-model="form.baidu_push_token" placeholder="只填 token 本身，如 lyJwLQxAFqZkFMCX" />
         <div class="field-tip">
-          在百度搜索资源平台「普通收录 → API 提交」获取 token，填好后新文章会实时推送给百度。
+          在百度搜索资源平台「普通收录 → API 提交」获取 token。<strong>只填 token 本身</strong>（不要连接口地址一起粘贴），
+          且需与「站点主域」在百度验证的站点完全一致（www 与非 www 是两个站点，token 不通用）。
         </div>
       </el-form-item>
       <el-form-item label="IndexNow Key">
         <el-input v-model="form.indexnow_key" placeholder="16~128 位十六进制字符串" />
         <div class="field-tip">
-          用于 Bing / Yandex 等 IndexNow 协议校验，系统已自动托管密钥文件，一般无需修改。
+          用于 Bing / Yandex 等 IndexNow 协议校验，密钥文件随官网静态资源一起发布（<code>website/public/&lt;key&gt;.txt</code>）。
+          修改后需重新构建并部署官网才会生效。
         </div>
       </el-form-item>
       <el-form-item label="站点地图">
@@ -157,7 +159,7 @@
 
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElNotification } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
 import { getSiteSettings, updateSiteSettings, uploadSiteImage, pushSeoAll } from '@/api/site'
 
@@ -263,7 +265,14 @@ async function pushAll() {
   try {
     const r = await pushSeoAll()
     const label: Record<string, string> = { ok: '成功', fail: '失败', skipped: '未配置' }
-    ElMessage.success(`已推送 ${r.total} 条：百度 ${label[r.baidu] ?? r.baidu}，IndexNow ${label[r.indexnow] ?? r.indexnow}`)
+    const detail = (status: string, msg?: string) =>
+      status === 'fail' && msg ? `${label[status]}（${msg}）` : label[status] ?? status
+    const text = `已推送 ${r.total} 条：百度 ${detail(r.baidu, r.baiduMessage)}，IndexNow ${detail(r.indexnow, r.indexnowMessage)}`
+    if (r.baidu === 'fail' || r.indexnow === 'fail') {
+      ElNotification({ title: '推送结果', message: text, type: 'warning', duration: 8000, showClose: true })
+    } else {
+      ElMessage.success(text)
+    }
   } catch {
     // 拦截器已提示
   } finally {

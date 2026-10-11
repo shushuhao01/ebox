@@ -135,6 +135,10 @@ export interface SeoPushReport {
   total: number
   baidu: 'ok' | 'fail' | 'skipped'
   indexnow: 'ok' | 'fail' | 'skipped'
+  /** 百度结果说明（失败时含 error/message） */
+  baiduMessage?: string
+  /** IndexNow 结果说明（失败时含 HTTP 状态码 / 错误描述） */
+  indexnowMessage?: string
 }
 
 /** 一键把全站 URL（固定页面 + 全部可见文章）推送给百度 / IndexNow(必应等) */

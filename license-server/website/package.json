@@ -6,7 +6,7 @@
   "description": "eBox 官网前台",
   "scripts": {
     "dev": "vite",
-    "build": "vite-ssg build",
+    "build": "vite-ssg build && node scripts/gen-sitemap.mjs",
     "preview": "vite preview",
     "typecheck": "vue-tsc --noEmit"
   },

@@ -38,6 +38,8 @@ export interface SiteArticle extends ArticleBrief {
   seoTitle: string | null
   seoDesc: string | null
   linkUrl: string | null
+  /** 详情接口返回完整实体，含更新时间，用于结构化数据的 dateModified */
+  updatedAt: string | null
 }
 
 export interface RelatedArticle {

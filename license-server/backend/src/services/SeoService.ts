@@ -33,6 +33,26 @@ export interface PushReport {
   total: number;
   baidu: 'ok' | 'fail' | 'skipped';
   indexnow: 'ok' | 'fail' | 'skipped';
+  /** 百度结果说明（成功条数 / error+message），用于后台回显失败原因 */
+  baiduMessage?: string;
+  /** IndexNow 结果说明（HTTP 状态码 / 错误描述），用于后台回显失败原因 */
+  indexnowMessage?: string;
+}
+
+/** 单个搜索引擎的推送结果（带说明） */
+interface PushResult {
+  status: 'ok' | 'fail' | 'skipped';
+  message: string;
+}
+
+/** 宽松解析 JSON，失败返回 null（推送接口异常时 body 可能不是 JSON） */
+function safeJson(text: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(text);
+    return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** 读取站点主域（去掉末尾斜杠） */
@@ -132,8 +152,8 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
 }
 
 /** 百度主动推送（普通收录） */
-async function pushToBaidu(origin: string, token: string, urls: string[]): Promise<'ok' | 'fail' | 'skipped'> {
-  if (!token) return 'skipped';
+async function pushToBaidu(origin: string, token: string, urls: string[]): Promise<PushResult> {
+  if (!token) return { status: 'skipped', message: '未配置 token' };
   try {
     const host = new URL(origin).host;
     const endpoint = `http://data.zz.baidu.com/urls?site=${encodeURIComponent(host)}&token=${encodeURIComponent(token)}`;
@@ -143,21 +163,25 @@ async function pushToBaidu(origin: string, token: string, urls: string[]): Promi
       body: urls.join('\n'),
     });
     const text = await res.text().catch(() => '');
+    const parsed = safeJson(text);
     if (!res.ok) {
-      log.warn(`[SEO] 百度推送失败：HTTP ${res.status} ${text.slice(0, 300)}`);
-      return 'fail';
+      const detail = parsed?.message ? `${parsed.error ?? res.status} ${parsed.message}` : `HTTP ${res.status}`;
+      log.warn(`[SEO] 百度推送失败：${detail} ${text.slice(0, 300)}`);
+      return { status: 'fail', message: detail };
     }
-    log.info(`[SEO] 百度推送 ${urls.length} 条成功：${text.slice(0, 300)}`);
-    return 'ok';
+    const detail =
+      typeof parsed?.success === 'number' ? `成功 ${parsed.success} 条，剩余额度 ${parsed.remain ?? '-'}` : '推送成功';
+    log.info(`[SEO] 百度推送 ${urls.length} 条：${detail}`);
+    return { status: 'ok', message: detail };
   } catch (e) {
     log.warn('[SEO] 百度推送异常', String(e));
-    return 'fail';
+    return { status: 'fail', message: `请求异常：${String(e)}` };
   }
 }
 
 /** IndexNow 推送（覆盖 Bing / Yandex / Naver / Seznam 等） */
-async function pushToIndexNow(origin: string, key: string, urls: string[]): Promise<'ok' | 'fail' | 'skipped'> {
-  if (!key) return 'skipped';
+async function pushToIndexNow(origin: string, key: string, urls: string[]): Promise<PushResult> {
+  if (!key) return { status: 'skipped', message: '未配置 Key' };
   try {
     const host = new URL(origin).host;
     const res = await fetchWithTimeout('https://api.indexnow.org/indexnow', {
@@ -172,14 +196,18 @@ async function pushToIndexNow(origin: string, key: string, urls: string[]): Prom
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
-      log.warn(`[SEO] IndexNow 推送失败：HTTP ${res.status} ${text.slice(0, 300)}`);
-      return 'fail';
+      const parsed = safeJson(text);
+      const detail = parsed?.message
+        ? `HTTP ${res.status} ${parsed.message}`
+        : `HTTP ${res.status}${text ? ` ${text.slice(0, 160)}` : ''}`;
+      log.warn(`[SEO] IndexNow 推送失败：${detail}`);
+      return { status: 'fail', message: detail };
     }
     log.info(`[SEO] IndexNow 推送 ${urls.length} 条成功（HTTP ${res.status}）`);
-    return 'ok';
+    return { status: 'ok', message: `HTTP ${res.status}` };
   } catch (e) {
     log.warn('[SEO] IndexNow 推送异常', String(e));
-    return 'fail';
+    return { status: 'fail', message: `请求异常：${String(e)}` };
   }
 }
 
@@ -204,7 +232,13 @@ export async function pushUrls(urls: string[]): Promise<PushReport> {
     pushToBaidu(cfg.origin, cfg.baiduToken, list),
     pushToIndexNow(cfg.origin, cfg.indexnowKey, list),
   ]);
-  return { total: list.length, baidu, indexnow };
+  return {
+    total: list.length,
+    baidu: baidu.status,
+    indexnow: indexnow.status,
+    baiduMessage: baidu.message,
+    indexnowMessage: indexnow.message,
+  };
 }
 
 /** 推送单篇文章（会重新校验可见性，不可见则跳过） */
