@@ -264,14 +264,14 @@ async function pushAll() {
   pushing.value = true
   try {
     const r = await pushSeoAll()
-    const label: Record<string, string> = { ok: '成功', fail: '失败', skipped: '未配置' }
+    const label: Record<string, string> = { ok: '成功', partial: '部分成功', fail: '失败', skipped: '未配置' }
     const detail = (status: string, msg?: string) =>
-      status === 'fail' && msg ? `${label[status]}（${msg}）` : label[status] ?? status
+      msg ? `${label[status] ?? status}（${msg}）` : label[status] ?? status
     const text = `已推送 ${r.total} 条：百度 ${detail(r.baidu, r.baiduMessage)}，IndexNow ${detail(r.indexnow, r.indexnowMessage)}`
-    if (r.baidu === 'fail' || r.indexnow === 'fail') {
-      ElNotification({ title: '推送结果', message: text, type: 'warning', duration: 8000, showClose: true })
-    } else {
+    if (r.baidu === 'ok' && r.indexnow === 'ok') {
       ElMessage.success(text)
+    } else {
+      ElNotification({ title: '推送结果', message: text, type: 'warning', duration: 8000, showClose: true })
     }
   } catch {
     // 拦截器已提示

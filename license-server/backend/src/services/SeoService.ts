@@ -21,6 +21,13 @@ const STATIC_ROUTES: { path: string; changefreq: string; priority: string }[] = 
 
 const FETCH_TIMEOUT_MS = 8000;
 
+/**
+ * 百度普通收录单批最大 URL 数。
+ * 实测单站每日额度约 10 条，且整批超出额度会 all-or-nothing 全批失败，
+ * 因此分批推送并依据接口返回的 remain 动态调整批次大小。
+ */
+const BAIDU_MAX_BATCH = 10;
+
 export interface SeoConfig {
   enabled: boolean;
   origin: string;
@@ -28,12 +35,15 @@ export interface SeoConfig {
   indexnowKey: string;
 }
 
+/** 单个搜索引擎的推送状态 */
+export type PushStatus = 'ok' | 'partial' | 'fail' | 'skipped';
+
 /** 单次推送结果 */
 export interface PushReport {
   total: number;
-  baidu: 'ok' | 'fail' | 'skipped';
-  indexnow: 'ok' | 'fail' | 'skipped';
-  /** 百度结果说明（成功条数 / error+message），用于后台回显失败原因 */
+  baidu: PushStatus;
+  indexnow: PushStatus;
+  /** 百度结果说明（成功条数 / 剩余未推 / error+message），用于后台回显 */
   baiduMessage?: string;
   /** IndexNow 结果说明（HTTP 状态码 / 错误描述），用于后台回显失败原因 */
   indexnowMessage?: string;
@@ -41,7 +51,7 @@ export interface PushReport {
 
 /** 单个搜索引擎的推送结果（带说明） */
 interface PushResult {
-  status: 'ok' | 'fail' | 'skipped';
+  status: PushStatus;
   message: string;
 }
 
@@ -151,28 +161,91 @@ async function fetchWithTimeout(url: string, init: RequestInit): Promise<Respons
   }
 }
 
-/** 百度主动推送（普通收录） */
+/** 单次百度推送响应解析 */
+interface BaiduBatchResult {
+  ok: boolean;
+  success: number;
+  remain?: number;
+  overQuota: boolean;
+  message: string;
+}
+
+/** 发送一批 URL 到百度（不做额度处理，只解析响应） */
+async function sendBaiduBatch(endpoint: string, urls: string[]): Promise<BaiduBatchResult> {
+  const res = await fetchWithTimeout(endpoint, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain' },
+    body: urls.join('\n'),
+  });
+  const text = await res.text().catch(() => '');
+  const parsed = safeJson(text);
+  const remain = typeof parsed?.remain === 'number' ? parsed.remain : undefined;
+  const errCode = String(parsed?.error ?? '');
+  const errMsg = String(parsed?.message ?? '');
+  const overQuota = errCode === 'over quota' || errMsg.includes('over quota');
+  if (!res.ok) {
+    const detail = errMsg ? `${parsed?.error ?? res.status} ${errMsg}` : `HTTP ${res.status}`;
+    return { ok: false, success: 0, remain, overQuota, message: detail };
+  }
+  const success = typeof parsed?.success === 'number' ? parsed.success : urls.length;
+  return { ok: true, success, remain, overQuota: false, message: '' };
+}
+
+/**
+ * 百度主动推送（普通收录）。
+ * 按 BAIDU_MAX_BATCH 分批，超出额度导致整批失败时对半缩小批次重试（额度耗尽前不会消耗额度），
+ * 尽量用满当日额度，并如实报告成功 / 未推条数与剩余额度。
+ */
 async function pushToBaidu(origin: string, token: string, urls: string[]): Promise<PushResult> {
   if (!token) return { status: 'skipped', message: '未配置 token' };
   try {
     const host = new URL(origin).host;
     const endpoint = `http://data.zz.baidu.com/urls?site=${encodeURIComponent(host)}&token=${encodeURIComponent(token)}`;
-    const res = await fetchWithTimeout(endpoint, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain' },
-      body: urls.join('\n'),
-    });
-    const text = await res.text().catch(() => '');
-    const parsed = safeJson(text);
-    if (!res.ok) {
-      const detail = parsed?.message ? `${parsed.error ?? res.status} ${parsed.message}` : `HTTP ${res.status}`;
-      log.warn(`[SEO] 百度推送失败：${detail} ${text.slice(0, 300)}`);
-      return { status: 'fail', message: detail };
+
+    let remaining = [...urls];
+    let successCount = 0;
+    let lastRemain: number | undefined;
+    let lastError = '';
+    let batchSize = Math.min(remaining.length, BAIDU_MAX_BATCH);
+
+    while (remaining.length) {
+      const size = Math.min(remaining.length, batchSize);
+      const r = await sendBaiduBatch(endpoint, remaining.slice(0, size));
+      if (r.ok) {
+        successCount += r.success;
+        if (typeof r.remain === 'number') {
+          lastRemain = r.remain;
+          batchSize = Math.max(1, Math.min(BAIDU_MAX_BATCH, r.remain));
+        }
+        remaining = remaining.slice(size);
+      } else if (r.overQuota) {
+        if (size === 1) {
+          // 单条都推不动 → 当日额度已耗尽
+          lastRemain = r.remain ?? 0;
+          break;
+        }
+        // 整批超出额度：缩小批次重试（未成功则不消耗额度）
+        batchSize = Math.max(1, Math.floor(size / 2));
+      } else {
+        // 其他错误（token 失效 / 站点不匹配等）：无法继续，停止并如实报告
+        lastError = r.message;
+        break;
+      }
     }
-    const detail =
-      typeof parsed?.success === 'number' ? `成功 ${parsed.success} 条，剩余额度 ${parsed.remain ?? '-'}` : '推送成功';
+
+    const failedCount = remaining.length;
+    if (successCount === 0 && lastError) {
+      log.warn(`[SEO] 百度推送失败：${lastError}`);
+      return { status: 'fail', message: lastError };
+    }
+
+    const parts = [`已推送 ${successCount} 条`];
+    if (failedCount > 0) parts.push(`剩余 ${failedCount} 条未推`);
+    if (typeof lastRemain === 'number') parts.push(`剩余额度 ${lastRemain}`);
+    const detail = parts.join('，');
     log.info(`[SEO] 百度推送 ${urls.length} 条：${detail}`);
-    return { status: 'ok', message: detail };
+    const status: PushStatus = failedCount > 0 ? (successCount > 0 ? 'partial' : 'fail') : 'ok';
+    return { status, message: detail };
   } catch (e) {
     log.warn('[SEO] 百度推送异常', String(e));
     return { status: 'fail', message: `请求异常：${String(e)}` };

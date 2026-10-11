@@ -133,9 +133,9 @@ export function updateSiteSecurity(data: { maintenance_mode: string; access_pass
 
 export interface SeoPushReport {
   total: number
-  baidu: 'ok' | 'fail' | 'skipped'
-  indexnow: 'ok' | 'fail' | 'skipped'
-  /** 百度结果说明（失败时含 error/message） */
+  baidu: 'ok' | 'partial' | 'fail' | 'skipped'
+  indexnow: 'ok' | 'partial' | 'fail' | 'skipped'
+  /** 百度结果说明（成功条数 / 剩余未推 / error+message） */
   baiduMessage?: string
   /** IndexNow 结果说明（失败时含 HTTP 状态码 / 错误描述） */
   indexnowMessage?: string
