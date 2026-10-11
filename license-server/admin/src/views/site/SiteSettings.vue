@@ -106,6 +106,36 @@
         <el-input v-model="form.seo_desc" type="textarea" :rows="2" maxlength="500" show-word-limit />
       </el-form-item>
 
+      <div class="section-title">搜索引擎主动推送</div>
+      <el-form-item label="站点主域">
+        <el-input v-model="form.site_origin" placeholder="https://www.abc222.cn" />
+        <div class="field-tip">用于生成 sitemap 与推送的绝对地址，需与官网正式主域一致（不带末尾斜杠）。</div>
+      </el-form-item>
+      <el-form-item label="自动推送">
+        <el-switch v-model="pushEnabled" active-text="新建/发布文章时自动推送" inactive-text="关闭" />
+      </el-form-item>
+      <el-form-item label="百度推送 Token">
+        <el-input v-model="form.baidu_push_token" placeholder="百度搜索资源平台 - 普通收录 - 推送接口的 token" />
+        <div class="field-tip">
+          在百度搜索资源平台「普通收录 → API 提交」获取 token，填好后新文章会实时推送给百度。
+        </div>
+      </el-form-item>
+      <el-form-item label="IndexNow Key">
+        <el-input v-model="form.indexnow_key" placeholder="16~128 位十六进制字符串" />
+        <div class="field-tip">
+          用于 Bing / Yandex 等 IndexNow 协议校验，系统已自动托管密钥文件，一般无需修改。
+        </div>
+      </el-form-item>
+      <el-form-item label="站点地图">
+        <el-space>
+          <el-button :loading="pushing" @click="pushAll">一键推送全站</el-button>
+          <el-button link type="primary" @click="openSitemap">查看 sitemap.xml</el-button>
+        </el-space>
+        <div class="field-tip">
+          提交 sitemap 到百度/必应站长平台，或在新增一批文章后手动触发一次全站推送。
+        </div>
+      </el-form-item>
+
       <div class="section-title">统计代码</div>
       <el-form-item label="统计脚本">
         <el-input
@@ -129,11 +159,15 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import type { UploadRequestOptions } from 'element-plus'
-import { getSiteSettings, updateSiteSettings, uploadSiteImage } from '@/api/site'
+import { getSiteSettings, updateSiteSettings, uploadSiteImage, pushSeoAll } from '@/api/site'
 
 const loading = ref(false)
 const saving = ref(false)
 const uploading = ref(false)
+const pushing = ref(false)
+
+/** 是否开启新建/发布文章时自动推送（存储为字符串 '1'/'0'） */
+const pushEnabled = ref(true)
 
 const form = reactive({
   site_name: '',
@@ -152,6 +186,9 @@ const form = reactive({
   copyright: '',
   seo_title: '',
   seo_desc: '',
+  site_origin: '',
+  baidu_push_token: '',
+  indexnow_key: '',
   statistics_code: '',
 })
 
@@ -176,6 +213,7 @@ async function load() {
     for (const key of Object.keys(form) as (keyof typeof form)[]) {
       form[key] = data[key] ?? form[key]
     }
+    pushEnabled.value = (data.seo_push_enabled ?? '1') !== '0'
     heroImages.value = parseImages(form.home_hero_images)
   } finally {
     loading.value = false
@@ -210,13 +248,33 @@ async function save() {
   saving.value = true
   try {
     form.home_hero_images = JSON.stringify(heroImages.value)
-    await updateSiteSettings({ ...form })
+    await updateSiteSettings({ ...form, seo_push_enabled: pushEnabled.value ? '1' : '0' })
     ElMessage.success('站点设置已保存')
   } catch {
     // 拦截器已提示
   } finally {
     saving.value = false
   }
+}
+
+/** 一键推送全站 URL 到百度 / IndexNow */
+async function pushAll() {
+  pushing.value = true
+  try {
+    const r = await pushSeoAll()
+    const label: Record<string, string> = { ok: '成功', fail: '失败', skipped: '未配置' }
+    ElMessage.success(`已推送 ${r.total} 条：百度 ${label[r.baidu] ?? r.baidu}，IndexNow ${label[r.indexnow] ?? r.indexnow}`)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    pushing.value = false
+  }
+}
+
+/** 新窗口查看 sitemap.xml */
+function openSitemap() {
+  const origin = (form.site_origin || 'https://www.abc222.cn').replace(/\/+$/, '')
+  window.open(`${origin}/sitemap.xml`, '_blank')
 }
 
 onMounted(load)

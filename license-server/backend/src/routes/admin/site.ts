@@ -23,6 +23,7 @@ import {
   getRecentStats,
 } from '../../services/SiteService';
 import { getSiteAnalytics, listSiteVisits, getSiteOnlineCount } from '../../services/SiteAnalyticsService';
+import { pushArticleBySlug, pushAllUrls } from '../../services/SeoService';
 import {
   listChannels,
   createChannel,
@@ -164,6 +165,21 @@ router.put('/security', async (req, res) => {
   ok(res, value);
 });
 
+// ==================== SEO 主动推送 ====================
+
+/** 一键推送全站 URL（固定页面 + 全部可见文章）到百度 / IndexNow */
+router.post('/seo/push', async (req, res) => {
+  const report = await pushAllUrls();
+  await writeOperationLog(
+    req.auth!.userId,
+    '官网-SEO主动推送',
+    'site_seo_push',
+    `共 ${report.total} 条；百度=${report.baidu}；IndexNow=${report.indexnow}`,
+    clientIp(req)
+  );
+  ok(res, report);
+});
+
 // ==================== 文章管理 ====================
 
 const articleRepo = () => AppDataSource.getRepository(SiteArticle);
@@ -228,6 +244,8 @@ router.post('/articles', async (req, res) => {
     })
   );
   await writeOperationLog(req.auth!.userId, '官网-新建文章', row.title, `slug=${row.slug}`, clientIp(req));
+  // 发布态文章自动推送给百度 / IndexNow（异步执行，不阻塞接口返回）
+  if (row.status === 'published') void pushArticleBySlug(row.slug);
   ok(res, row);
 });
 
@@ -264,6 +282,8 @@ router.put('/articles/:id', async (req, res) => {
   if (b.seoDesc !== undefined) row.seoDesc = (b.seoDesc as string) || null;
   const saved = await articleRepo().save(row);
   await writeOperationLog(req.auth!.userId, '官网-更新文章', saved.title, `slug=${saved.slug}`, clientIp(req));
+  // 发布态文章更新后重新推送（slug 变更也会推送新地址）
+  if (saved.status === 'published') void pushArticleBySlug(saved.slug);
   ok(res, saved);
 });
 

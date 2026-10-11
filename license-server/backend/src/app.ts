@@ -18,6 +18,7 @@ import { authRequired } from './middleware/helpers';
 import clientRoutes from './routes/client';
 import noticeRoutes from './routes/notice';
 import siteRoutes from './routes/site';
+import seoRoutes from './routes/seo';
 import adminAuthRoutes from './routes/admin/auth';
 import adminKeyRoutes from './routes/admin/keys';
 import adminCustomerRoutes from './routes/admin/customers';
@@ -118,6 +119,9 @@ app.use(API_PREFIX, noticeRoutes);
 
 // ==================== 官网公开只读接口（无需登录） ====================
 app.use('/api/site', siteRoutes);
+
+// ==================== 根级 SEO 路由（/sitemap.xml、IndexNow 密钥文件） ====================
+app.use(seoRoutes);
 
 // ==================== 管理面板接口（JWT） ====================
 app.use(`${ADMIN_PREFIX}/auth`, adminLimiter, adminAuthRoutes);

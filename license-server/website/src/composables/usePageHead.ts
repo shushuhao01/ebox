@@ -3,7 +3,7 @@ import { useHead } from '@unhead/vue'
 import { useSite } from './useSite'
 
 /** keywords 默认值（SSG 构建时后端不可用，settings 为空，需内置兜底） */
-const DEFAULT_KEYWORDS = 'eBox,2box,多开工具,电脑多开,应用多开,多开器,企业微信多开,微信多开,万能多开,虚拟机多开,环境隔离'
+export const DEFAULT_KEYWORDS = 'eBox,2box,多开工具,电脑多开,应用多开,多开器,企业微信多开,微信多开,万能多开,虚拟机多开,环境隔离'
 
 /** 官网正式主域（带 www）：非主域会 301 跳转到此，全站 canonical 也统一指向它 */
 const SITE_ORIGIN = 'https://www.abc222.cn'

@@ -129,6 +129,19 @@ export function updateSiteSecurity(data: { maintenance_mode: string; access_pass
   return put<{ maintenance_mode: string; access_password: string }>('/site/security', data)
 }
 
+// ==================== SEO 主动推送 ====================
+
+export interface SeoPushReport {
+  total: number
+  baidu: 'ok' | 'fail' | 'skipped'
+  indexnow: 'ok' | 'fail' | 'skipped'
+}
+
+/** 一键把全站 URL（固定页面 + 全部可见文章）推送给百度 / IndexNow(必应等) */
+export function pushSeoAll() {
+  return post<SeoPushReport>('/site/seo/push')
+}
+
 // ==================== 文章 ====================
 
 export function getArticles(params: { page?: number; pageSize?: number; category?: string; status?: string }) {

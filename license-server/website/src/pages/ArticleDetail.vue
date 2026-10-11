@@ -50,14 +50,36 @@ import { useRoute } from 'vue-router'
 import { useHead } from '@unhead/vue'
 import { getArticle, type RelatedArticle, type SiteArticle } from '@/api'
 import { useSite } from '@/composables/useSite'
-import { canonicalUrl } from '@/composables/usePageHead'
+import { canonicalUrl, DEFAULT_KEYWORDS } from '@/composables/usePageHead'
 
 const route = useRoute()
-const { siteName } = useSite()
+const { siteName, settings } = useSite()
 
 const article = ref<SiteArticle | null>(null)
 const related = ref<RelatedArticle[]>([])
 const loading = ref(true)
+
+/** 页面关键词：优先取站点配置，构建期无配置时回退内置默认值 */
+const keywords = computed(() => settings.value.site_keywords || DEFAULT_KEYWORDS)
+
+/** 文章结构化数据（JSON-LD），便于搜索引擎识别正文与发布时间 */
+const jsonLd = computed(() => {
+  const a = article.value
+  if (!a) return null
+  const data: Record<string, unknown> = {
+    '@context': 'https://schema.org',
+    '@type': 'Article',
+    headline: a.seoTitle || a.title,
+    description: a.seoDesc || a.summary || '',
+    mainEntityOfPage: { '@type': 'WebPage', '@id': canonicalUrl(route.path) },
+    datePublished: a.publishAt || a.createdAt,
+    dateModified: a.updatedAt || a.publishAt || a.createdAt,
+    author: { '@type': 'Organization', name: siteName.value },
+    publisher: { '@type': 'Organization', name: siteName.value },
+  }
+  if (a.cover) data.image = [a.cover]
+  return data
+})
 
 const categoryMap: Record<string, string> = {
   tutorial: '使用教程',
@@ -85,8 +107,14 @@ useHead({
       name: 'description',
       content: computed(() => article.value?.seoDesc || article.value?.summary || ''),
     },
+    { name: 'keywords', content: keywords },
   ],
   link: computed(() => [{ rel: 'canonical', href: canonicalUrl(route.path) }]),
+  script: computed(() => {
+    const ld = jsonLd.value
+    if (!ld) return []
+    return [{ type: 'application/ld+json', innerHTML: JSON.stringify(ld) }]
+  }),
 })
 
 async function load() {
