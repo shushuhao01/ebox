@@ -97,11 +97,11 @@
         <el-table-column label="客户ID" width="90" align="center">
           <template #default="{ row }">{{ row.customerId || '-' }}</template>
         </el-table-column>
-        <el-table-column label="首次激活" width="165">
-          <template #default="{ row }">{{ formatTime(row.usedAt) }}</template>
+        <el-table-column label="首次激活" width="110">
+          <template #default="{ row }"><TimeCell :value="row.usedAt" /></template>
         </el-table-column>
-        <el-table-column label="创建时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="创建时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="操作" width="220" fixed="right">
           <template #default="{ row }">
@@ -300,8 +300,8 @@
               {{ deviceStatusText(row.status, !!row.online) }}
             </template>
           </el-table-column>
-          <el-table-column label="最后在线" width="150">
-            <template #default="{ row }">{{ formatTime(row.lastOnlineAt) }}</template>
+          <el-table-column label="最后在线" width="110">
+            <template #default="{ row }"><TimeCell :value="row.lastOnlineAt" /></template>
           </el-table-column>
         </el-table>
       </template>
@@ -323,6 +323,7 @@ import {
 } from '@/api/keys'
 import { getCustomers, type Customer } from '@/api/customers'
 import { getBatches, type KeyBatch } from '@/api/batches'
+import TimeCell from '@/components/TimeCell.vue'
 import {
   KEY_STATUS, KEY_TYPE, copyText, formatDuration, formatTime, formatUnixTs, formatUnbindMax,
   durationKeyExpireText, deviceStatusClass, deviceStatusText,

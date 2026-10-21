@@ -44,8 +44,8 @@
         </template>
       </el-table-column>
       <el-table-column label="浏览" width="80" align="center" prop="views" />
-      <el-table-column label="更新时间" width="160">
-        <template #default="{ row }">{{ formatTime(row.updatedAt || row.createdAt) }}</template>
+      <el-table-column label="更新时间" width="110">
+        <template #default="{ row }"><TimeCell :value="row.updatedAt || row.createdAt" /></template>
       </el-table-column>
       <el-table-column label="操作" width="130" fixed="right" align="center">
         <template #default="{ row }">
@@ -167,6 +167,7 @@ import {
   type SiteArticle,
 } from '@/api/site'
 import { formatTime } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
 import RichEditor from '@/components/RichEditor.vue'
 import MediaPicker from '@/components/MediaPicker.vue'
 

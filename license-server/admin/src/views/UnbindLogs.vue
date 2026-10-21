@@ -19,8 +19,8 @@
     <!-- 表格 -->
     <div class="table-card">
       <el-table :data="list" v-loading="loading" stripe>
-        <el-table-column label="时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="旧激活码" min-width="250">
           <template #default="{ row }">
@@ -61,7 +61,7 @@ import dayjs from 'dayjs'
 import { Refresh } from '@element-plus/icons-vue'
 import { getUnbindLogs, type UnbindLog } from '@/api/logs'
 import { getKeyCodeMap } from '@/api/keys'
-import { formatTime } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
 
 const month = ref(dayjs().format('YYYYMM'))
 const list = ref<UnbindLog[]>([])

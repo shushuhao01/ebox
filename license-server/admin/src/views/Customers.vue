@@ -159,8 +159,8 @@
           <el-table-column label="时长" width="80" align="center">
             <template #default="{ row }">{{ formatDuration(row.durationSec) }}</template>
           </el-table-column>
-          <el-table-column label="创建时间" width="140">
-            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+          <el-table-column label="创建时间" width="110">
+            <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
           </el-table-column>
         </el-table>
 
@@ -181,8 +181,8 @@
               {{ deviceStatusText(row.status, !!row.online) }}
             </template>
           </el-table-column>
-          <el-table-column label="最后在线" width="145">
-            <template #default="{ row }">{{ formatTime(row.lastOnlineAt) }}</template>
+          <el-table-column label="最后在线" width="110">
+            <template #default="{ row }"><TimeCell :value="row.lastOnlineAt" /></template>
           </el-table-column>
           <el-table-column label="IP" prop="lastIp" width="110" show-overflow-tooltip />
         </el-table>
@@ -203,6 +203,7 @@ import {
 } from '@/api/customers'
 import { getKeyDetail, type LicenseKeyItem, type KeyDevice } from '@/api/keys'
 import { KEY_STATUS, copyText, formatTime, formatDuration, deviceStatusClass, deviceStatusText } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
 
 const list = ref<Customer[]>([])
 const page = ref(1)

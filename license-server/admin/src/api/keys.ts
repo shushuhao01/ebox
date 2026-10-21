@@ -1,4 +1,4 @@
-import { get, post, del } from './request'
+import request, { get, post, del } from './request'
 import type { PageResult } from './request'
 
 export interface LicenseKeyItem {
@@ -47,7 +47,7 @@ export interface GenerateParams {
   remark?: string | null
 }
 
-export interface KeyListParams {
+export type KeyListParams = {
   page?: number
   pageSize?: number
   status?: number | string

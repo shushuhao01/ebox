@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteRecordRaw } from 'vue-router'
 import { useUserStore } from '@/stores/user'
 
 export interface MenuMeta {
@@ -7,7 +7,7 @@ export interface MenuMeta {
   superOnly?: boolean
 }
 
-const routes = [
+const routes: RouteRecordRaw[] = [
   {
     path: '/login',
     name: 'Login',
@@ -58,7 +58,7 @@ router.beforeEach((to) => {
     return '/dashboard'
   }
   // 仅超管可见页面
-  if ((to.meta as MenuMeta | undefined)?.superOnly && !store.isSuperAdmin) {
+  if ((to.meta as unknown as MenuMeta | undefined)?.superOnly && !store.isSuperAdmin) {
     return '/dashboard'
   }
   return true

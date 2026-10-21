@@ -35,8 +35,8 @@
             <span v-else class="text-secondary">#{{ row.keyId }}</span>
           </template>
         </el-table-column>
-        <el-table-column label="作废时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="作废时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="操作人ID" prop="operatorId" width="110" align="center" />
         <el-table-column label="原因" min-width="200" show-overflow-tooltip>
@@ -66,7 +66,7 @@ import dayjs from 'dayjs'
 import { CircleClose, Calendar } from '@element-plus/icons-vue'
 import { getRevokeLogs, type RevokeLog } from '@/api/logs'
 import { getKeyCodeMap } from '@/api/keys'
-import { formatTime } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
 
 const list = ref<RevokeLog[]>([])
 const page = ref(1)

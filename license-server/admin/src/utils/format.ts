@@ -13,6 +13,14 @@ export function formatDate(v: string | number | Date | null | undefined): string
   return formatTime(v, 'YYYY-MM-DD')
 }
 
+/** 拆分为日期 / 时间两段（表格时间列上下两行展示用），无效值 time 为空 */
+export function timeParts(v: string | number | Date | null | undefined): { date: string; time: string } {
+  if (v === null || v === undefined || v === '') return { date: '-', time: '' }
+  const d = dayjs(v)
+  if (!d.isValid()) return { date: String(v), time: '' }
+  return { date: d.format('YYYY-MM-DD'), time: d.format('HH:mm:ss') }
+}
+
 /** 时长秒数 -> 人类可读（0=永久） */
 export function formatDuration(sec: string | number | null | undefined): string {
   const s = Number(sec ?? 0)

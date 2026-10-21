@@ -22,8 +22,8 @@
     <!-- 表格 -->
     <div class="table-card">
       <el-table :data="list" v-loading="loading" stripe>
-        <el-table-column label="时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="激活码" min-width="250">
           <template #default="{ row }">
@@ -75,7 +75,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { Search, Refresh } from '@element-plus/icons-vue'
 import { getHeartbeats, type Heartbeat } from '@/api/logs'
 import { getKeyCodeMap } from '@/api/keys'
-import { formatTime, formatIp, formatHbDetail, HB_ACTION } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
+import { formatIp, formatHbDetail, HB_ACTION } from '@/utils/format'
 
 const filters = reactive<{ action: number | string; code: string }>({ action: '', code: '' })
 const list = ref<Heartbeat[]>([])

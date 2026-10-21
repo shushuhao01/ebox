@@ -30,11 +30,11 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="最后登录" width="165">
-          <template #default="{ row }">{{ formatTime(row.lastLoginAt) }}</template>
+        <el-table-column label="最后登录" width="110">
+          <template #default="{ row }"><TimeCell :value="row.lastLoginAt" /></template>
         </el-table-column>
-        <el-table-column label="创建时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="创建时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="操作" width="110" fixed="right" align="center">
           <template #default="{ row }">
@@ -87,7 +87,7 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import { Plus } from '@element-plus/icons-vue'
 import { getUsers, createUser, setUserStatus, type AdminUser } from '@/api/users'
 import { useUserStore } from '@/stores/user'
-import { formatTime } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
 
 const store = useUserStore()
 

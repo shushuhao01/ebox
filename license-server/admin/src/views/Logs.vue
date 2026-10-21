@@ -22,8 +22,8 @@
     <!-- 表格 -->
     <div class="table-card">
       <el-table :data="list" v-loading="loading" stripe>
-        <el-table-column label="时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="用户ID" prop="userId" width="100" align="center" />
         <el-table-column label="动作" width="130" align="center">
@@ -64,7 +64,8 @@
 import { onMounted, reactive, ref } from 'vue'
 import { Search, Refresh } from '@element-plus/icons-vue'
 import { getOperationLogs, type OperationLog } from '@/api/logs'
-import { formatTime, formatIp } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
+import { formatIp } from '@/utils/format'
 
 const ACTION_OPTIONS = [
   '生成激活码',

@@ -77,8 +77,8 @@
         </div>
 
         <el-table v-loading="visitLoading" :data="visits" stripe>
-          <el-table-column label="时间" width="170">
-            <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+          <el-table-column label="时间" width="110">
+            <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
           </el-table-column>
           <el-table-column label="IP" prop="ip" width="140" />
           <el-table-column label="归属地" min-width="150">
@@ -237,8 +237,8 @@
                 </div>
 
                 <el-table v-loading="channelVisitLoading" :data="channelVisits" stripe>
-                  <el-table-column label="时间" width="170">
-                    <template #default="{ row }">{{ fmtTime(row.createdAt) }}</template>
+                  <el-table-column label="时间" width="110">
+                    <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
                   </el-table-column>
                   <el-table-column label="IP" prop="ip" width="140" />
                   <el-table-column label="归属地" min-width="150">
@@ -355,6 +355,7 @@ import {
   type ChannelPayload,
 } from '@/api/site'
 import { copyText } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
 import VisitCharts from '@/components/VisitCharts.vue'
 
 const days = ref(30)
@@ -807,14 +808,6 @@ async function handleSyncRelease() {
 }
 
 // ==================== 工具 ====================
-
-function fmtTime(s: string): string {
-  if (!s) return '-'
-  const d = new Date(s)
-  if (Number.isNaN(d.getTime())) return s
-  const p = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`
-}
 
 onMounted(async () => {
   await reload()

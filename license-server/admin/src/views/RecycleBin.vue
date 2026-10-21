@@ -55,14 +55,14 @@
             </el-tag>
           </template>
         </el-table-column>
-        <el-table-column label="作废时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.revokedAt) }}</template>
+        <el-table-column label="作废时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.revokedAt" /></template>
         </el-table-column>
         <el-table-column label="作废原因" min-width="180" show-overflow-tooltip>
           <template #default="{ row }">{{ row.revokedReason || '-' }}</template>
         </el-table-column>
-        <el-table-column label="创建时间" width="165">
-          <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+        <el-table-column label="创建时间" width="110">
+          <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
         </el-table-column>
         <el-table-column label="操作" width="90" fixed="right">
           <template #default="{ row }">
@@ -94,7 +94,8 @@ import { onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Search, RefreshLeft, CopyDocument, Close } from '@element-plus/icons-vue'
 import { getKeys, batchRestoreKeys, type LicenseKeyItem } from '@/api/keys'
-import { KEY_STATUS, KEY_TYPE, copyText, formatDuration, formatTime, formatUnixTs } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
+import { KEY_STATUS, KEY_TYPE, copyText, formatDuration, formatUnixTs } from '@/utils/format'
 
 // ============ 筛选 ============
 const filters = reactive<{ search: string }>({ search: '' })

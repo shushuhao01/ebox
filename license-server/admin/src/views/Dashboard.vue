@@ -45,10 +45,10 @@
         <el-card shadow="never" class="chart-card">
           <template #header><span class="chart-title">最近心跳流水</span></template>
           <el-table :data="recentHbs" size="small" stripe max-height="300">
-            <el-table-column label="时间" width="150">
-              <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+            <el-table-column label="时间" width="110">
+              <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
             </el-table-column>
-            <el-table-column label="激活码" min-width="220">
+            <el-table-column label="激活码" min-width="220" show-overflow-tooltip>
               <template #default="{ row }">
                 <span v-if="codeMap[row.keyId]" class="code-font">{{ codeMap[row.keyId] }}</span>
                 <span v-else class="text-secondary">#{{ row.keyId }}</span>
@@ -98,7 +98,8 @@ import {
 } from '@/api/stats'
 import type { Heartbeat } from '@/api/logs'
 import { getKeyCodeMap } from '@/api/keys'
-import { formatTime, formatIp, formatHbDetail, HB_ACTION } from '@/utils/format'
+import TimeCell from '@/components/TimeCell.vue'
+import { formatIp, formatHbDetail, HB_ACTION } from '@/utils/format'
 import { initChart, disposeChart, PALETTE, AXIS_TEXT } from '@/utils/echarts'
 
 const overview = ref<Overview>({ total: 0, used: 0, revoked: 0, switched: 0, onlineDevices: 0, todayActivate: 0 })

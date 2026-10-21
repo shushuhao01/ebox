@@ -114,8 +114,8 @@
               </el-tag>
             </template>
           </el-table-column>
-          <el-table-column label="创建时间" width="150">
-            <template #default="{ row }">{{ formatTime(row.createdAt) }}</template>
+          <el-table-column label="创建时间" width="110">
+            <template #default="{ row }"><TimeCell :value="row.createdAt" /></template>
           </el-table-column>
         </el-table>
       </template>
@@ -129,6 +129,7 @@ import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'elem
 import { Plus, Collection, CopyDocument, Delete } from '@element-plus/icons-vue'
 import { getBatches, createBatch, getBatchDetail, deleteBatch, type KeyBatch } from '@/api/batches'
 import type { LicenseKeyItem } from '@/api/keys'
+import TimeCell from '@/components/TimeCell.vue'
 import { KEY_STATUS, copyText, formatTime } from '@/utils/format'
 
 const list = ref<KeyBatch[]>([])
