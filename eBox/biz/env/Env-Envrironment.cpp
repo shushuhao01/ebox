@@ -307,6 +307,71 @@ namespace biz
 		}
 	}
 
+	// 将内嵌资源写入目标文件（内容一致时跳过），供 DLL / 注入器 exe 共用。
+	// 仅按文件大小判断"未变化"不可靠（新旧文件大小可能恰好相同，导致旧版
+	// 永远不被覆盖），因此与目标文件逐块比较内容，一致才跳过覆盖。
+	// 若文件正被运行中的进程占用（覆盖失败），则保留旧文件，不影响已注入的进程。
+	void write_embedded_file(const std::filesystem::path& target, const char* address, unsigned int size)
+	{
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		// 临时文件使用进程唯一后缀，避免多线程/多实例并发写同一 .temp 的竞态
+		const fs::path tempWithSuffix = std::format(L"{}.{}.temp", target.native(), GetCurrentProcessId());
+		{
+			std::ofstream tempFile{tempWithSuffix, std::ios::binary | std::ios::trunc};
+			tempFile.write(address, size);
+			tempFile.close();
+		}
+		bool needReplace = true;
+		if (fs::exists(target, ec) && !ec)
+		{
+			if (const auto fileSize = fs::file_size(target, ec); !ec && fileSize == size)
+			{
+				std::ifstream targetFile{target, std::ios::binary};
+				std::ifstream tempFile{tempWithSuffix, std::ios::binary};
+				if (targetFile && tempFile)
+				{
+					constexpr std::size_t BLOCK = 64 * 1024;
+					std::vector<char> targetBuf(BLOCK);
+					std::vector<char> tempBuf(BLOCK);
+					needReplace = false;
+					while (true)
+					{
+						targetFile.read(targetBuf.data(), static_cast<std::streamsize>(BLOCK));
+						const std::streamsize targetRead = targetFile.gcount();
+						tempFile.read(tempBuf.data(), static_cast<std::streamsize>(BLOCK));
+						const std::streamsize tempRead = tempFile.gcount();
+						if (targetRead != tempRead)
+						{
+							needReplace = true;
+							break;
+						}
+						if (targetRead == 0)
+						{
+							break;
+						}
+						if (!std::equal(targetBuf.data(), targetBuf.data() + targetRead, tempBuf.data()))
+						{
+							needReplace = true;
+							break;
+						}
+					}
+				}
+			}
+		}
+		if (needReplace)
+		{
+			if (!MoveFileExW(tempWithSuffix.native().c_str(), target.native().c_str(), MOVEFILE_REPLACE_EXISTING))
+			{
+				fs::remove(tempWithSuffix, ec);
+			}
+		}
+		else
+		{
+			fs::remove(tempWithSuffix, ec);
+		}
+	}
+
 	std::string Env::ensureDllInDeviceAndReturnPath(ArchBit bit) const
 	{
 		namespace fs = std::filesystem;
@@ -321,73 +386,10 @@ namespace biz
 
 		// 写入最新嵌入的 DLL 并覆盖旧文件：已存在的旧环境（bin 文件是旧版 DLL）
 		// 在下次启动时也会被注入最新 DLL（例如新增的 Documents 重定向）。
-		// 仅按文件大小判断"未变化"不可靠（新旧 DLL 大小可能恰好相同，导致旧版
-		// 永远不被覆盖），因此改为与目标文件逐块比较内容，一致才跳过覆盖。
-		// 若文件正被运行中的进程占用（覆盖失败），则保留旧文件，不影响已注入的进程。
-		const auto writeDll = [&binDir](const fs::path& target, char* address, unsigned int size)
-		{
-			std::error_code ec;
-			// 临时文件使用进程唯一后缀，避免多线程/多实例并发写同一 .temp 的竞态
-			const fs::path tempWithSuffix = std::format(L"{}.{}.temp", target.native(), GetCurrentProcessId());
-			{
-				std::ofstream tempFile{tempWithSuffix, std::ios::binary | std::ios::trunc};
-				tempFile.write(address, size);
-				tempFile.close();
-			}
-			bool needReplace = true;
-			if (fs::exists(target, ec) && !ec)
-			{
-				if (const auto fileSize = fs::file_size(target, ec); !ec && fileSize == size)
-				{
-					std::ifstream targetFile{target, std::ios::binary};
-					std::ifstream tempFile{tempWithSuffix, std::ios::binary};
-					if (targetFile && tempFile)
-					{
-						constexpr std::size_t BLOCK = 64 * 1024;
-						std::vector<char> targetBuf(BLOCK);
-						std::vector<char> tempBuf(BLOCK);
-						needReplace = false;
-						while (true)
-						{
-							targetFile.read(targetBuf.data(), static_cast<std::streamsize>(BLOCK));
-							const std::streamsize targetRead = targetFile.gcount();
-							tempFile.read(tempBuf.data(), static_cast<std::streamsize>(BLOCK));
-							const std::streamsize tempRead = tempFile.gcount();
-							if (targetRead != tempRead)
-							{
-								needReplace = true;
-								break;
-							}
-							if (targetRead == 0)
-							{
-								break;
-							}
-							if (!std::equal(targetBuf.data(), targetBuf.data() + targetRead, tempBuf.data()))
-							{
-								needReplace = true;
-								break;
-							}
-						}
-					}
-				}
-			}
-			if (needReplace)
-			{
-				if (!MoveFileExW(tempWithSuffix.native().c_str(), target.native().c_str(), MOVEFILE_REPLACE_EXISTING))
-				{
-					fs::remove(tempWithSuffix, ec);
-				}
-			}
-			else
-			{
-				fs::remove(tempWithSuffix, ec);
-			}
-		};
-
 		const fs::path path32{get_dll_full_path<ArchBit::Bit32>(binDir, m_flagName)};
-		writeDll(path32, get_core_data().dll32.address, get_core_data().dll32.size);
+		write_embedded_file(path32, get_core_data().dll32.address, get_core_data().dll32.size);
 		const fs::path path64{get_dll_full_path<ArchBit::Bit64>(binDir, m_flagName)};
-		writeDll(path64, get_core_data().dll64.address, get_core_data().dll64.size);
+		write_embedded_file(path64, get_core_data().dll64.address, get_core_data().dll64.size);
 
 		std::string dllFullPath;
 		if (bit == ArchBit::Bit32)
@@ -399,6 +401,20 @@ namespace biz
 			dllFullPath = path64.string();
 		}
 		return dllFullPath;
+	}
+
+	std::wstring Env::ensureInjector32InDeviceAndReturnPath() const
+	{
+		namespace fs = std::filesystem;
+		// 与 DLL 同目录（envDataRoot\bin），避免写入带重定向或权限受限的目录
+		const fs::path binDir{fs::weakly_canonical(fs::path{app().envDataRoot()} / fs::path{L"bin"})};
+		if (!fs::exists(binDir))
+		{
+			fs::create_directories(binDir);
+		}
+		const fs::path injectorPath{binDir / fs::path{L"eBoxInject32.exe"}};
+		write_embedded_file(injectorPath, get_core_data().exe32.address, get_core_data().exe32.size);
+		return injectorPath.native();
 	}
 
 	void Env::deleteDllFromDevice() const

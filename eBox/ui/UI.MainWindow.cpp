@@ -188,6 +188,33 @@ namespace ui
 			SendMessageW(m_hHelpTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
 		}
 
+		// 右上角"设置"按钮（帮助按钮左侧）：一键切换环境数据目录
+		m_btnSettings.setBackgroundColor(D2D1::ColorF(0, 0.f), Button::EState::Normal);
+		m_btnSettings.setBackgroundColor(D2D1::ColorF(0, 0.102f), Button::EState::Hover);
+		m_btnSettings.setBackgroundColor(D2D1::ColorF(0, 0.208f), Button::EState::Active);
+		m_btnSettings.setOnClick([this]
+		{
+			// 有环境在运行时不允许切换目录：UI.Core 不能依赖 Env 模块，运行数由主窗口侧统计后传入
+			std::size_t runningEnvCount = 0;
+			if (isPage<HomePage>())
+			{
+				runningEnvCount = getPage<HomePage>().getLeftSidebar()->getEnvBoxCardArea()->getOnlineEnvCount();
+			}
+			ui::settings_dialog(this, runningEnvCount);
+		});
+		m_btnSettings.setDrawCallback(std::bind(&MainWindow::drawToSettingsBtn, this, std::placeholders::_1, std::placeholders::_2));
+		m_btnSettings.setDontDrawDefault(true);
+		// Win32 tooltip：悬浮设置按钮
+		m_hSettingsTooltip = CreateWindowExW(0, TOOLTIPS_CLASSW, nullptr,
+		                                     WS_POPUP | TTS_NOPREFIX | TTS_ALWAYSTIP,
+		                                     CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+		                                     nativeHandle(), nullptr, GetModuleHandleW(nullptr), nullptr);
+		if (m_hSettingsTooltip)
+		{
+			SendMessageW(m_hSettingsTooltip, TTM_SETMAXTIPWIDTH, 0, 300);
+			SendMessageW(m_hSettingsTooltip, TTM_SETDELAYTIME, TTDT_AUTOPOP, 5000);
+		}
+
 		// 右上角"官网"按钮（授权按钮右侧，与"授权"同款纯文字按钮）：点击打开官网首页
 		m_btnWebsite.setBackgroundColor(D2D1::ColorF(0, 0.f), Button::EState::Normal);
 		m_btnWebsite.setBackgroundColor(D2D1::ColorF(0, 0.102f), Button::EState::Hover);
@@ -333,7 +360,8 @@ namespace ui
 			const float updateBtnWidth = toTrayBthWidth;
 			const float helpBtnWidth = toTrayBthWidth;
 			const float websiteBtnWidth = toTrayBthWidth;
-			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - helpBtnWidth - websiteBtnWidth - 8.f;
+			const float settingsBtnWidth = toTrayBthWidth;
+			const float titleMaxWidth = toTrayBthXPos - licenseBtnWidth - updateBtnWidth - helpBtnWidth - websiteBtnWidth - settingsBtnWidth - 8.f;
 
 			if (ID2D1Bitmap* bitmap = getTitleIconBitmap(renderTarget))
 			{
@@ -395,6 +423,21 @@ namespace ui
 					static_cast<LONG>(m_margins.top * d2p)};
 				sync_tooltip(m_hHelpTooltip, 3, nativeHandle(), rcTool, L"常见问题",
 				             m_helpTipAdded, m_lastHelpTipRect, m_lastHelpTipText);
+			}
+			// 设置按钮（帮助按钮左侧）：一键切换环境数据目录
+			const float settingsBtnXPos = helpBtnXPos - settingsBtnWidth;
+			m_btnSettings.setBounds(D2D1::Rect(settingsBtnXPos, paddingTop + 1.f, settingsBtnXPos + settingsBtnWidth, m_margins.top));
+			m_btnSettings.draw(renderCtx);
+			if (m_hSettingsTooltip)
+			{
+				const float d2p = dpiInfo().deviceToPhysical;
+				RECT rcTool{
+					static_cast<LONG>(settingsBtnXPos * d2p),
+					static_cast<LONG>((paddingTop + 1.f) * d2p),
+					static_cast<LONG>((settingsBtnXPos + settingsBtnWidth) * d2p),
+					static_cast<LONG>(m_margins.top * d2p)};
+				sync_tooltip(m_hSettingsTooltip, 5, nativeHandle(), rcTool, L"设置",
+				             m_settingsTipAdded, m_lastSettingsTipRect, m_lastSettingsTipText);
 			}
 			// 官网按钮（授权按钮右侧）：点击打开官网首页
 			m_btnWebsite.setBounds(D2D1::Rect(websiteBtnXPos, paddingTop + 1.f, websiteBtnXPos + websiteBtnWidth, m_margins.top));
@@ -753,6 +796,59 @@ namespace ui
 		}
 	}
 
+	void MainWindow::drawToSettingsBtn(const RenderContext& renderCtx, Button::EState state) const
+	{
+		// draw() 已将坐标系平移到按钮原点，使用本地坐标 (0,0)-(width,height)
+		const float width = m_btnSettings.getBounds().right - m_btnSettings.getBounds().left;
+		const float height = m_btnSettings.getBounds().bottom - m_btnSettings.getBounds().top;
+		const bool hot = (state == Button::EState::Hover || state == Button::EState::Active);
+
+		if (isCompositionEnabled())
+		{
+			const UniqueComPtr<ID2D1HwndRenderTarget>& renderTarget = renderCtx.renderTarget;
+			const UniqueComPtr<ID2D1SolidColorBrush>& solidBrush = renderCtx.brush;
+			// 悬浮/按下时浅蓝高亮（与帮助按钮一致）
+			if (hot)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 0.12f));
+				renderTarget->FillRoundedRectangle(
+					D2D1::RoundedRect(D2D1::RectF(0.f, 0.f, width, height), 4.f, 4.f),
+					solidBrush);
+			}
+			// 常态灰色、悬浮/按下主题蓝
+			solidBrush->SetColor(hot
+			                     ? D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 1.f)
+			                     : D2D1::ColorF(0.45f, 0.45f, 0.45f, 1.f));
+			IDWriteTextFormat* const tipsFmt = app().textFormat().pTipsFormat.get();
+			const auto oldAlign = tipsFmt->GetTextAlignment();
+			tipsFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			renderTarget->DrawTextW(L"设置", 2,
+			                        tipsFmt,
+			                        D2D1::RectF(0.f, (height - 12.f) * 0.5f, width, (height - 12.f) * 0.5f + 12.f),
+			                        solidBrush);
+			tipsFmt->SetTextAlignment(oldAlign);
+		}
+		else
+		{
+			const D2D1_RECT_F& bounds = m_btnSettings.getBounds();
+			HDC hdc = GetWindowDC(nativeHandle());
+			const float deviceToPhysical = dpiInfo().deviceToPhysical;
+			D2D1_RECT_F physicalBounds = D2D1::RectF((bounds.left + m_margins.left) * deviceToPhysical,
+			                                         (bounds.top + m_margins.top) * deviceToPhysical,
+			                                         (bounds.right + m_margins.left) * deviceToPhysical,
+			                                         (bounds.bottom + m_margins.top) * deviceToPhysical);
+			RECT rc{static_cast<LONG>(physicalBounds.left), static_cast<LONG>(physicalBounds.top),
+			        static_cast<LONG>(physicalBounds.right), static_cast<LONG>(physicalBounds.bottom)};
+			SetBkMode(hdc, TRANSPARENT);
+			SetTextColor(hdc, hot ? RGB(0x00, 0x78, 0xd4) : RGB(0x80, 0x80, 0x80));
+			HFONT hFont = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
+			DrawTextW(hdc, L"设置", -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+			SelectObject(hdc, hOld);
+			ReleaseDC(nativeHandle(), hdc);
+		}
+	}
+
 	void MainWindow::onResize(float width, float height)
 	{
 		if (!std::holds_alternative<std::monostate>(m_pages))
@@ -1079,6 +1175,12 @@ namespace ui
 		m_btnHelp.setBounds(D2D1::Rect(helpBtnXPosNc, 6 - m_margins.top, helpBtnXPosNc + helpBtnWidthNc, -2.f));
 		m_btnHelp.setDontDrawDefault(true);
 		m_btnHelp.drawImpl(renderContext());
+		// 设置按钮（帮助按钮左侧）
+		const float settingsBtnWidthNc = toTrayBthWidth;
+		const float settingsBtnXPosNc = helpBtnXPosNc - settingsBtnWidthNc;
+		m_btnSettings.setBounds(D2D1::Rect(settingsBtnXPosNc, 6 - m_margins.top, settingsBtnXPosNc + settingsBtnWidthNc, -2.f));
+		m_btnSettings.setDontDrawDefault(true);
+		m_btnSettings.drawImpl(renderContext());
 	}
 
 	void MainWindow::onDropFiles(WParam wParam)
@@ -1247,7 +1349,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.1.9   更新时间：2026/10/11   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.2.0   更新时间：2026/10/24   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1452,7 +1554,7 @@ namespace ui
 		//这里的入参pt是相对于屏幕的
 		ScreenToClient(nativeHandle(), &pt);
 		const D2D1_POINT_2F local = D2D1::Point2F(pt.x * dpiInfo().physicalToDevice, pt.y * dpiInfo().physicalToDevice);
-		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local) || m_btnHelp.hitTest(local) || m_btnWebsite.hitTest(local);
+		return m_btnToTray.hitTest(local) || m_btnLicense.hitTest(local) || m_btnUpdate.hitTest(local) || m_btnHelp.hitTest(local) || m_btnWebsite.hitTest(local) || m_btnSettings.hitTest(local);
 	}
 
 	// ===== 自动升级实现 =====

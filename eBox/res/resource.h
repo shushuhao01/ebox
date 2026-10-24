@@ -6,6 +6,7 @@
 #define IDR_MEM_DLL_32                  102
 #define IDR_MEM_DLL_64                  103
 #define IDR_CLEANER_SCRIPT              104
+#define IDR_INJECT_EXE_32               105
 
 // Next default values for new objects
 // 

@@ -149,6 +149,9 @@
     <ProjectReference Include="..\MemoryDll\MemoryDll.vcxproj">
       <Project>{9b1f363a-4917-4f28-8e03-2740c247d9a6}</Project>
     </ProjectReference>
+    <ProjectReference Include="..\eBoxInject32\eBoxInject32.vcxproj">
+      <Project>{7c3e1f5a-2b9d-4e6a-8c1f-5d2a9b3e7f11}</Project>
+    </ProjectReference>
   </ItemGroup>
   <ItemGroup>
     <Manifest Include="res\extra.manifest" />

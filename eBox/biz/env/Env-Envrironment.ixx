@@ -190,6 +190,9 @@ namespace biz
 		// 启动父进程（cmd）时传 CURRENT_ARCH_BIT（与 eBox 同架构）即可；
 		// 32/64 两个位宽的 bin 文件都会写入，具体注入哪个由注入端按目标位数选择。
 		std::string ensureDllInDeviceAndReturnPath(ArchBit bit = CURRENT_ARCH_BIT) const;
+		// 确保 32 位注入器（eBoxInject32.exe）已写入设备并返回其完整路径。
+		// 64 位 eBox 启动 32 位目标时，由它与目标同位数直接创建并注入，绕开 Detours 的 rundll32 helper。
+		std::wstring ensureInjector32InDeviceAndReturnPath() const;
 		void deleteDllFromDevice() const;
 		// 清理环境内 QYWX 的 CEF 渲染缓存（qtCef/WXWorkCefCache/Default 框架/GPU 着色器等），
 		// 不动聊天记录、登录状态、企业配置；返回实际释放的字节数（被占用未删的不计入）。

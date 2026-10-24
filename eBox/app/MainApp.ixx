@@ -173,14 +173,14 @@ class MainApp
 public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 3;
-	static constexpr int kVerMinor = 1;
-	static constexpr int kVerPatch = 9;
-	static constexpr int kVerCode  = 30109;  // 单调递增数字，用于版本比较
+	static constexpr int kVerMinor = 2;
+	static constexpr int kVerPatch = 0;
+	static constexpr int kVerCode  = 30200;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v3.1.9"};
-	static constexpr std::wstring_view appUpdateDate{L"2026/10/11"};
+	static constexpr std::wstring_view appVersion{L"v3.2.0"};
+	static constexpr std::wstring_view appUpdateDate{L"2026/10/24"};
 
 	// ===== 自动升级配置 =====
 	// manifest 由 jsDelivr CDN 加速 GitHub 仓库文件，客户端追加时间戳破除缓存
@@ -408,17 +408,12 @@ private:
 		const fs::path fsPath{m_exeFullName};
 		const fs::path fsDir{fsPath.parent_path()};
 		m_exeDir = fsDir.native();
-
-		parseCmdLine();
 	}
 
 	void runMessageLoop() const
 	{
 		m_eventLoop.run();
 	}
-
-	void parseCmdLine() const;
-	void waitAnotherInstanceEnd(std::wstring_view strPid) const;
 
 	// 持久化环境数据根目录到 HKCU\Software\eBox\DataDir
 	static void save_env_data_root(const std::wstring& dir)
@@ -502,3 +497,14 @@ export void show_utf8_error_message(std::string_view msg)
 }
 
 export void show_require_elevation_message(std::wstring_view requester, std::wstring_view path);
+
+// 一键切换环境数据目录：把「当前目录 → 目标目录」写入注册表挂起项并重启 eBox。
+// 新实例在启动期（加载环境 hive 之前）完成数据迁移，成功后才真正切到新目录。
+// 返回 false 表示拉起新实例失败（挂起项已回滚，当前进程继续运行）。
+export bool request_data_dir_change(const std::wstring& targetDir);
+
+// 设置中心「检查与修复」：自检运行组件（bin）、环境注册表 hive、数据目录可写性，
+// 列出发现的问题并自动修复；检测到写入被安全软件拦截时会提示，并可尝试自动
+// 加入 Windows Defender 信任区（第三方安全软件只给出手动放行指引）。
+// 返回 0=未发现问题，1=问题已全部修复，2=仍有问题或用户取消。
+export int run_self_check_and_repair(HWND owner);

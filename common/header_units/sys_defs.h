@@ -133,6 +133,13 @@ struct SystemVersionInfo
 	bool is32BitSystem;
 };
 
+// DetourInjectParams::version 的位打包（eBox 打包，32 位注入器解包）。
+// 32 位注入器不自行调用 VersionHelpers：没有 manifest 的 32 位进程在部分系统上结果失真。
+inline constexpr DWORD VERSION_BIT_WIN8_1 = 1u << 0;
+inline constexpr DWORD VERSION_BIT_WIN8 = 1u << 1;
+inline constexpr DWORD VERSION_BIT_VISTA = 1u << 2;
+inline constexpr DWORD VERSION_BIT_32BIT_SYSTEM = 1u << 3;
+
 struct NtdllSymbolRvaInfo
 {
 	ULONGLONG LdrpHandleTlsData;

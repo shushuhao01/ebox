@@ -95,6 +95,8 @@ export interface LatestRelease {
   latestVersionCode: number
   releaseDate: string
   downloadUrl: string
+  /** 下载时保存的文件名（后台记录的原始文件名） */
+  downloadFileName: string
   downloadSha256: string
   downloadSize: number
   changelog: string[]

@@ -718,4 +718,8 @@ namespace ui
 	// 列表展示序号/名称/路径，分页选择；选择后记忆为"上次使用"并返回该 exe 路径，
 	// 取消/关闭返回 nullopt。内部保留"手动选择文件"入口。
 	export std::optional<std::wstring> select_app_dialog(const WindowBase* owner);
+
+	// 设置对话框：展示并一键切换环境数据根目录（Env\bin 迁移到新盘，含空间校验与失败回滚）。
+	// runningEnvCount 为当前运行中的环境数（>0 时禁止切换，需先关闭环境）。
+	export void settings_dialog(const WindowBase* owner, std::size_t runningEnvCount);
 }

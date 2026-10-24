@@ -19,8 +19,197 @@ import biz.License;
 
 namespace
 {
+	// 判断目标 exe 是否为 32 位 PE（IMAGE_FILE_MACHINE_I386）。
+	// 返回 nullopt 表示无法判定（文件不存在/头损坏），调用方回退原有启动路径。
+	std::optional<bool> is_32bit_pe(std::wstring_view exePath)
+	{
+		const std::wstring pathText{exePath};
+		const HANDLE hFile = CreateFileW(pathText.c_str(), GENERIC_READ,
+		                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+		                                 nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (hFile == INVALID_HANDLE_VALUE)
+		{
+			return std::nullopt;
+		}
+		struct FileCloser
+		{
+			HANDLE handle;
+
+			~FileCloser() { CloseHandle(handle); }
+		} closer{hFile};
+
+		DWORD bytesRead = 0;
+		IMAGE_DOS_HEADER dosHeader{};
+		if (!ReadFile(hFile, &dosHeader, sizeof(dosHeader), &bytesRead, nullptr) ||
+		    bytesRead != sizeof(dosHeader) || dosHeader.e_magic != IMAGE_DOS_SIGNATURE || dosHeader.e_lfanew <= 0)
+		{
+			return std::nullopt;
+		}
+		if (SetFilePointer(hFile, dosHeader.e_lfanew, nullptr, FILE_BEGIN) == INVALID_SET_FILE_POINTER)
+		{
+			return std::nullopt;
+		}
+		DWORD signature = 0;
+		if (!ReadFile(hFile, &signature, sizeof(signature), &bytesRead, nullptr) ||
+		    bytesRead != sizeof(signature) || signature != IMAGE_NT_SIGNATURE)
+		{
+			return std::nullopt;
+		}
+		IMAGE_FILE_HEADER fileHeader{};
+		if (!ReadFile(hFile, &fileHeader, sizeof(fileHeader), &bytesRead, nullptr) ||
+		    bytesRead != sizeof(fileHeader))
+		{
+			return std::nullopt;
+		}
+		switch (fileHeader.Machine)
+		{
+		case IMAGE_FILE_MACHINE_I386:
+			return true;
+		case IMAGE_FILE_MACHINE_AMD64:
+			return false;
+		default:
+			return std::nullopt;
+		}
+	}
+
+	std::wstring ansi_to_wide(std::string_view text)
+	{
+		if (text.empty())
+		{
+			return {};
+		}
+		const int len = MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
+		if (len <= 0)
+		{
+			return {};
+		}
+		std::wstring result(static_cast<std::size_t>(len), L'\0');
+		MultiByteToWideChar(CP_ACP, 0, text.data(), static_cast<int>(text.size()), result.data(), len);
+		return result;
+	}
+
+	// job 文件字段格式：uint32 字符数 + 该数量的 wchar_t（UTF-16LE），与 eBoxInject32 侧一致
+	void append_job_field(std::vector<char>& blob, std::wstring_view text)
+	{
+		const auto charCount = static_cast<std::uint32_t>(text.size());
+		const auto* countBytes = reinterpret_cast<const char*>(&charCount);
+		blob.insert(blob.end(), countBytes, countBytes + sizeof(charCount));
+		const auto* textBytes = reinterpret_cast<const char*>(text.data());
+		blob.insert(blob.end(), textBytes, textBytes + text.size() * sizeof(wchar_t));
+	}
+
+	std::wstring read_injector_log(const std::filesystem::path& logPath)
+	{
+		std::ifstream logFile{logPath, std::ios::binary};
+		if (!logFile)
+		{
+			return {};
+		}
+		logFile.seekg(0, std::ios::end);
+		const auto byteCount = static_cast<std::size_t>(logFile.tellg());
+		logFile.seekg(0, std::ios::beg);
+		std::wstring text(byteCount / sizeof(wchar_t), L'\0');
+		if (!text.empty())
+		{
+			logFile.read(reinterpret_cast<char*>(text.data()),
+			             static_cast<std::streamsize>(text.size() * sizeof(wchar_t)));
+		}
+		return text;
+	}
+
+	// 由 32 位注入器（eBoxInject32.exe）直接创建目标进程并注入。
+	// 注入器与目标同位数，Detours 可就地注入，不会退化为 SysWOW64\rundll32.exe helper
+	// （该 helper 在部分安全软件环境下被拦截，导致目标进程被 TerminateProcess）。
+	// 启动参数经 job 文件传递，避免参数中的引号/换行破坏命令行解析。
+	PROCESS_INFORMATION create_and_inject_by_helper32(const biz::Env* env, std::wstring_view exePath, std::wstring_view params)
+	{
+		namespace fs = std::filesystem;
+		const fs::path injectorPath{env->ensureInjector32InDeviceAndReturnPath()};
+		const fs::path jobPath = injectorPath.parent_path() /
+			std::format(L"{}_{}.job", env->getFlagName(), GetCurrentProcessId());
+		const fs::path logPath{jobPath.native() + L".log"};
+
+		// Env 侧返回的是窄串（Detours 的 lpDllName 就是 ANSI），job 文件按宽串传递
+		const std::wstring dllPath = ansi_to_wide(env->ensureDllInDeviceAndReturnPath(ArchBit::Bit32));
+		const SystemVersionInfo& version = biz::get_core_data().version;
+		const DWORD versionBits = (version.isWindows8Point1OrGreater ? VERSION_BIT_WIN8_1 : 0) |
+			(version.isWindows8OrGreater ? VERSION_BIT_WIN8 : 0) |
+			(version.isWindowsVistaOrGreater ? VERSION_BIT_VISTA : 0) |
+			(version.is32BitSystem ? VERSION_BIT_32BIT_SYSTEM : 0);
+
+		std::vector<char> blob;
+		const wchar_t magic[4] = {L'E', L'B', L'I', L'1'};
+		blob.insert(blob.end(), reinterpret_cast<const char*>(magic),
+		            reinterpret_cast<const char*>(magic) + sizeof(magic));
+		append_job_field(blob, dllPath);
+		append_job_field(blob, exePath);
+		append_job_field(blob, params);
+		append_job_field(blob, fs::path{exePath}.parent_path().native());
+		append_job_field(blob, app().envDataRoot());
+		append_job_field(blob, std::format(L"{:x}", env->getFlag()));
+		append_job_field(blob, std::format(L"{:x}", env->getIndex()));
+		append_job_field(blob, std::format(L"{:x}", versionBits));
+
+		{
+			std::ofstream jobFile{jobPath, std::ios::binary | std::ios::trunc};
+			jobFile.write(blob.data(), static_cast<std::streamsize>(blob.size()));
+			jobFile.close();
+			if (!jobFile)
+			{
+				fs::remove(jobPath);
+				throw std::runtime_error("write eBoxInject32 job file failed");
+			}
+		}
+
+		STARTUPINFOW startupInfo{sizeof(startupInfo)};
+		PROCESS_INFORMATION procInfo{};
+		std::wstring cmdLine = std::format(L"\"{}\" \"{}\"", injectorPath.native(), jobPath.native());
+		if (!CreateProcessW(injectorPath.c_str(), cmdLine.data(), nullptr, nullptr, FALSE,
+		                    CREATE_NO_WINDOW, nullptr, injectorPath.parent_path().c_str(), &startupInfo, &procInfo))
+		{
+			const DWORD err = GetLastError();
+			fs::remove(jobPath);
+			throw std::runtime_error(std::format("create eBoxInject32 process failed, error code: {}", err));
+		}
+
+		if (WaitForSingleObject(procInfo.hProcess, 15000) != WAIT_OBJECT_0)
+		{
+			// 注入器卡住：强制结束，按失败处理（其内部已在超时前写 log）
+			TerminateProcess(procInfo.hProcess, ~0u);
+		}
+		DWORD exitCode = 0;
+		GetExitCodeProcess(procInfo.hProcess, &exitCode);
+		CloseHandle(procInfo.hThread);
+		CloseHandle(procInfo.hProcess);
+
+		const std::wstring detail = exitCode == 0 ? std::wstring{} : read_injector_log(logPath);
+		fs::remove(jobPath);
+		fs::remove(logPath);
+
+		if (exitCode != 0)
+		{
+			// 注入器把失败原因（错误码/目标路径）写在 <job>.log，转写环境日志便于排查
+			biz::env_logger().append(env->getIndex(), biz::EnvLogType::Error, biz::EnvLogStatus::Fail,
+			                         L"32 位注入器启动失败",
+			                         detail.empty() ? std::format(L"eBoxInject32 退出码 {}", exitCode) : detail);
+			throw std::runtime_error(std::format("eBoxInject32 failed, exit code: {}", exitCode));
+		}
+		// 目标进程已由注入器 Resume，返回空 PROCESS_INFORMATION，调用方不应再 ResumeThread
+		return PROCESS_INFORMATION{};
+	}
+
 	PROCESS_INFORMATION create_and_inject(const biz::Env* env, std::wstring_view exePath, std::wstring_view params)
 	{
+		// 64 位 eBox 启动 32 位目标时，Detours 无法就地注入（会退化为 rundll32 helper，
+		// 在部分安全软件环境下被拦截），改由 32 位注入器与目标同位数直接创建并注入。
+		if constexpr (IS_CURRENT_ARCH_64_BIT)
+		{
+			if (const std::optional<bool> is32 = is_32bit_pe(exePath); is32 && *is32)
+			{
+				return create_and_inject_by_helper32(env, exePath, params);
+			}
+		}
+
 		PROCESS_INFORMATION procInfo = {nullptr};
 		STARTUPINFOW startupInfo = {sizeof(startupInfo)};
 		startupInfo.dwFlags = STARTF_USESHOWWINDOW;
@@ -150,9 +339,16 @@ namespace biz
 				                    L"注册表", L"hive 加载失败，已回退为进程级虚拟注册表（数据不持久化）");
 			}
 			const PROCESS_INFORMATION procInfo = create_and_inject(env.get(), exePath, params);
-			ResumeThread(procInfo.hThread);
-			CloseHandle(procInfo.hThread);
-			CloseHandle(procInfo.hProcess);
+			// 32 位注入器路径下目标进程已由注入器自行 Resume，hThread/hProcess 为空
+			if (procInfo.hThread != nullptr)
+			{
+				ResumeThread(procInfo.hThread);
+				CloseHandle(procInfo.hThread);
+			}
+			if (procInfo.hProcess != nullptr)
+			{
+				CloseHandle(procInfo.hProcess);
+			}
 			env_logger().append(env->getIndex(), EnvLogType::Process, EnvLogStatus::Success,
 			                    L"进程已启动", exePath);
 		}

@@ -40,6 +40,7 @@
                   v-if="release.downloadUrl"
                   class="btn btn-primary btn-lg"
                   :href="release.downloadUrl"
+                  :download="release.downloadFileName || undefined"
                   target="_blank"
                   rel="noopener"
                   @click="onDownload"

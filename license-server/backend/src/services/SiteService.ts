@@ -115,6 +115,8 @@ export interface LatestRelease {
   latestVersionCode: number;
   releaseDate: string;
   downloadUrl: string;
+  /** 下载时保存的文件名（后台上传时的原始文件名，避免浏览器用带时间戳的存储名） */
+  downloadFileName: string;
   downloadSha256: string;
   downloadSize: number;
   changelog: string[];
@@ -126,6 +128,23 @@ export interface LatestRelease {
     password: string | null;
     extractCode: string | null;
   }[];
+}
+
+/** 从下载地址取文件名（忽略 query/hash），用于没有单独记录原始文件名时回退 */
+function url_file_name(url: string): string {
+  const clean = url.split('?')[0].split('#')[0];
+  const base = clean.substring(clean.lastIndexOf('/') + 1);
+  try {
+    return decodeURIComponent(base);
+  } catch {
+    return base;
+  }
+}
+
+/** 去掉上传时加的「时间戳-随机串-」存储前缀，回退时也能还原成可读文件名 */
+function strip_storage_prefix(name: string): string {
+  const stripped = name.replace(/^\d{10,}-[a-z0-9]+-/i, '');
+  return stripped || name;
 }
 
 let releaseCache: { at: number; data: LatestRelease } | null = null;
@@ -189,6 +208,7 @@ export async function getLatestRelease(): Promise<LatestRelease | null> {
       latestVersionCode: 0,
       releaseDate: settings.release_date || '',
       downloadUrl: fileUrl,
+      downloadFileName: settings.release_file_name || strip_storage_prefix(url_file_name(fileUrl)),
       downloadSha256: settings.release_file_sha256 || '',
       downloadSize: Number(settings.release_file_size || 0) || 0,
       changelog: parseChangelog(settings.release_changelog || ''),
@@ -213,6 +233,7 @@ export async function getLatestRelease(): Promise<LatestRelease | null> {
     latestVersionCode: Number(raw.latestVersionCode ?? 0),
     releaseDate: String(raw.releaseDate ?? ''),
     downloadUrl: String(raw.downloadUrl ?? ''),
+    downloadFileName: url_file_name(String(raw.downloadUrl ?? '')),
     downloadSha256: String(raw.downloadSha256 ?? ''),
     downloadSize: Number(raw.downloadSize ?? 0),
     changelog: Array.isArray(raw.changelog) ? (raw.changelog as string[]) : [],

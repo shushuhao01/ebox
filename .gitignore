@@ -4,6 +4,7 @@
 /bin/
 /lib/
 **/embed_dll/
+**/embed_injector/
 *.pdb
 *.idb
 *.user

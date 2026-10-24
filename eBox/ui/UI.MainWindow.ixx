@@ -29,6 +29,7 @@ namespace ui
 		void drawToUpdateBtn(const RenderContext& renderCtx, Button::EState state) const;
 		void drawToHelpBtn(const RenderContext& renderCtx, Button::EState state) const;
 		void drawToWebsiteBtn(const RenderContext& renderCtx, Button::EState state) const;
+		void drawToSettingsBtn(const RenderContext& renderCtx, Button::EState state) const;
 		virtual void onResize(float width, float height) override;
 		virtual void onActivate(WParam wParam, LParam lParam) override;
 		virtual bool onClose() override;
@@ -122,16 +123,19 @@ namespace ui
 		Button m_btnUpdate{this};
 		Button m_btnHelp{this};
 		Button m_btnWebsite{this};
+		Button m_btnSettings{this};
 		HWND m_hLicenseTooltip{nullptr};
 		HWND m_hUpdateTooltip{nullptr};
 		HWND m_hHelpTooltip{nullptr};
 		HWND m_hWebsiteTooltip{nullptr};
+		HWND m_hSettingsTooltip{nullptr};
 		// tooltip 状态缓存：仅在矩形/文字变化时才更新工具（原实现每帧 DELTOOL+ADDTOOL
 		// 会重置 tooltip 弹出计时器，主窗口持续渲染时悬浮提示永远弹不出来）
 		RECT m_lastLicenseTipRect{};  bool m_licenseTipAdded{false};  std::wstring m_lastLicenseTipText;
 		RECT m_lastUpdateTipRect{};   bool m_updateTipAdded{false};  std::wstring m_lastUpdateTipText;
 		RECT m_lastHelpTipRect{};     bool m_helpTipAdded{false};     std::wstring m_lastHelpTipText;
 		RECT m_lastWebsiteTipRect{};  bool m_websiteTipAdded{false};  std::wstring m_lastWebsiteTipText;
+		RECT m_lastSettingsTipRect{}; bool m_settingsTipAdded{false}; std::wstring m_lastSettingsTipText;
 
 		// ===== 自动升级状态 =====
 		coro::AsyncScope m_updateScope;

@@ -5610,4 +5610,1474 @@ namespace ui
 			set_yiwaiwai_tip_dismissed();
 		}
 	}
+
+	// ---- 设置对话框：一键切换环境数据根目录（Env\ 与 bin\ 整体迁移）----
+	// 迁移动作由 MainApp 侧在"重启后的启动期"完成：本函数只负责选择目录、校验与重启接力。
+	namespace
+	{
+		std::wstring format_bytes(std::uint64_t bytes)
+		{
+			constexpr double KB = 1024.0;
+			constexpr double MB = KB * 1024.0;
+			constexpr double GB = MB * 1024.0;
+			const double value = static_cast<double>(bytes);
+			if (value >= GB)
+			{
+				return std::format(L"{:.2f} GB", value / GB);
+			}
+			if (value >= MB)
+			{
+				return std::format(L"{:.1f} MB", value / MB);
+			}
+			if (value >= KB)
+			{
+				return std::format(L"{:.0f} KB", value / KB);
+			}
+			return std::format(L"{} B", bytes);
+		}
+
+		// 规整路径并去掉尾部路径分隔符（保留 "D:\" 这类盘符根）
+		std::wstring normalized_dir(const std::filesystem::path& dir)
+		{
+			std::error_code ec;
+			std::wstring result = std::filesystem::weakly_canonical(dir, ec).wstring();
+			if (ec || result.empty())
+			{
+				result = dir.wstring();
+			}
+			while (result.size() > 3 && (result.back() == L'\\' || result.back() == L'/'))
+			{
+				result.pop_back();
+			}
+			return result;
+		}
+
+		bool same_dir(const std::wstring& a, const std::wstring& b)
+		{
+			return _wcsicmp(a.c_str(), b.c_str()) == 0;
+		}
+
+		// child 是否严格位于 parent 之内（大小写不敏感）
+		bool dir_within(const std::wstring& child, const std::wstring& parent)
+		{
+			if (parent.size() >= child.size() || _wcsnicmp(parent.c_str(), child.c_str(), parent.size()) != 0)
+			{
+				return false;
+			}
+			if (parent.back() == L'\\' || parent.back() == L'/')
+			{
+				return true;
+			}
+			const wchar_t next = child[parent.size()];
+			return next == L'\\' || next == L'/';
+		}
+
+		std::uint64_t dir_size_bytes(const std::filesystem::path& dir)
+		{
+			std::error_code ec;
+			if (!std::filesystem::is_directory(dir, ec) || ec)
+			{
+				return 0;
+			}
+			std::uint64_t total = 0;
+			std::filesystem::recursive_directory_iterator it{dir, std::filesystem::directory_options::skip_permission_denied, ec};
+			const std::filesystem::recursive_directory_iterator end{};
+			while (!ec && it != end)
+			{
+				std::error_code entryEc;
+				if (it->is_regular_file(entryEc) && !entryEc)
+				{
+					const auto size = it->file_size(entryEc);
+					if (!entryEc)
+					{
+						total += size;
+					}
+				}
+				entryEc.clear();
+				it.increment(entryEc);
+				if (entryEc)
+				{
+					break;
+				}
+			}
+			return total;
+		}
+
+		struct DiskSpaceInfo
+		{
+			std::uint64_t freeBytes{0};
+			std::uint64_t totalBytes{0};
+		};
+
+		DiskSpaceInfo query_disk_space(const std::wstring& dir)
+		{
+			DiskSpaceInfo info;
+			if (dir.empty())
+			{
+				return info;
+			}
+			ULARGE_INTEGER freeBytes{};
+			ULARGE_INTEGER totalBytes{};
+			if (GetDiskFreeSpaceExW(dir.c_str(), nullptr, &totalBytes, &freeBytes))
+			{
+				info.freeBytes = freeBytes.QuadPart;
+				info.totalBytes = totalBytes.QuadPart;
+			}
+			return info;
+		}
+
+		bool ensure_dir_writable(const std::filesystem::path& dir, std::wstring& error)
+		{
+			std::error_code ec;
+			std::filesystem::create_directories(dir, ec);
+			if (ec)
+			{
+				error = std::format(L"无法创建目标目录：{}", dir.wstring());
+				return false;
+			}
+			const std::wstring probe = (dir / L".ebox_write_test.tmp").wstring();
+			const HANDLE handle = CreateFileW(probe.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
+			                                  FILE_ATTRIBUTE_TEMPORARY, nullptr);
+			if (handle == INVALID_HANDLE_VALUE)
+			{
+				error = std::format(L"目标目录不可写入：{}", dir.wstring());
+				return false;
+			}
+			CloseHandle(handle);
+			DeleteFileW(probe.c_str());
+			return true;
+		}
+
+		// ---- 磁盘扫描：直接列本机固定/可移动磁盘，按容量条选择安装盘 ----
+		// 说明：不做文件夹选择。每个盘固定使用 <盘符>\eBoxData 作为数据目录（eBox 默认布局），
+		// 扫描阶段只读（不创建目录），可写性与空间校验留到用户确认时再做。
+		struct DriveEntry
+		{
+			std::wstring root;          // 盘符根，如 "D:\"
+			std::wstring volumeName;    // 卷标
+			std::wstring targetDir;     // 目标数据目录，如 "D:\eBoxData"
+			std::uint64_t freeBytes{0};
+			std::uint64_t totalBytes{0};
+			bool isSystem{false};       // 是否系统盘
+			std::wstring blockedReason; // 非空 = 该盘不可选
+		};
+
+		std::vector<DriveEntry> scan_drives(const std::wstring& currentDir, std::uint64_t neededBytes)
+		{
+			std::vector<DriveEntry> drives;
+
+			// 系统盘：Windows 目录所在盘的盘符
+			wchar_t winDir[MAX_PATH]{};
+			std::wstring systemRoot;
+			if (GetWindowsDirectoryW(winDir, MAX_PATH) >= 2)
+			{
+				systemRoot.assign(winDir, 2);
+				systemRoot += L'\\';
+			}
+
+			wchar_t buffer[512]{};
+			const DWORD length = GetLogicalDriveStringsW(ARRAYSIZE(buffer) - 1, buffer);
+			if (length == 0 || length >= ARRAYSIZE(buffer))
+			{
+				return drives;
+			}
+			const std::wstring currentNorm = normalized_dir(currentDir);
+			for (const wchar_t* p = buffer; *p != L'\0'; p += wcslen(p) + 1)
+			{
+				const std::wstring root{p};
+				const UINT type = GetDriveTypeW(root.c_str());
+				if (type != DRIVE_FIXED && type != DRIVE_REMOVABLE)
+				{
+					continue; // 光驱/网络盘不参与
+				}
+				ULARGE_INTEGER freeBytes{};
+				ULARGE_INTEGER totalBytes{};
+				if (!GetDiskFreeSpaceExW(root.c_str(), &freeBytes, &totalBytes, nullptr) || totalBytes.QuadPart == 0)
+				{
+					continue;
+				}
+
+				DriveEntry entry;
+				entry.root = root;
+				entry.freeBytes = freeBytes.QuadPart;
+				entry.totalBytes = totalBytes.QuadPart;
+				entry.isSystem = !systemRoot.empty() && _wcsicmp(root.c_str(), systemRoot.c_str()) == 0;
+				wchar_t volumeName[MAX_PATH]{};
+				if (GetVolumeInformationW(root.c_str(), volumeName, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0))
+				{
+					entry.volumeName = volumeName;
+				}
+				std::filesystem::path target{root};
+				target /= L"eBoxData";
+				entry.targetDir = target.wstring();
+
+				const std::wstring targetNorm = normalized_dir(target);
+				if (same_dir(targetNorm, currentNorm) || dir_within(currentNorm, targetNorm) ||
+				    dir_within(targetNorm, currentNorm))
+				{
+					entry.blockedReason = L"当前数据就在此盘，无需切换";
+				}
+				else
+				{
+					std::error_code ec;
+					const std::filesystem::path envDir = target / L"Env";
+					const bool hasEnv = std::filesystem::is_directory(envDir, ec) && !ec &&
+					                    !std::filesystem::is_empty(envDir, ec) && !ec;
+					ec.clear();
+					const std::filesystem::path binDir = target / L"bin";
+					const bool hasBin = std::filesystem::is_directory(binDir, ec) && !ec &&
+					                    !std::filesystem::is_empty(binDir, ec) && !ec;
+					if (hasEnv || hasBin)
+					{
+						entry.blockedReason = L"该盘 eBoxData 目录中已有数据";
+					}
+					else if (entry.freeBytes < neededBytes)
+					{
+						entry.blockedReason = std::format(L"可用空间不足，至少需要 {}", format_bytes(neededBytes));
+					}
+				}
+				drives.push_back(std::move(entry));
+			}
+			return drives;
+		}
+
+		// ---- 自绘磁盘选择窗口（容量条为蓝色，空间紧张/不可用时为红色）----
+		namespace
+		{
+			constexpr wchar_t DRIVE_DLG_CLASS[] = L"eBoxDrivePickDialog";
+			constexpr int DRIVE_DLG_WIDTH = 600; // 设计尺寸（96 DPI）
+			constexpr int DRIVE_ROW_HEIGHT = 88;
+			constexpr int DRIVE_ROW_GAP = 10;
+			constexpr int DRIVE_LIST_TOP = 96;
+			constexpr int DRIVE_FOOTER_HEIGHT = 66;
+			constexpr int DRIVE_MAX_VISIBLE_ROWS = 4;
+			constexpr int DRIVE_MIN_VISIBLE_ROWS = 3; // 矮屏也至少露出 3 个盘，其余用滚轮查看
+			constexpr int DRIVE_ROW_HEIGHT_MIN = 64;  // 行高压缩下限（设计尺寸），再小文字会挤在一起
+
+			struct DrivePickData
+			{
+				HWND hwnd{nullptr};
+				std::vector<DriveEntry> drives;
+				int selected{-1};
+				int hoverRow{-1};
+				int hoverBtn{-1}; // 0=切换 1=取消
+				int pressBtn{-1};
+				int scrollTop{0};
+				int visibleRows{1};
+				int dpi{96};
+				int rowHeight{0};
+				int rowHeightInit{0}; // 创建窗口前按屏幕高度算好的实际行高（像素），0=用标准行高
+				int rowGap{0};
+				RECT rcList{};
+				RECT rcOk{};
+				RECT rcCancel{};
+				HFONT hFontTitle{nullptr};
+				HFONT hFontBold{nullptr};
+				HFONT hFontBody{nullptr};
+				HFONT hFontSmall{nullptr};
+				bool done{false};
+				bool cancelled{true};
+				std::wstring result;
+			};
+
+			RECT drive_row_rect(const DrivePickData& data, int index)
+			{
+				const int top = data.rcList.top + (index - data.scrollTop) * (data.rowHeight + data.rowGap);
+				RECT rc{data.rcList.left, top, data.rcList.right, top + data.rowHeight};
+				return rc;
+			}
+
+			int drive_hit_row(const DrivePickData& data, POINT pt)
+			{
+				if (!PtInRect(&data.rcList, pt))
+				{
+					return -1;
+				}
+				for (int i = data.scrollTop;
+				     i < static_cast<int>(data.drives.size()) && i < data.scrollTop + data.visibleRows; ++i)
+				{
+					const RECT rc = drive_row_rect(data, i);
+					if (PtInRect(&rc, pt))
+					{
+						return i;
+					}
+				}
+				return -1;
+			}
+
+			int drive_hit_button(const DrivePickData& data, POINT pt)
+			{
+				const bool okEnabled = data.selected >= 0 &&
+				                       data.drives[static_cast<std::size_t>(data.selected)].blockedReason.empty();
+				if (okEnabled && PtInRect(&data.rcOk, pt))
+				{
+					return 0;
+				}
+				if (PtInRect(&data.rcCancel, pt))
+				{
+					return 1;
+				}
+				return -1;
+			}
+
+			void drive_ensure_visible(DrivePickData& data, int index)
+			{
+				if (index < data.scrollTop)
+				{
+					data.scrollTop = index;
+				}
+				else if (index >= data.scrollTop + data.visibleRows)
+				{
+					data.scrollTop = index - data.visibleRows + 1;
+				}
+				const int maxTop = std::max(0, static_cast<int>(data.drives.size()) - data.visibleRows);
+				data.scrollTop = std::clamp(data.scrollTop, 0, maxTop);
+			}
+
+			void drive_accept(DrivePickData& data)
+			{
+				if (data.selected < 0)
+				{
+					return;
+				}
+				const DriveEntry& entry = data.drives[static_cast<std::size_t>(data.selected)];
+				if (!entry.blockedReason.empty())
+				{
+					return;
+				}
+				data.result = entry.targetDir;
+				data.cancelled = false;
+				DestroyWindow(data.hwnd);
+			}
+
+			void draw_text_line(HDC hdc, HFONT font, COLORREF color, const std::wstring& text, RECT rc, UINT flags)
+			{
+				const HGDIOBJ oldFont = SelectObject(hdc, font);
+				SetBkMode(hdc, TRANSPARENT);
+				SetTextColor(hdc, color);
+				DrawTextW(hdc, text.c_str(), -1, &rc, flags);
+				SelectObject(hdc, oldFont);
+			}
+
+			void draw_radio_dot(HDC hdc, int cx, int cy, int radius, bool checked, bool enabled)
+			{
+				const COLORREF ring = checked ? CLEAN_ACCENT : (enabled ? RGB(0xb4, 0xbf, 0xcc) : RGB(0xd6, 0xdc, 0xe4));
+				HBRUSH hBrush = CreateSolidBrush(checked ? CLEAN_ACCENT : RGB(0xff, 0xff, 0xff));
+				HPEN hPen = CreatePen(PS_SOLID, checked ? 1 : 2, ring);
+				const HGDIOBJ oldBrush = SelectObject(hdc, hBrush);
+				const HGDIOBJ oldPen = SelectObject(hdc, hPen);
+				Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius);
+				if (checked)
+				{
+					const int inner = radius / 2;
+					HBRUSH hInner = CreateSolidBrush(RGB(0xff, 0xff, 0xff));
+					HPEN hInnerPen = CreatePen(PS_SOLID, 1, RGB(0xff, 0xff, 0xff));
+					SelectObject(hdc, hInner);
+					SelectObject(hdc, hInnerPen);
+					Ellipse(hdc, cx - inner, cy - inner, cx + inner, cy + inner);
+					SelectObject(hdc, oldBrush);
+					SelectObject(hdc, oldPen);
+					DeleteObject(hInner);
+					DeleteObject(hInnerPen);
+				}
+				else
+				{
+					SelectObject(hdc, oldBrush);
+					SelectObject(hdc, oldPen);
+				}
+				DeleteObject(hBrush);
+				DeleteObject(hPen);
+			}
+
+			void drive_draw(HDC hdc, DrivePickData& data, const RECT& client)
+			{
+				const int dpi = data.dpi > 0 ? data.dpi : 96;
+				const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+
+				fill_v_gradient(hdc, client, RGB(0xfa, 0xfb, 0xfd), RGB(0xf1, 0xf5, 0xfb));
+
+				RECT rcTitle{S(28), S(18), client.right - S(28), S(50)};
+				draw_text_line(hdc, data.hFontTitle, CLEAN_TEXT, L"选择数据存放的磁盘", rcTitle,
+				               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+				RECT rcSub{S(28), S(52), client.right - S(28), S(78)};
+				draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB,
+				               L"环境数据与运行组件会整体迁移到所选磁盘的 eBoxData 目录。", rcSub,
+				               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+				// 磁盘列表（超出可见行数时滚动）
+				const int saved = SaveDC(hdc);
+				IntersectClipRect(hdc, data.rcList.left - S(6), data.rcList.top - S(4),
+				                  data.rcList.right + S(6), data.rcList.bottom + S(4));
+				for (int i = data.scrollTop;
+				     i < static_cast<int>(data.drives.size()) && i < data.scrollTop + data.visibleRows; ++i)
+				{
+					const RECT row = drive_row_rect(data, i);
+					// 行内元素按实际行高等比缩放：矮屏压缩行高时不会重叠或溢出
+					const int baseRow = S(DRIVE_ROW_HEIGHT);
+					const auto ry = [&](int design)
+					{ return row.top + (baseRow > 0 ? MulDiv(design, data.rowHeight, baseRow) : S(design)); };
+					const int dotRadius = baseRow > 0 ? MulDiv(S(7), data.rowHeight, baseRow) : S(7);
+					const DriveEntry& entry = data.drives[static_cast<std::size_t>(i)];
+					const bool enabled = entry.blockedReason.empty();
+					const bool selected = (i == data.selected);
+					const bool hovered = (i == data.hoverRow) && enabled;
+
+					COLORREF cardFill = RGB(0xff, 0xff, 0xff);
+					COLORREF cardBorder = CLEAN_BORDER;
+					if (selected && enabled)
+					{
+						cardFill = RGB(0xec, 0xf4, 0xfe);
+						cardBorder = CLEAN_ACCENT;
+					}
+					else if (hovered)
+					{
+						cardFill = RGB(0xf7, 0xfa, 0xfe);
+						cardBorder = RGB(0xb9, 0xd4, 0xf2);
+					}
+					draw_round_rect(hdc, row, S(10), cardFill, cardBorder, (selected && enabled) ? 2 : 1);
+
+					const int padLeft = row.left + S(18);
+					draw_radio_dot(hdc, padLeft + S(7), ry(26), dotRadius, selected, enabled);
+
+					// 盘符（粗体）+ 卷标 + 系统盘标记
+					const int textLeft = padLeft + S(22);
+					const std::wstring letter = entry.root;
+					HGDIOBJ oldFont = SelectObject(hdc, data.hFontBold);
+					SetBkMode(hdc, TRANSPARENT);
+					SetTextColor(hdc, enabled ? CLEAN_TEXT : CLEAN_TEXT_SUB);
+					SIZE letterSize{};
+					GetTextExtentPoint32W(hdc, letter.c_str(), static_cast<int>(letter.size()), &letterSize);
+					RECT rcLetter{textLeft, ry(12), textLeft + letterSize.cx + S(4), ry(40)};
+					DrawTextW(hdc, letter.c_str(), -1, &rcLetter, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+					SelectObject(hdc, oldFont);
+
+					int x = textLeft + letterSize.cx + S(8);
+					std::wstring tail = entry.volumeName;
+					if (entry.isSystem)
+					{
+						tail += tail.empty() ? L"系统盘" : L"（系统盘）";
+					}
+					if (!tail.empty())
+					{
+						RECT rcTail{x, ry(12), row.right - S(20), ry(40)};
+						draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : RGB(0xb0, 0xb8, 0xc2), tail,
+						               rcTail, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+					}
+
+					// 右侧：可用 / 总容量
+					const std::wstring capacity =
+						std::format(L"可用 {} / 共 {}", format_bytes(entry.freeBytes), format_bytes(entry.totalBytes));
+					RECT rcCap{row.right - S(260), ry(12), row.right - S(20), ry(40)};
+					draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : RGB(0xb0, 0xb8, 0xc2), capacity,
+					               rcCap, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+					// 容量条：蓝=正常，红=空间紧张/不可用
+					const double usedRatio = entry.totalBytes > 0
+						? static_cast<double>(entry.totalBytes - entry.freeBytes) / static_cast<double>(entry.totalBytes)
+						: 0.0;
+					const bool danger = entry.freeBytes < 1'000'000'000ULL || usedRatio >= 0.9 ||
+					                    entry.blockedReason.find(L"空间不足") != std::wstring::npos;
+					const COLORREF barColor = danger ? CLEAN_DANGER : RGB(0x2f, 0x80, 0xed);
+					RECT rcBar{padLeft, ry(48), row.right - S(20), ry(56)};
+					draw_round_rect(hdc, rcBar, S(4), RGB(0xe9, 0xee, 0xf5), RGB(0xe9, 0xee, 0xf5), 1);
+					const int barWidth = rcBar.right - rcBar.left;
+					const int usedWidth = static_cast<int>(barWidth * std::clamp(usedRatio, 0.0, 1.0));
+					if (usedWidth > 0)
+					{
+						const int barSaved = SaveDC(hdc);
+						IntersectClipRect(hdc, rcBar.left, rcBar.top, rcBar.left + usedWidth, rcBar.bottom);
+						draw_round_rect(hdc, rcBar, S(4), barColor, barColor, 1);
+						RestoreDC(hdc, barSaved);
+					}
+
+					// 底行：数据目录说明 / 不可选原因 + 已用百分比
+					const std::wstring info = enabled
+						? std::format(L"数据目录：{}（自动创建）", entry.targetDir)
+						: entry.blockedReason;
+					RECT rcInfo{padLeft, ry(60), row.right - S(90), ry(80)};
+					draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : CLEAN_DANGER, info, rcInfo,
+					               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+					const std::wstring percent = std::format(L"已用 {:.0f}%", usedRatio * 100.0);
+					RECT rcPct{row.right - S(86), ry(60), row.right - S(20), ry(80)};
+					draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : CLEAN_DANGER, percent, rcPct,
+					               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+				}
+				RestoreDC(hdc, saved);
+
+				// 磁盘数超过可见行数时画一条滚动条，提示还可以往下滚
+				const int driveCount = static_cast<int>(data.drives.size());
+				if (driveCount > data.visibleRows && data.visibleRows > 0)
+				{
+					const int trackW = S(4);
+					const int trackLeft = data.rcList.right + S(8);
+					RECT rcTrack{trackLeft, data.rcList.top, trackLeft + trackW, data.rcList.bottom};
+					draw_round_rect(hdc, rcTrack, trackW / 2, RGB(0xe4, 0xea, 0xf2), RGB(0xe4, 0xea, 0xf2), 1);
+					const int trackH = rcTrack.bottom - rcTrack.top;
+					const int maxTop = driveCount - data.visibleRows;
+					const int thumbH = std::max(S(24), trackH * data.visibleRows / driveCount);
+					const int thumbY = rcTrack.top + (maxTop > 0 ? (trackH - thumbH) * data.scrollTop / maxTop : 0);
+					RECT rcThumb{trackLeft, thumbY, trackLeft + trackW, thumbY + thumbH};
+					draw_round_rect(hdc, rcThumb, trackW / 2, RGB(0xb4, 0xbf, 0xcc), RGB(0xb4, 0xbf, 0xcc), 1);
+				}
+
+				// 底部：分隔线 + 提示 + 按钮
+				const int footerTop = client.bottom - S(DRIVE_FOOTER_HEIGHT);
+				HPEN hLine = CreatePen(PS_SOLID, 1, CLEAN_BORDER);
+				const HGDIOBJ oldPen = SelectObject(hdc, hLine);
+				MoveToEx(hdc, S(28), footerTop, nullptr);
+				LineTo(hdc, client.right - S(28), footerTop);
+				SelectObject(hdc, oldPen);
+				DeleteObject(hLine);
+
+				RECT rcHint{S(28), footerTop + S(6), data.rcCancel.left - S(16), footerTop + S(30)};
+				draw_text_line(hdc, data.hFontSmall, CLEAN_TEXT_SUB, L"迁移期间请勿关闭电脑或强制结束程序", rcHint,
+				               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+				const bool okEnabled = data.selected >= 0 &&
+				                       data.drives[static_cast<std::size_t>(data.selected)].blockedReason.empty();
+				draw_modern_dlg_button(hdc, data.rcOk, true, data.hoverBtn == 0 && okEnabled, data.pressBtn == 0,
+				                       L"切换到此盘");
+				if (!okEnabled)
+				{
+					// 无可选磁盘：主按钮画成灰底，避免误以为可点击
+					draw_round_rect(hdc, data.rcOk, S(8), RGB(0xef, 0xf2, 0xf6), RGB(0xef, 0xf2, 0xf6), 1);
+					draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB, L"切换到此盘", data.rcOk,
+					               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+				}
+				draw_modern_dlg_button(hdc, data.rcCancel, false, data.hoverBtn == 1, data.pressBtn == 1, L"取消");
+			}
+
+			LRESULT CALLBACK drive_pick_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+			{
+				auto* data = reinterpret_cast<DrivePickData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+				switch (msg)
+				{
+				case WM_CREATE:
+				{
+					auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+					data = static_cast<DrivePickData*>(cs->lpCreateParams);
+					SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+					data->hwnd = hwnd;
+
+					HDC hdc = GetDC(hwnd);
+					data->dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+					ReleaseDC(hwnd, hdc);
+					if (data->dpi <= 0)
+					{
+						data->dpi = 96;
+					}
+					const int dpiY = data->dpi;
+					data->hFontTitle = CreateFontW(-MulDiv(16, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+					                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+					                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					data->hFontBold = CreateFontW(-MulDiv(13, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					data->hFontBody = CreateFontW(-MulDiv(12, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+					data->hFontSmall = CreateFontW(-MulDiv(11, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+					                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+					                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+					const auto S = [dpiY](int value) { return MulDiv(value, dpiY, 96); };
+					RECT client{};
+					GetClientRect(hwnd, &client);
+					data->rowHeight = data->rowHeightInit > 0 ? data->rowHeightInit : S(DRIVE_ROW_HEIGHT);
+					data->rowGap = S(DRIVE_ROW_GAP);
+					data->rcList.left = S(28);
+					data->rcList.right = client.right - S(28);
+					data->rcList.top = S(DRIVE_LIST_TOP);
+					data->rcList.bottom = client.bottom - S(DRIVE_FOOTER_HEIGHT);
+					const int listHeight = data->rcList.bottom - data->rcList.top;
+					data->visibleRows = std::max(1, (listHeight + data->rowGap) / (data->rowHeight + data->rowGap));
+
+					const int btnHeight = S(34);
+					const int btnTop = client.bottom - S(16) - btnHeight;
+					data->rcOk = {client.right - S(28) - S(128), btnTop, client.right - S(28), btnTop + btnHeight};
+					data->rcCancel = {data->rcOk.left - S(12) - S(88), btnTop, data->rcOk.left - S(12),
+					                  btnTop + btnHeight};
+					drive_ensure_visible(*data, std::max(0, data->selected));
+					return 0;
+				}
+				case WM_ERASEBKGND:
+					return 1;
+				case WM_PAINT:
+				{
+					PAINTSTRUCT ps{};
+					const HDC hdc = BeginPaint(hwnd, &ps);
+					RECT client{};
+					GetClientRect(hwnd, &client);
+					drive_draw(hdc, *data, client);
+					EndPaint(hwnd, &ps);
+					return 0;
+				}
+				case WM_MOUSEMOVE:
+				{
+					const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+					const int row = drive_hit_row(*data, pt);
+					const int btn = drive_hit_button(*data, pt);
+					if (row != data->hoverRow || btn != data->hoverBtn)
+					{
+						data->hoverRow = row;
+						data->hoverBtn = btn;
+						InvalidateRect(hwnd, nullptr, FALSE);
+					}
+					// 悬停到可选磁盘时显示手型，提示整行可点
+					SetCursor(LoadCursorW(nullptr,
+					                      (btn >= 0 || (row >= 0 && data->drives[static_cast<std::size_t>(row)].blockedReason.empty()))
+						                      ? IDC_HAND
+						                      : IDC_ARROW));
+					return 0;
+				}
+				case WM_LBUTTONDOWN:
+				{
+					const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+					const int btn = drive_hit_button(*data, pt);
+					if (btn >= 0)
+					{
+						data->pressBtn = btn;
+						SetCapture(hwnd);
+						InvalidateRect(hwnd, nullptr, FALSE);
+						return 0;
+					}
+					const int row = drive_hit_row(*data, pt);
+					if (row >= 0 && data->drives[static_cast<std::size_t>(row)].blockedReason.empty())
+					{
+						data->selected = row;
+						InvalidateRect(hwnd, nullptr, FALSE);
+					}
+					return 0;
+				}
+				case WM_LBUTTONUP:
+				{
+					const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+					const int press = data->pressBtn;
+					data->pressBtn = -1;
+					if (GetCapture() == hwnd)
+					{
+						ReleaseCapture();
+					}
+					InvalidateRect(hwnd, nullptr, FALSE);
+					const int btn = drive_hit_button(*data, pt);
+					if (press >= 0 && btn == press)
+					{
+						if (btn == 0)
+						{
+							drive_accept(*data);
+						}
+						else
+						{
+							data->cancelled = true;
+							DestroyWindow(hwnd);
+						}
+					}
+					return 0;
+				}
+				case WM_MOUSEWHEEL:
+				{
+					if (static_cast<int>(data->drives.size()) <= data->visibleRows)
+					{
+						return 0;
+					}
+					const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+					const int maxTop = std::max(0, static_cast<int>(data->drives.size()) - data->visibleRows);
+					const int top = std::clamp(data->scrollTop + (delta > 0 ? -1 : 1), 0, maxTop);
+					if (top != data->scrollTop)
+					{
+						data->scrollTop = top;
+						InvalidateRect(hwnd, nullptr, FALSE);
+					}
+					return 0;
+				}
+				case WM_KEYDOWN:
+				{
+					if (wParam == VK_ESCAPE)
+					{
+						data->cancelled = true;
+						DestroyWindow(hwnd);
+						return 0;
+					}
+					if (wParam == VK_RETURN)
+					{
+						drive_accept(*data);
+						return 0;
+					}
+					if (wParam == VK_UP || wParam == VK_DOWN)
+					{
+						const int dir = (wParam == VK_UP) ? -1 : 1;
+						for (int i = data->selected + dir; i >= 0 && i < static_cast<int>(data->drives.size()); i += dir)
+						{
+							if (!data->drives[static_cast<std::size_t>(i)].blockedReason.empty())
+							{
+								continue;
+							}
+							data->selected = i;
+							drive_ensure_visible(*data, i);
+							InvalidateRect(hwnd, nullptr, FALSE);
+							break;
+						}
+						return 0;
+					}
+					return 0;
+				}
+				case WM_CLOSE:
+					data->cancelled = true;
+					DestroyWindow(hwnd);
+					return 0;
+				case WM_DESTROY:
+					if (data->hFontTitle)
+					{
+						DeleteObject(data->hFontTitle);
+					}
+					if (data->hFontBold)
+					{
+						DeleteObject(data->hFontBold);
+					}
+					if (data->hFontBody)
+					{
+						DeleteObject(data->hFontBody);
+					}
+					if (data->hFontSmall)
+					{
+						DeleteObject(data->hFontSmall);
+					}
+					data->done = true;
+					return 0;
+				default:
+					break;
+				}
+				return DefWindowProcW(hwnd, msg, wParam, lParam);
+			}
+		}
+
+		// 弹出磁盘选择窗口；用户取消返回 false，out 为 "<盘符>\eBoxData"。
+		bool pick_drive_dialog(HWND parent, const std::wstring& currentDir, std::uint64_t neededBytes,
+		                       std::wstring& out)
+		{
+			static const bool classRegistered = []()
+			{
+				WNDCLASSEXW wc = {sizeof(wc)};
+				wc.lpfnWndProc = drive_pick_proc;
+				wc.hInstance = GetModuleHandleW(nullptr);
+				wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+				wc.hbrBackground = reinterpret_cast<HBRUSH>((COLOR_WINDOW + 1));
+				wc.lpszClassName = DRIVE_DLG_CLASS;
+				return RegisterClassExW(&wc) != 0;
+			}();
+			(void)classRegistered;
+
+			DrivePickData data;
+			data.drives = scan_drives(currentDir, neededBytes);
+			if (data.drives.empty())
+			{
+				MessageBoxW(parent, L"未检测到可用的本地磁盘。", MainApp::appName.data(),
+				            MB_OK | MB_ICONWARNING | MB_TASKMODAL);
+				return false;
+			}
+			// 默认选中可选盘中剩余空间最大的一个
+			for (int i = 0; i < static_cast<int>(data.drives.size()); ++i)
+			{
+				if (!data.drives[static_cast<std::size_t>(i)].blockedReason.empty())
+				{
+					continue;
+				}
+				if (data.selected < 0 ||
+				    data.drives[static_cast<std::size_t>(i)].freeBytes >
+					    data.drives[static_cast<std::size_t>(data.selected)].freeBytes)
+				{
+					data.selected = i;
+				}
+			}
+
+			HDC screenDc = GetDC(nullptr);
+			int dpi = GetDeviceCaps(screenDc, LOGPIXELSY);
+			ReleaseDC(nullptr, screenDc);
+			if (dpi <= 0)
+			{
+				dpi = 96;
+			}
+			const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+
+			const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+			// 可见行数：最多 4 行。屏幕矮时先等比压缩行高（不低于 DRIVE_ROW_HEIGHT_MIN），
+			// 压到下限仍放不下才减少行数，但优先保住 DRIVE_MIN_VISIBLE_ROWS 行 ——
+			// 避免矮分辨率下只露出 1 个盘、D 盘必须滚动才能看到。
+			int displayRows = std::clamp(static_cast<int>(data.drives.size()), 1, DRIVE_MAX_VISIBLE_ROWS);
+			const int rowGapPx = S(DRIVE_ROW_GAP);
+			const int fixedPx = S(DRIVE_LIST_TOP) + S(DRIVE_FOOTER_HEIGHT);
+			const int minRowPx = S(DRIVE_ROW_HEIGHT_MIN);
+			int rowHeightPx = S(DRIVE_ROW_HEIGHT);
+			RECT workArea{};
+			if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0))
+			{
+				const int maxClient = workArea.bottom - workArea.top - S(24) - titleBarHeight;
+				while (displayRows > 1 &&
+				       fixedPx + displayRows * rowHeightPx + (displayRows - 1) * rowGapPx > maxClient)
+				{
+					const int fit = (maxClient - fixedPx - (displayRows - 1) * rowGapPx) / displayRows;
+					if (fit >= minRowPx)
+					{
+						rowHeightPx = std::min(rowHeightPx, fit);
+						break;
+					}
+					if (displayRows > DRIVE_MIN_VISIBLE_ROWS)
+					{
+						--displayRows;
+						continue;
+					}
+					// 已是最少行数仍放不下：只能继续压缩行高（极小屏兜底）
+					rowHeightPx = std::max(1, fit);
+					break;
+				}
+			}
+			const int dlgWidth = S(DRIVE_DLG_WIDTH);
+			// 实像素逐项相加：MulDiv 舍入会让 listHeight 比整行所需少 1~2px，导致 visibleRows 少算一行
+			const int dlgHeight = fixedPx + displayRows * rowHeightPx + (displayRows - 1) * rowGapPx;
+			data.rowHeightInit = rowHeightPx;
+			const int wndWidth = dlgWidth + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+			const int wndHeight = dlgHeight + titleBarHeight;
+
+			int x = 0;
+			int y = 0;
+			if (parent && IsWindow(parent))
+			{
+				RECT rc{};
+				GetWindowRect(parent, &rc);
+				x = rc.left + (rc.right - rc.left - wndWidth) / 2;
+				y = rc.top + (rc.bottom - rc.top - wndHeight) / 2;
+				if (y < workArea.top + S(8))
+				{
+					y = workArea.top + S(8);
+				}
+			}
+			else
+			{
+				x = (GetSystemMetrics(SM_CXSCREEN) - wndWidth) / 2;
+				y = (GetSystemMetrics(SM_CYSCREEN) - wndHeight) / 2;
+			}
+
+			const HWND hDlg = CreateWindowExW(0, DRIVE_DLG_CLASS, L"选择数据存放的磁盘",
+			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, wndWidth, wndHeight,
+			                                  parent, nullptr, GetModuleHandleW(nullptr), &data);
+			if (!hDlg)
+			{
+				return false;
+			}
+			ShowWindow(hDlg, SW_SHOW);
+			UpdateWindow(hDlg);
+			SetFocus(hDlg);
+
+			if (parent && IsWindow(parent))
+			{
+				EnableWindow(parent, FALSE);
+			}
+
+			MSG msg{};
+			while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
+			{
+				TranslateMessage(&msg);
+				DispatchMessageW(&msg);
+			}
+
+			if (parent && IsWindow(parent))
+			{
+				EnableWindow(parent, TRUE);
+				SetForegroundWindow(parent);
+			}
+
+			if (data.cancelled)
+			{
+				return false;
+			}
+			out = data.result;
+			return true;
+		}
+
+		bool validate_data_dir(const std::wstring& currentDir, const std::wstring& targetDir,
+		                       std::uint64_t neededBytes, std::wstring& error)
+		{
+			if (targetDir.empty())
+			{
+				error = L"请选择目标目录。";
+				return false;
+			}
+			const std::wstring from = normalized_dir(currentDir);
+			const std::wstring to = normalized_dir(targetDir);
+			if (same_dir(from, to))
+			{
+				error = L"目标目录与当前目录相同，无需切换。";
+				return false;
+			}
+			if (dir_within(to, from))
+			{
+				error = L"目标目录不能位于当前数据目录之内。";
+				return false;
+			}
+			if (dir_within(from, to))
+			{
+				error = L"目标目录不能包含当前数据目录。";
+				return false;
+			}
+
+			const std::filesystem::path target{to};
+			std::error_code ec;
+			if (std::filesystem::is_directory(target, ec) && !ec)
+			{
+				// 目标已有数据时迁移会混杂，直接拒绝，避免覆盖用户已有环境
+				const std::filesystem::path envDir = target / L"Env";
+				if (std::filesystem::is_directory(envDir, ec) && !ec && !std::filesystem::is_empty(envDir, ec) && !ec)
+				{
+					error = L"目标目录已存在环境数据（Env），请选择其他目录。";
+					return false;
+				}
+				const std::filesystem::path binDir = target / L"bin";
+				if (std::filesystem::is_directory(binDir, ec) && !ec && !std::filesystem::is_empty(binDir, ec) && !ec)
+				{
+					error = L"目标目录已存在运行组件（bin），请选择其他目录。";
+					return false;
+				}
+			}
+			if (!ensure_dir_writable(target, error))
+			{
+				return false;
+			}
+
+			const DiskSpaceInfo space = query_disk_space(to);
+			if (space.totalBytes > 0 && space.freeBytes < neededBytes)
+			{
+				error = std::format(L"目标磁盘可用空间不足：需要约 {}，当前可用 {}。",
+				                    format_bytes(neededBytes), format_bytes(space.freeBytes));
+				return false;
+			}
+			return true;
+		}
+	}
+
+	// ---- 设置中心：功能列表（图标 + 名称 + 说明），后续可继续追加设置项 ----
+	namespace
+	{
+		constexpr wchar_t SETTINGS_DLG_CLASS[] = L"eBoxSettingsDialog";
+		constexpr int SETTINGS_DLG_WIDTH = 720; // 设计尺寸（96 DPI）
+		constexpr int SETTINGS_DLG_HEIGHT = 520;
+		constexpr int SETTINGS_MARGIN = 32;
+		constexpr int SETTINGS_LIST_TOP = 112;
+		constexpr int SETTINGS_ITEM_HEIGHT = 92;
+		constexpr int SETTINGS_ITEM_GAP = 12;
+		constexpr int SETTINGS_FOOTER_HEIGHT = 72;
+
+		enum class SettingAction
+		{
+			ChangeDataDir,
+			Repair,
+		};
+
+		struct SettingItem
+		{
+			std::wstring title;
+			std::wstring subtitle;
+			SettingAction action{SettingAction::ChangeDataDir};
+		};
+
+		struct SettingsDlgData
+		{
+			HWND hwnd{nullptr};
+			std::vector<SettingItem> items;
+			std::wstring currentDir;
+			std::size_t runningEnvCount{0};
+			int hoverItem{-1};
+			int hoverBtn{-1}; // 0=关闭
+			int pressItem{-1};
+			int pressBtn{-1};
+			int dpi{96};
+			int itemHeight{0};
+			int itemGap{0};
+			RECT rcList{};
+			RECT rcClose{};
+			HFONT hFontTitle{nullptr};
+			HFONT hFontBold{nullptr};
+			HFONT hFontBody{nullptr};
+			HFONT hFontSmall{nullptr};
+			bool done{false};
+		};
+
+		RECT settings_item_rect(const SettingsDlgData& data, int index)
+		{
+			const int top = data.rcList.top + index * (data.itemHeight + data.itemGap);
+			return RECT{data.rcList.left, top, data.rcList.right, top + data.itemHeight};
+		}
+
+		int settings_hit_item(const SettingsDlgData& data, POINT pt)
+		{
+			for (int i = 0; i < static_cast<int>(data.items.size()); ++i)
+			{
+				const RECT rc = settings_item_rect(data, i);
+				if (rc.bottom > data.rcList.bottom)
+				{
+					break;
+				}
+				if (PtInRect(&rc, pt))
+				{
+					return i;
+				}
+			}
+			return -1;
+		}
+
+		// 设置项图标：ChangeDataDir=硬盘外形（白色机身 + 插槽 + 指示灯），Repair=盾牌 + 对勾
+		void draw_setting_icon(HDC hdc, const RECT& tile, int dpi, SettingAction action)
+		{
+			const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+			if (action == SettingAction::Repair)
+			{
+				const int cx = (tile.left + tile.right) / 2;
+				const int top = tile.top + S(10);
+				const int bottom = tile.bottom - S(9);
+				const int halfW = S(13);
+				const POINT shield[6]{
+					{cx, top},
+					{cx + halfW, top + S(4)},
+					{cx + halfW, top + S(17)},
+					{cx, bottom},
+					{cx - halfW, top + S(17)},
+					{cx - halfW, top + S(4)},
+				};
+				HBRUSH hBrush = CreateSolidBrush(CLEAN_ACCENT);
+				HPEN hPen = CreatePen(PS_SOLID, 1, CLEAN_ACCENT);
+				const HGDIOBJ oldBrush = SelectObject(hdc, hBrush);
+				const HGDIOBJ oldPen = SelectObject(hdc, hPen);
+				Polygon(hdc, shield, static_cast<int>(std::size(shield)));
+
+				HPEN hCheck = CreatePen(PS_SOLID, std::max(2, S(2)), RGB(0xff, 0xff, 0xff));
+				SelectObject(hdc, hCheck);
+				MoveToEx(hdc, cx - S(7), top + S(13), nullptr);
+				LineTo(hdc, cx - S(2), top + S(18));
+				LineTo(hdc, cx + S(8), top + S(7));
+				SelectObject(hdc, oldPen);
+				SelectObject(hdc, oldBrush);
+				DeleteObject(hCheck);
+				DeleteObject(hBrush);
+				DeleteObject(hPen);
+				return;
+			}
+
+			const RECT body{tile.left + S(11), tile.top + S(13), tile.right - S(11), tile.bottom - S(13)};
+			draw_round_rect(hdc, body, S(4), RGB(0xff, 0xff, 0xff), CLEAN_ACCENT, std::max(1, S(2)));
+			const RECT slot{body.left + S(5), body.top + S(7), body.right - S(5), body.top + S(12)};
+			draw_round_rect(hdc, slot, S(2), CLEAN_ACCENT, CLEAN_ACCENT, 1);
+			const int radius = std::max(2, S(2));
+			const int cx = body.right - S(8);
+			const int cy = body.bottom - S(8);
+			HBRUSH hBrush = CreateSolidBrush(CLEAN_ACCENT);
+			HPEN hPen = CreatePen(PS_SOLID, 1, CLEAN_ACCENT);
+			const HGDIOBJ oldBrush = SelectObject(hdc, hBrush);
+			const HGDIOBJ oldPen = SelectObject(hdc, hPen);
+			Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius);
+			SelectObject(hdc, oldBrush);
+			SelectObject(hdc, oldPen);
+			DeleteObject(hBrush);
+			DeleteObject(hPen);
+		}
+
+		void draw_chevron(HDC hdc, int cx, int cy, int size, COLORREF color, int width)
+		{
+			HPEN hPen = CreatePen(PS_SOLID, width, color);
+			const HGDIOBJ oldPen = SelectObject(hdc, hPen);
+			MoveToEx(hdc, cx - size / 2, cy - size, nullptr);
+			LineTo(hdc, cx + size / 2, cy);
+			LineTo(hdc, cx - size / 2, cy + size);
+			SelectObject(hdc, oldPen);
+			DeleteObject(hPen);
+		}
+
+		void settings_draw(HDC hdc, SettingsDlgData& data, const RECT& client)
+		{
+			const int dpi = data.dpi > 0 ? data.dpi : 96;
+			const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+
+			fill_v_gradient(hdc, client, RGB(0xfa, 0xfb, 0xfd), RGB(0xf1, 0xf5, 0xfb));
+
+			RECT rcTitle{S(SETTINGS_MARGIN), S(20), client.right - S(SETTINGS_MARGIN), S(52)};
+			draw_text_line(hdc, data.hFontTitle, CLEAN_TEXT, L"设置", rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+			RECT rcSub{S(SETTINGS_MARGIN), S(54), client.right - S(SETTINGS_MARGIN), S(82)};
+			draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB, L"管理 eBox 的数据位置与运行方式", rcSub,
+			               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+			for (int i = 0; i < static_cast<int>(data.items.size()); ++i)
+			{
+				const RECT row = settings_item_rect(data, i);
+				if (row.bottom > data.rcList.bottom)
+				{
+					break;
+				}
+				const SettingItem& item = data.items[static_cast<std::size_t>(i)];
+				const bool hovered = (i == data.hoverItem);
+				draw_round_rect(hdc, row, S(12), hovered ? RGB(0xf5, 0xf9, 0xff) : RGB(0xff, 0xff, 0xff),
+				                hovered ? RGB(0xb9, 0xd4, 0xf2) : CLEAN_BORDER, 1);
+
+				const RECT tile{row.left + S(20), row.top + S(22), row.left + S(20) + S(48),
+				                row.top + S(22) + S(48)};
+				draw_round_rect(hdc, tile, S(12), RGB(0xe8, 0xf2, 0xfe), RGB(0xe8, 0xf2, 0xfe), 1);
+				draw_setting_icon(hdc, tile, dpi, item.action);
+
+				const int textLeft = tile.right + S(16);
+				RECT rcItemTitle{textLeft, row.top + S(20), row.right - S(52), row.top + S(48)};
+				draw_text_line(hdc, data.hFontBold, CLEAN_TEXT, item.title, rcItemTitle,
+				               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				RECT rcItemSub{textLeft, row.top + S(50), row.right - S(52), row.top + S(74)};
+				draw_text_line(hdc, data.hFontSmall, CLEAN_TEXT_SUB, item.subtitle, rcItemSub,
+				               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+				draw_chevron(hdc, row.right - S(28), (row.top + row.bottom) / 2, S(6),
+				             hovered ? CLEAN_ACCENT : RGB(0xb0, 0xb8, 0xc2), std::max(1, S(2)));
+			}
+
+			// 底部：分隔线 + 提示 + 关闭
+			const int footerTop = client.bottom - S(SETTINGS_FOOTER_HEIGHT);
+			HPEN hLine = CreatePen(PS_SOLID, 1, CLEAN_BORDER);
+			const HGDIOBJ oldPen = SelectObject(hdc, hLine);
+			MoveToEx(hdc, S(SETTINGS_MARGIN), footerTop, nullptr);
+			LineTo(hdc, client.right - S(SETTINGS_MARGIN), footerTop);
+			SelectObject(hdc, oldPen);
+			DeleteObject(hLine);
+
+			RECT rcHint{S(SETTINGS_MARGIN), footerTop + S(8), data.rcClose.left - S(16), footerTop + S(52)};
+			draw_text_line(hdc, data.hFontSmall, CLEAN_TEXT_SUB, L"更多设置项将在后续版本中加入", rcHint,
+			               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+			draw_modern_dlg_button(hdc, data.rcClose, false, data.hoverBtn == 0, data.pressBtn == 0, L"关闭");
+		}
+
+		void settings_open_data_dir(SettingsDlgData& data)
+		{
+			if (data.runningEnvCount > 0)
+			{
+				// 环境进程会在迁移开始时被强制结束：先征得用户同意，避免误以为"点了没反应"
+				const std::wstring tip = std::format(
+					L"检测到有 {} 个环境正在运行。\n"
+					L"迁移会先强制结束这些环境进程，再开始复制数据（未发送的内容可能丢失）。\n\n是否继续？",
+					data.runningEnvCount);
+				if (MessageBoxW(data.hwnd, tip.c_str(), MainApp::appName.data(),
+				                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TASKMODAL) != IDYES)
+				{
+					return;
+				}
+			}
+
+			// 统计当前占用空间（只用于容量校验与提示，点开时才算，避免打开设置卡顿）
+			const HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+			const std::filesystem::path root{data.currentDir};
+			const std::uint64_t usedBytes = dir_size_bytes(root / L"Env") + dir_size_bytes(root / L"bin");
+			SetCursor(oldCursor);
+
+			std::wstring picked;
+			if (!pick_drive_dialog(data.hwnd, data.currentDir, usedBytes, picked))
+			{
+				return;
+			}
+			std::wstring error;
+			if (!validate_data_dir(data.currentDir, picked, usedBytes, error))
+			{
+				MessageBoxW(data.hwnd, error.c_str(), L"无法使用该磁盘", MB_OK | MB_ICONWARNING | MB_TASKMODAL);
+				return;
+			}
+
+			const std::wstring target = normalized_dir(picked);
+			const std::wstring confirm = std::format(
+				L"确定要把环境数据迁移到以下目录吗？\n\n{}\n\n迁移完成后，旧目录中的 Env 与 bin 会被删除，"
+				L"eBox 将自动重启并继续迁移。",
+				target);
+			if (MessageBoxW(data.hwnd, confirm.c_str(), L"确认更改数据存储位置",
+			                MB_YESNO | MB_ICONQUESTION | MB_TASKMODAL | MB_DEFBUTTON2) != IDYES)
+			{
+				return;
+			}
+
+			if (!request_data_dir_change(target))
+			{
+				MessageBoxW(data.hwnd, L"无法切换到该目录（重启 eBox 失败），请重试或选择其他磁盘。",
+				            MainApp::appName.data(), MB_OK | MB_ICONERROR | MB_TASKMODAL);
+				return;
+			}
+			// 新实例已拉起，本进程即将退出
+			data.done = true;
+			DestroyWindow(data.hwnd);
+		}
+
+		void settings_run_item(SettingsDlgData& data, int index)
+		{
+			if (index < 0 || index >= static_cast<int>(data.items.size()))
+			{
+				return;
+			}
+			switch (data.items[(std::size_t)index].action)
+			{
+			case SettingAction::ChangeDataDir:
+				settings_open_data_dir(data);
+				break;
+			case SettingAction::Repair:
+				run_self_check_and_repair(data.hwnd);
+				break;
+			}
+		}
+
+		LRESULT CALLBACK settings_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+		{
+			auto* data = reinterpret_cast<SettingsDlgData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+			case WM_CREATE:
+			{
+				auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+				data = static_cast<SettingsDlgData*>(cs->lpCreateParams);
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+				data->hwnd = hwnd;
+
+				HDC hdc = GetDC(hwnd);
+				data->dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+				ReleaseDC(hwnd, hdc);
+				if (data->dpi <= 0)
+				{
+					data->dpi = 96;
+				}
+				const int dpiY = data->dpi;
+				data->hFontTitle = CreateFontW(-MulDiv(18, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data->hFontBold = CreateFontW(-MulDiv(13, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data->hFontBody = CreateFontW(-MulDiv(12, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data->hFontSmall = CreateFontW(-MulDiv(11, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+				const auto S = [dpiY](int value) { return MulDiv(value, dpiY, 96); };
+				RECT client{};
+				GetClientRect(hwnd, &client);
+				data->itemHeight = S(SETTINGS_ITEM_HEIGHT);
+				data->itemGap = S(SETTINGS_ITEM_GAP);
+				data->rcList.left = S(SETTINGS_MARGIN);
+				data->rcList.right = client.right - S(SETTINGS_MARGIN);
+				data->rcList.top = S(SETTINGS_LIST_TOP);
+				data->rcList.bottom = client.bottom - S(SETTINGS_FOOTER_HEIGHT) - S(4);
+
+				const int btnHeight = S(34);
+				const int btnTop = client.bottom - S(18) - btnHeight;
+				data->rcClose = {client.right - S(SETTINGS_MARGIN) - S(92), btnTop,
+				                 client.right - S(SETTINGS_MARGIN), btnTop + btnHeight};
+				return 0;
+			}
+			case WM_ERASEBKGND:
+				return 1;
+			case WM_PAINT:
+			{
+				PAINTSTRUCT ps{};
+				const HDC hdc = BeginPaint(hwnd, &ps);
+				RECT client{};
+				GetClientRect(hwnd, &client);
+				settings_draw(hdc, *data, client);
+				EndPaint(hwnd, &ps);
+				return 0;
+			}
+			case WM_MOUSEMOVE:
+			{
+				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+				const int item = settings_hit_item(*data, pt);
+				const int btn = PtInRect(&data->rcClose, pt) ? 0 : -1;
+				if (item != data->hoverItem || btn != data->hoverBtn)
+				{
+					data->hoverItem = item;
+					data->hoverBtn = btn;
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				SetCursor(LoadCursorW(nullptr, (item >= 0 || btn >= 0) ? IDC_HAND : IDC_ARROW));
+				return 0;
+			}
+			case WM_LBUTTONDOWN:
+			{
+				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+				const int item = settings_hit_item(*data, pt);
+				const int btn = PtInRect(&data->rcClose, pt) ? 0 : -1;
+				if (item < 0 && btn < 0)
+				{
+					return 0;
+				}
+				data->pressItem = item;
+				data->pressBtn = btn;
+				SetCapture(hwnd);
+				return 0;
+			}
+			case WM_LBUTTONUP:
+			{
+				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+				const int pressItem = data->pressItem;
+				const int pressBtn = data->pressBtn;
+				data->pressItem = -1;
+				data->pressBtn = -1;
+				if (GetCapture() == hwnd)
+				{
+					ReleaseCapture();
+				}
+				InvalidateRect(hwnd, nullptr, FALSE);
+				if (pressBtn == 0 && PtInRect(&data->rcClose, pt))
+				{
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				const int item = settings_hit_item(*data, pt);
+				if (pressItem >= 0 && item == pressItem)
+				{
+					settings_run_item(*data, item);
+				}
+				return 0;
+			}
+			case WM_KEYDOWN:
+			{
+				if (wParam == VK_ESCAPE)
+				{
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				if (wParam == VK_RETURN && !data->items.empty())
+				{
+					settings_run_item(*data, data->hoverItem >= 0 ? data->hoverItem : 0);
+					return 0;
+				}
+				return 0;
+			}
+			case WM_CLOSE:
+				DestroyWindow(hwnd);
+				return 0;
+			case WM_DESTROY:
+				if (data->hFontTitle)
+				{
+					DeleteObject(data->hFontTitle);
+				}
+				if (data->hFontBold)
+				{
+					DeleteObject(data->hFontBold);
+				}
+				if (data->hFontBody)
+				{
+					DeleteObject(data->hFontBody);
+				}
+				if (data->hFontSmall)
+				{
+					DeleteObject(data->hFontSmall);
+				}
+				data->done = true;
+				return 0;
+			default:
+				break;
+			}
+			return DefWindowProcW(hwnd, msg, wParam, lParam);
+		}
+	}
+
+	void settings_dialog(const WindowBase* owner, std::size_t runningEnvCount)
+	{
+		static const bool classRegistered = []()
+		{
+			WNDCLASSEXW wc = {sizeof(wc)};
+			wc.lpfnWndProc = settings_dlg_proc;
+			wc.hInstance = GetModuleHandleW(nullptr);
+			wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+			wc.hbrBackground = reinterpret_cast<HBRUSH>((COLOR_WINDOW + 1));
+			wc.lpszClassName = SETTINGS_DLG_CLASS;
+			return RegisterClassExW(&wc) != 0;
+		}();
+		(void)classRegistered;
+
+		const HWND parent = owner ? owner->nativeHandle() : nullptr;
+
+		SettingsDlgData data;
+		data.currentDir = normalized_dir(app().envDataRoot());
+		data.runningEnvCount = runningEnvCount;
+		// 功能列表：后续新增设置项只需往这里追加（图标按 action 绘制）
+		{
+			const DiskSpaceInfo space = query_disk_space(data.currentDir);
+			SettingItem item;
+			item.title = L"数据存放位置";
+			item.subtitle = std::format(L"当前：{}（该盘可用 {}）", data.currentDir, format_bytes(space.freeBytes));
+			item.action = SettingAction::ChangeDataDir;
+			data.items.push_back(std::move(item));
+		}
+		{
+			SettingItem item;
+			item.title = L"检查与修复";
+			item.subtitle = L"自检运行组件与环境数据，修复被杀毒软件误删的文件";
+			item.action = SettingAction::Repair;
+			data.items.push_back(std::move(item));
+		}
+
+		HDC screenDc = GetDC(nullptr);
+		int dpi = GetDeviceCaps(screenDc, LOGPIXELSY);
+		ReleaseDC(nullptr, screenDc);
+		if (dpi <= 0)
+		{
+			dpi = 96;
+		}
+		const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+
+		RECT workArea{};
+		SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
+		int dlgWidth = S(SETTINGS_DLG_WIDTH);
+		int dlgHeight = S(SETTINGS_DLG_HEIGHT);
+		if (workArea.bottom > workArea.top)
+		{
+			dlgHeight = std::min(dlgHeight, static_cast<int>(workArea.bottom - workArea.top) - S(48));
+		}
+		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+		const int wndWidth = dlgWidth + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
+		const int wndHeight = dlgHeight + titleBarHeight;
+
+		int x = 0;
+		int y = 0;
+		if (parent && IsWindow(parent))
+		{
+			RECT rc{};
+			GetWindowRect(parent, &rc);
+			x = rc.left + (rc.right - rc.left - wndWidth) / 2;
+			y = rc.top + (rc.bottom - rc.top - wndHeight) / 2;
+			if (y < workArea.top + S(8))
+			{
+				y = workArea.top + S(8);
+			}
+		}
+		else
+		{
+			x = (GetSystemMetrics(SM_CXSCREEN) - wndWidth) / 2;
+			y = (GetSystemMetrics(SM_CYSCREEN) - wndHeight) / 2;
+		}
+
+		const HWND hDlg = CreateWindowExW(0, SETTINGS_DLG_CLASS, L"设置", WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y,
+		                                  wndWidth, wndHeight, parent, nullptr, GetModuleHandleW(nullptr), &data);
+		if (!hDlg)
+		{
+			return;
+		}
+		ShowWindow(hDlg, SW_SHOW);
+		UpdateWindow(hDlg);
+		SetFocus(hDlg);
+
+		if (parent && IsWindow(parent))
+		{
+			EnableWindow(parent, FALSE);
+		}
+
+		MSG msg{};
+		while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
+		{
+			TranslateMessage(&msg);
+			DispatchMessageW(&msg);
+		}
+
+		if (parent && IsWindow(parent))
+		{
+			EnableWindow(parent, TRUE);
+			SetForegroundWindow(parent);
+		}
+	}
 }
