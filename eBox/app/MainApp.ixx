@@ -174,19 +174,26 @@ public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 3;
 	static constexpr int kVerMinor = 2;
-	static constexpr int kVerPatch = 0;
-	static constexpr int kVerCode  = 30200;  // 单调递增数字，用于版本比较
+	static constexpr int kVerPatch = 1;
+	static constexpr int kVerCode  = 30201;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v3.2.0"};
-	static constexpr std::wstring_view appUpdateDate{L"2026/10/24"};
+	static constexpr std::wstring_view appVersion{L"v3.2.1"};
+	static constexpr std::wstring_view appUpdateDate{L"2026/10/25"};
 
 	// ===== 自动升级配置 =====
-	// manifest 由 jsDelivr CDN 加速 GitHub 仓库文件，客户端追加时间戳破除缓存
-	// 发布新版本后访问 https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json 刷新
-	static constexpr std::wstring_view kUpdateManifestUrl{
-		L"https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json"
+	// 按可靠性排序、逐个尝试，任一源成功即用；同一份 update.json 由发布流程同步到全部位置
+	// 1) 自有服务器直连：国内不挂代理也能访问，是主源
+	// 2) jsDelivr 两个节点：兜底服务器故障/文件缺失，发布后需 purge 才能立刻生效
+	// 3) GitHub 原始地址：最后兜底（国内常被 DNS 污染，通常需要代理，故排在最后）
+	// 客户端会在 URL 后追加时间戳参数破除缓存
+	static constexpr std::array<std::wstring_view, 5> kUpdateManifestUrls{
+		L"https://abc222.cn/download/update.json",                                // 主源：自有服务器
+		L"https://www.abc222.cn/download/update.json",                            // 自有服务器备域名
+		L"https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json",     // jsDelivr 主节点
+		L"https://fastly.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json",  // jsDelivr 备用节点
+		L"https://raw.githubusercontent.com/shushuhao01/ebox/main/dist/update.json",  // GitHub 原始地址
 	};
 	static constexpr std::wstring_view kUpdateUserAgent{L"eBox-Updater/2.8"};
 

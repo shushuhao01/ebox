@@ -1349,7 +1349,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.2.0   更新时间：2026/10/24   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.2.1   更新时间：2026/10/25   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1608,9 +1608,18 @@ namespace ui
 				switch (m_lastCheckResult)
 				{
 				case biz::update::CheckResult::NetworkError:
-					MessageBoxW(nativeHandle(), L"检查更新失败，请检查网络连接后重试。",
+				{
+					// 附带各源的失败原因与日志路径，便于用户直接截图/复制反馈
+					std::wstring message = L"检查更新失败，请检查网络连接后重试。";
+					if (!outcome.errorDetail.empty())
+					{
+						message += L"\n\n错误详情：" + outcome.errorDetail;
+					}
+					message += L"\n\n详细日志：\n" + biz::update::getUpdateLogPath();
+					MessageBoxW(nativeHandle(), message.c_str(),
 					            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
 					break;
+				}
 				case biz::update::CheckResult::SkippedThisVersion:
 					MessageBoxW(nativeHandle(), L"您已选择忽略此版本的更新，有新版本时会再次提示。",
 					            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);

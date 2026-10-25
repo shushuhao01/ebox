@@ -85,5 +85,25 @@ jobs:
             git push origin main
           fi
 
+      # 同步 update.json 到国内镜像：客户端多源回退里的 https://abc222.cn/download/update.json
+      # 依赖该文件存在，否则自有源恒为 404。未配置下载镜像时自动跳过。
+      - name: Upload update.json to download mirror
+        if: ${{ vars.DOWNLOAD_MIRROR_BASE != '' }}
+        env:
+          SSH_HOST: ${{ secrets.MIRROR_SSH_HOST }}
+          SSH_USER: ${{ secrets.MIRROR_SSH_USER }}
+          SSH_KEY: ${{ secrets.MIRROR_SSH_KEY }}
+          SSH_PORT: ${{ secrets.MIRROR_SSH_PORT }}
+          UPLOAD_DIR: ${{ vars.MIRROR_UPLOAD_DIR }}
+        run: |
+          set -e
+          : "${UPLOAD_DIR:=/www/wwwroot/license-server/download}"
+          mkdir -p ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          PORT="${SSH_PORT:-22}"
+          ssh-keyscan -p "$PORT" -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          scp -P "$PORT" -i ~/.ssh/id_ed25519 dist/update.json "$SSH_USER@$SSH_HOST:$UPLOAD_DIR/update.json"
+
       - name: Purge jsDelivr CDN
         run: curl -s "https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json" || true

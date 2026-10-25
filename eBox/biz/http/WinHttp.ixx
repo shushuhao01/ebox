@@ -61,14 +61,22 @@ namespace ms
 	class WinHttpSession : public std::enable_shared_from_this<WinHttpSession>
 	{
 	public:
-		WinHttpSession()
+		// direct=true 时强制直连，完全不读取系统代理（用于代理配置残留的兜底）
+		explicit WinHttpSession(bool direct = false)
 		{
-			// 方案B：优先使用系统代理（含手动代理/PAC），兼容挂了代理的用户；
-			// Win8.1 以下不支持 AUTOMATIC_PROXY，WinHttpOpen 会失败，回退为直连（原行为）
-			m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
-			if (!m_hSession)
+			if (direct)
 			{
 				m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+			}
+			else
+			{
+				// 方案B：优先使用系统代理（含手动代理/PAC），兼容挂了代理的用户；
+				// Win8.1 以下不支持 AUTOMATIC_PROXY，WinHttpOpen 会失败，回退为直连（原行为）
+				m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+				if (!m_hSession)
+				{
+					m_hSession = WinHttpOpen(L"WinHttp", WINHTTP_ACCESS_TYPE_NO_PROXY, WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, WINHTTP_FLAG_ASYNC);
+				}
 			}
 			if (!m_hSession)
 			{
@@ -145,6 +153,31 @@ namespace ms
 		return defaultSession;
 	}
 
+	// 系统是否配置了显式代理（手动代理 / PAC 脚本）。
+	// 只看显式配置：Win11 默认勾选的"自动检测设置"会让每次请求多一次 WPAD 探测，
+	// 家庭网络几乎用不到，反而拖慢甚至被局域网里的失效代理劫持
+	export bool has_system_proxy_config()
+	{
+		WINHTTP_CURRENT_USER_IE_PROXY_CONFIG cfg{};
+		if (!WinHttpGetIEProxyConfigForCurrentUser(&cfg))
+		{
+			return true;  // 查询失败时保守按"有代理"处理
+		}
+		const bool hasProxy = cfg.lpszProxy != nullptr || cfg.lpszAutoConfigUrl != nullptr;
+		if (cfg.lpszProxy) GlobalFree(cfg.lpszProxy);
+		if (cfg.lpszProxyBypass) GlobalFree(cfg.lpszProxyBypass);
+		if (cfg.lpszAutoConfigUrl) GlobalFree(cfg.lpszAutoConfigUrl);
+		return hasProxy;
+	}
+
+	// 直连会话：完全不读系统代理。
+	// 用于"VPN/加速器卸载后系统代理配置残留成死代理"导致全部请求失败的兜底
+	export std::shared_ptr<WinHttpSession> get_direct_win_http_session()
+	{
+		static std::shared_ptr<WinHttpSession> directSession = std::make_shared<WinHttpSession>(true);
+		return directSession;
+	}
+
 	class WinHttpRequest
 	{
 	public:
@@ -185,6 +218,7 @@ namespace ms
 			std::atomic<bool> bSucceeded{false};
 			DWORD errorCode{0};
 			std::string errorMessage;
+			DWORD statusCode{0};  // HTTP 状态码（0 表示未取到）
 			coro::GuaranteedResolver<void> resolver;
 			std::array<std::byte, 8192> buffer{};
 			std::vector<std::byte> result{};
@@ -242,10 +276,28 @@ namespace ms
 				                   reinterpret_cast<DWORD_PTR>(&reqContext));
 			});
 
+			m_statusCode.store(reqContext.statusCode, std::memory_order_relaxed);
 			co_return std::move(reqContext.result);
 		}
 
+		// 本次请求的 HTTP 状态码（0 表示未取到/请求失败），需在 request() 完成后读取
+		std::uint32_t statusCode() const
+		{
+			return m_statusCode.load(std::memory_order_relaxed);
+		}
+
 	private:
+		static std::uint32_t queryStatusCode(HINTERNET hRequest)
+		{
+			DWORD statusCode = 0;
+			DWORD size = sizeof(statusCode);
+			if (!WinHttpQueryHeaders(hRequest, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+			                         WINHTTP_HEADER_NAME_BY_INDEX, &statusCode, &size, WINHTTP_NO_HEADER_INDEX))
+			{
+				return 0;
+			}
+			return statusCode;
+		}
 		static std::uint32_t queryContentLength(HINTERNET hRequest)
 		{
 			try
@@ -307,6 +359,7 @@ namespace ms
 				break;
 			case WINHTTP_CALLBACK_STATUS_HEADERS_AVAILABLE: // WinHttpReceiveResponse done
 				{
+					reqCtx->statusCode = queryStatusCode(hInternet);
 					const std::uint32_t contentLength = queryContentLength(hInternet);
 					reqCtx->result.reserve(contentLength);
 					if (reqCtx->contentLengthReporter)
@@ -394,6 +447,7 @@ namespace ms
 		std::vector<std::wstring> m_acceptTypes;
 		std::vector<const wchar_t*> m_refAcceptTypes;
 		DWORD m_flags;
+		std::atomic<std::uint32_t> m_statusCode{0};
 	};
 
 	inline std::shared_ptr<WinHttpRequest> WinHttpConnection::openRequest(std::wstring_view verb, std::wstring_view objName, std::wstring_view version, std::wstring_view referrer,

@@ -43,6 +43,7 @@ namespace biz
 		{
 			CheckResult result{CheckResult::NetworkError};
 			UpdateManifest manifest;
+			std::wstring errorDetail;  // 失败摘要（各源的状态码/错误码），用于弹窗与日志
 		};
 
 		// 下载进度
@@ -92,6 +93,9 @@ namespace biz
 
 		// 上次更新失败标志文件路径（存在即表示上次 bat 更新失败已回滚，供启动时提示）
 		export std::wstring getUpdateFailFlagPath();
+
+		// 检查更新失败时的日志路径（%TEMP%\eBox_update.log），排查网络问题时让用户提供
+		export std::wstring getUpdateLogPath();
 
 		// 生成 updater.bat 并启动；本进程应在调用后立即退出
 		// 失败返回 false（不应继续退出，由调用方决定如何处理）

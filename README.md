@@ -437,19 +437,23 @@ eBox 内置自动升级功能，**不强制更新**，仅在标题栏显示红�
 
 ## 版本发布与分发
 
-本仓库同时承担**版本分发**职责：客户端启动时通过 jsDelivr CDN 拉取本仓库的 `dist/update.json` 检查更新。
+本仓库同时承担**版本分发**职责：客户端按顺序尝试多个源拉取更新清单 `update.json`，任一可用即可检查更新。
 
 ### 分发链路
 
 ```
-GitHub 仓库 dist/update.json
+主源：自有服务器 https://abc222.cn/download/update.json
+备源：https://www.abc222.cn/download/update.json
+备源：jsDelivr CDN（cdn / fastly 两个节点，读 GitHub 仓库 dist/update.json）
+兜底：GitHub 原始地址 https://raw.githubusercontent.com/shushuhao01/ebox/main/dist/update.json
         ↓
-jsDelivr CDN（https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json）
+客户端逐个尝试（追加 ?t=时间戳 破缓存；非 200 / 解析失败自动换下一个源）
         ↓
-客户端拉取（追加 ?t=时间戳 破缓存）
-        ↓
-版本比较 → 红点提示 → 下载升级包 → SHA-256 校验 → 自动安装
+版本比较 → 红点提示 → 下载升级包（多源 + 代理/直连双路径）→ SHA-256 校验 → 自动安装
 ```
+
+> 服务器的 `update.json` 与 `eBox.exe` 放在 nginx 的 `/download/` 目录（`/www/wwwroot/license-server/download/`），
+> 由发布工作流在每次发布时自动 scp 上传；CDN 源用于兜底服务器故障或文件缺失。
 
 ### 发布新版本流程（自动化）
 
@@ -466,6 +470,7 @@ jsDelivr CDN（https://cdn.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.jso
 > 1. 计算 SHA-256：`Get-FileHash "bin\x64\eBox.exe" -Algorithm SHA256`
 > 2. 更新 `dist/update.json`（字段见下表），`downloadUrl` 指向 `https://github.com/shushuhao01/ebox/releases/download/vX.Y.Z/eBox.exe`
 > 3. 提交推送后访问 `https://purge.jsdelivr.net/gh/shushuhao01/ebox@main/dist/update.json` 手动 purge（短时间内请勿重复触发，jsDelivr 会限流）
+> 4. **务必**把新的 `dist/update.json` 与 `eBox.exe` 上传到服务器 `/www/wwwroot/license-server/download/`（自有服务器是客户端主源，漏传会让主源返回旧版本或 404）
 
 ### update.json 字段说明
 

@@ -260,6 +260,63 @@ namespace biz::update
 			return raw.empty() ? L"网络异常，请稍后重试。" : raw;
 		}
 
+		// ===== 检查更新失败日志（%TEMP%\eBox_update.log）=====
+		std::wstring updateLogPath()
+		{
+			wchar_t tempDir[MAX_PATH]{};
+			GetTempPathW(MAX_PATH, tempDir);
+			return std::wstring{tempDir} + L"eBox_update.log";
+		}
+
+		// 追加写入；超过 64KB 时先删除重写，避免日志无限增长
+		void appendUpdateLog(const std::wstring& line)
+		{
+			const std::wstring path = updateLogPath();
+			std::error_code ec;
+			if (std::filesystem::exists(path, ec) && !ec &&
+			    std::filesystem::file_size(path, ec) > 64 * 1024 && !ec)
+			{
+				std::filesystem::remove(path, ec);
+			}
+
+			SYSTEMTIME st{};
+			GetLocalTime(&st);
+			const std::wstring text = std::format(L"[{:04}-{:02}-{:02} {:02}:{:02}:{:02}] {}\r\n",
+			                                      st.wYear, st.wMonth, st.wDay,
+			                                      st.wHour, st.wMinute, st.wSecond, line);
+			std::ofstream f(path, std::ios::binary | std::ios::app);
+			if (!f) return;
+			const std::string utf8 = wstringToUtf8(text);
+			f.write(utf8.data(), static_cast<std::streamsize>(utf8.size()));
+		}
+
+		// ===== 请求会话选择 =====
+		// 独立会话：-1 未确定 / 0 系统代理 / 1 直连。
+		// 没配代理时直接直连（跳过 WPAD 探测）；一旦某条路径被验证可用就固定下来，
+		// 让随后的 exe 下载复用同一条路径（代理残留、代理仅对部分站点生效都能覆盖）
+		std::atomic<int> g_sessionPref{-1};
+
+		bool preferDirectSession()
+		{
+			int pref = g_sessionPref.load(std::memory_order_relaxed);
+			if (pref < 0)
+			{
+				pref = ms::has_system_proxy_config() ? 0 : 1;
+				g_sessionPref.store(pref, std::memory_order_relaxed);
+			}
+			return pref == 1;
+		}
+
+		void rememberSession(bool direct)
+		{
+			g_sessionPref.store(direct ? 1 : 0, std::memory_order_relaxed);
+		}
+
+		auto updateHttpSession(bool direct)
+		{
+			return direct ? ms::get_direct_win_http_session() : ms::get_default_win_http_session();
+		}
+
 		// ===== SHA-256 文件校验（BCrypt 增量哈希，避免大文件全量加载）=====
 		bool computeFileSha256(const std::wstring& filePath, std::wstring& outHex)
 		{
@@ -354,13 +411,6 @@ namespace biz::update
 		CheckOutcome outcome;
 		outcome.result = CheckResult::NetworkError;
 
-		// 解析 manifest URL
-		UrlParts urlParts;
-		if (!splitUrl(std::wstring{MainApp::kUpdateManifestUrl}, urlParts))
-		{
-			co_return outcome;
-		}
-
 		// 添加时间戳查询参数破除 CDN 缓存
 		// 精确到小时：每小时内复用 CDN 缓存（省流量），1 小时后自动拉最新 manifest
 		// jsDelivr 默认缓存约 12 小时，加时间戳后最长 1 小时即可拿到新版本
@@ -370,72 +420,163 @@ namespace biz::update
 		const std::wstring cacheBuster = std::format(L"t={:04}{:02}{:02}{:02}",
 		                                             nowCacheBuster.wYear, nowCacheBuster.wMonth,
 		                                             nowCacheBuster.wDay, nowCacheBuster.wHour);
-		std::wstring pathWithCb = urlParts.path;
-		if (pathWithCb.find(L'?') != std::wstring::npos)
-			pathWithCb += L"&" + cacheBuster;
-		else
-			pathWithCb += L"?" + cacheBuster;
 
-		try
+		// 多源依次尝试：某个 CDN 节点被运营商干扰时自动切下一个源，
+		// 并校验 HTTP 状态码——限流/拦截页/404 的响应体不能拿去解析 JSON
+		const std::stop_token token = co_await coro::get_current_cancellation_token();
+		UpdateManifest manifest;
+		bool gotManifest = false;
+		std::wstring detail;
+
+		// 两轮：先用首选会话（没配代理时 = 直连）跑完所有源，一个清单都拿不到时再换另一种方式重跑。
+		// 典型场景：VPN/加速器卸载后系统代理残留成死代理 → 第一轮全失败，第二轮直连成功
+		const bool preferDirect = preferDirectSession();
+		for (int pass = 0; pass < 2; ++pass)
 		{
-			auto session = ms::get_default_win_http_session();
-			auto conn = session->createConnection(urlParts.host, urlParts.port);
-			DWORD flags = WINHTTP_FLAG_REFRESH;
-			if (urlParts.isHttps) flags |= WINHTTP_FLAG_SECURE;
-			auto req = conn->openRequest(L"GET", pathWithCb, L"HTTP/1.1",
-			                             MainApp::kUpdateUserAgent, {}, flags);
-
-			std::vector<std::byte> response = co_await req->request({}, {});
-
-			// 解析 JSON
-			std::string jsonText;
-			if (!response.empty())
+			if (pass > 0 && gotManifest)
 			{
-				jsonText.assign(reinterpret_cast<const char*>(response.data()), response.size());
+				break;  // 已拿到清单，不需要换会话重复
 			}
-			UpdateManifest manifest;
-			if (!parseManifest(jsonText, manifest))
+			const bool direct = (pass == 0) ? preferDirect : !preferDirect;
+			if (pass > 0)
 			{
-				co_return outcome;  // NetworkError
+				appendUpdateLog(L"本轮所有源均不可用，改用另一种网络方式重试");
+				detail += L"已切换网络方式重试；";
 			}
 
-			// 记录上次检查时间与发现版本
-			SYSTEMTIME st{};
-			GetLocalTime(&st);
-			const std::wstring isoTime = std::format(L"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
-			                                          st.wYear, st.wMonth, st.wDay,
-			                                          st.wHour, st.wMinute, st.wSecond);
-			writeRegString(kRegLastCheck, isoTime);
-			writeRegDword(kRegLastSeenVer, static_cast<DWORD>(manifest.latestVersionCode));
-
-			// 版本比较：latestVersionCode > 本地 kVerCode 才算有更新
-			if (manifest.latestVersionCode <= MainApp::kVerCode)
+			int sourceIndex = 0;
+			for (const std::wstring_view manifestUrl : MainApp::kUpdateManifestUrls)
 			{
-				outcome.result = CheckResult::NoUpdate;
-				co_return outcome;
-			}
+				++sourceIndex;
+				if (token.stop_requested())
+				{
+					co_return outcome;
+				}
 
-			// 查忽略状态：若用户曾忽略此版本且非强制，返回 SkippedThisVersion
-			// forceUpdate 或本地版本 <= minSkipVersionCode 时不允许跳过（如修复关键 bug 的版本）
-			// forceShow=true（用户手动点"更新"）时绕过"已跳过"状态，始终返回 HasUpdate，保证随时可更新
-			const DWORD ignored = readRegDword(kRegIgnoredVer, 0);
-			const bool cannotSkip = manifest.forceUpdate ||
-			                        (manifest.minSkipVersionCode > 0 &&
-			                         MainApp::kVerCode <= manifest.minSkipVersionCode);
-			if (!cannotSkip && !forceShow && static_cast<int>(ignored) == manifest.latestVersionCode)
-			{
-				outcome.result = CheckResult::SkippedThisVersion;
-				co_return outcome;
-			}
+				UrlParts urlParts;
+				const std::wstring urlText{manifestUrl};
+				if (!splitUrl(urlText, urlParts))
+				{
+					detail += std::format(L"源{}：地址格式无效；", sourceIndex);
+					appendUpdateLog(std::format(L"源{} {} 地址格式无效", sourceIndex, urlText));
+					continue;
+				}
 
-			outcome.result = CheckResult::HasUpdate;
-			outcome.manifest = std::move(manifest);
+				std::wstring pathWithCb = urlParts.path;
+				if (pathWithCb.find(L'?') != std::wstring::npos)
+					pathWithCb += L"&" + cacheBuster;
+				else
+					pathWithCb += L"?" + cacheBuster;
+
+				try
+				{
+					auto session = updateHttpSession(direct);
+					auto conn = session->createConnection(urlParts.host, urlParts.port);
+					DWORD flags = WINHTTP_FLAG_REFRESH;
+					if (urlParts.isHttps) flags |= WINHTTP_FLAG_SECURE;
+					auto req = conn->openRequest(L"GET", pathWithCb, L"HTTP/1.1",
+					                             MainApp::kUpdateUserAgent, {}, flags);
+
+					std::vector<std::byte> response = co_await req->request({}, {});
+
+					const std::uint32_t status = req->statusCode();
+					if (status != 200)
+					{
+						detail += std::format(L"源{}：HTTP {}；", sourceIndex, status);
+						appendUpdateLog(std::format(L"源{} {} 返回 HTTP {}", sourceIndex, urlText, status));
+						continue;
+					}
+
+					std::string jsonText;
+					if (!response.empty())
+					{
+						jsonText.assign(reinterpret_cast<const char*>(response.data()), response.size());
+					}
+
+					UpdateManifest parsed;
+					if (!parseManifest(jsonText, parsed))
+					{
+						detail += std::format(L"源{}：返回内容不是有效的更新清单；", sourceIndex);
+						appendUpdateLog(std::format(L"源{} {} 解析失败（{} 字节）",
+						                            sourceIndex, urlText, response.size()));
+						continue;
+					}
+
+					rememberSession(direct);
+
+					// 取版本最高的清单：自有服务器的 update.json 可能比 CDN 旧
+					if (!gotManifest || parsed.latestVersionCode > manifest.latestVersionCode)
+					{
+						manifest = std::move(parsed);
+						gotManifest = true;
+					}
+
+					// 已发现比本地更新的版本，不必再问其它源
+					if (manifest.latestVersionCode > MainApp::kVerCode)
+					{
+						break;
+					}
+				}
+				catch (const std::exception& e)
+				{
+					if (token.stop_requested())
+					{
+						co_return outcome;
+					}
+					const std::wstring raw = utf8ToWstring(e.what());
+					detail += std::format(L"源{}：{}；", sourceIndex, friendlyNetworkError(raw));
+					appendUpdateLog(std::format(L"源{} {} 失败：{}", sourceIndex, urlText, raw));
+				}
+				catch (...)
+				{
+					if (token.stop_requested())
+					{
+						co_return outcome;
+					}
+					detail += std::format(L"源{}：未知错误；", sourceIndex);
+					appendUpdateLog(std::format(L"源{} {} 失败：未知错误", sourceIndex, urlText));
+				}
+			}
 		}
-		catch (...)
+
+		if (!gotManifest)
 		{
-			// 保持 NetworkError
+			outcome.errorDetail = detail;
+			appendUpdateLog(L"检查更新失败：所有源与网络方式均不可用");
+			co_return outcome;  // NetworkError
 		}
 
+		// 记录上次检查时间与发现版本
+		SYSTEMTIME st{};
+		GetLocalTime(&st);
+		const std::wstring isoTime = std::format(L"{:04}-{:02}-{:02}T{:02}:{:02}:{:02}",
+		                                          st.wYear, st.wMonth, st.wDay,
+		                                          st.wHour, st.wMinute, st.wSecond);
+		writeRegString(kRegLastCheck, isoTime);
+		writeRegDword(kRegLastSeenVer, static_cast<DWORD>(manifest.latestVersionCode));
+
+		// 版本比较：latestVersionCode > 本地 kVerCode 才算有更新
+		if (manifest.latestVersionCode <= MainApp::kVerCode)
+		{
+			outcome.result = CheckResult::NoUpdate;
+			co_return outcome;
+		}
+
+		// 查忽略状态：若用户曾忽略此版本且非强制，返回 SkippedThisVersion
+		// forceUpdate 或本地版本 <= minSkipVersionCode 时不允许跳过（如修复关键 bug 的版本）
+		// forceShow=true（用户手动点"更新"）时绕过"已跳过"状态，始终返回 HasUpdate，保证随时可更新
+		const DWORD ignored = readRegDword(kRegIgnoredVer, 0);
+		const bool cannotSkip = manifest.forceUpdate ||
+		                        (manifest.minSkipVersionCode > 0 &&
+		                         MainApp::kVerCode <= manifest.minSkipVersionCode);
+		if (!cannotSkip && !forceShow && static_cast<int>(ignored) == manifest.latestVersionCode)
+		{
+			outcome.result = CheckResult::SkippedThisVersion;
+			co_return outcome;
+		}
+
+		outcome.result = CheckResult::HasUpdate;
+		outcome.manifest = std::move(manifest);
 		co_return outcome;
 	}
 
@@ -469,8 +610,20 @@ namespace biz::update
 		bool gotData = false;
 		std::wstring lastError;
 
+		// 尝试序列：先用首选会话把所有源跑一遍，全失败再换另一种会话（代理/直连）跑一遍
+		std::vector<std::pair<bool, std::wstring>> attempts;
+		const bool preferDirect = preferDirectSession();
+		for (int pass = 0; pass < 2; ++pass)
+		{
+			const bool direct = (pass == 0) ? preferDirect : !preferDirect;
+			for (const std::wstring& source : sources)
+			{
+				attempts.emplace_back(direct, source);
+			}
+		}
+
 		// 逐源尝试：任一源下载成功即结束（方案C：主源失败自动切备源）
-		for (const std::wstring& source : sources)
+		for (const auto& [direct, source] : attempts)
 		{
 			if (token.stop_requested())
 			{
@@ -487,7 +640,7 @@ namespace biz::update
 
 			try
 			{
-				auto session = ms::get_default_win_http_session();
+				auto session = updateHttpSession(direct);
 				auto conn = session->createConnection(urlParts.host, urlParts.port);
 				DWORD flags = WINHTTP_FLAG_REFRESH;
 				if (urlParts.isHttps) flags |= WINHTTP_FLAG_SECURE;
@@ -515,6 +668,25 @@ namespace biz::update
 
 				// 启动下载（WinHttp 内部已挂接 stop_token 取消）
 				data = co_await req->request(contentLenCb, progressReporter);
+
+				// 校验状态码与体积：镜像里可能还是上个版本的 exe（200 但内容不对），
+				// 这种情况要继续试下一个源，而不是拿旧安装包去撞 SHA 校验
+				const std::uint32_t status = req->statusCode();
+				if (status != 200)
+				{
+					lastError = std::format(L"HTTP {}", status);
+					appendUpdateLog(std::format(L"下载失败 {} 返回 HTTP {}", source, status));
+					continue;
+				}
+				if (manifest.downloadSize > 0 && data.size() != manifest.downloadSize)
+				{
+					lastError = L"downloaded size mismatch";
+					appendUpdateLog(std::format(L"下载失败 {} 体积不符：期望 {} 实际 {}",
+					                            source, manifest.downloadSize, data.size()));
+					continue;
+				}
+
+				rememberSession(direct);
 				gotData = true;
 				break;
 			}
@@ -636,6 +808,11 @@ namespace biz::update
 		wchar_t tempDir[MAX_PATH]{};
 		GetTempPathW(MAX_PATH, tempDir);
 		return std::wstring{tempDir} + L"eBox_update_failed.txt";
+	}
+
+	std::wstring getUpdateLogPath()
+	{
+		return updateLogPath();
 	}
 
 	bool applyUpdate(const std::wstring& downloadedExePath)
