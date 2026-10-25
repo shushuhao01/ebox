@@ -1,25 +1,23 @@
 {
-    "latestVersion": "v3.2.0",
-    "latestVersionCode": 30200,
-    "releaseDate": "2026/10/24",
+    "latestVersion": "v3.2.1",
+    "latestVersionCode": 30201,
+    "releaseDate": "2026/10/25",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "67d0671e3526097f9ba3126b7c92cd5b01f7ea6146e2e5c12e5f248f20f51557",
-    "downloadSize": 3765760,
+    "downloadSha256": "024a3c956ca056df999d2479236e48eea130b27b55f5e3d9b8d99e7dd616f9bd",
+    "downloadSize": 3790848,
     "changelog": [
-        "v3.2.0 更新内容：",
-        "新增设置中心「检查与修复」：一键自检运行组件、环境注册表与数据目录，发现问题自动修复",
-        "数据目录可一键切换到其它磁盘：自动复制、校验并删除旧目录，失败自动回滚",
-        "新增 32 位注入器：64 位 eBox 启动 32 位应用时也能跨环境粘贴图片/文本",
-        "优化迁移完成后删除旧数据的进度：显示真实进度和正在删除的文件，不再长时间无响应",
-        "删除旧数据遇到文件被占用时，自动结束占用进程后重试；仍失败会给出具体文件与原因",
-        "优化磁盘选择弹窗：矮屏下至少显示 3 个磁盘，并提供滚动提示",
-        "修复官网下载中心直链下载的文件名变成带时间戳的存储名的问题",
-        "版本号更新至 v3.2.0"
+        "更新检查改为五源回退：官网主域名 → www 备域名 → jsDelivr 两个节点 → GitHub 原始地址，单源失败自动切换",
+        "新增代理/直连双路径兜底：未配置代理时直连优先，首选路径全部失败后自动换另一种网络方式",
+        "卸载 VPN/加速器后系统代理残留导致检查更新报网络异常的问题已修复",
+        "下载安装包时校验 HTTP 状态码与文件体积，镜像还是旧版时自动换源，不再直接报 SHA 校验失败",
+        "检查更新失败时弹窗列出各源失败原因，并写入日志 %TEMP%\\eBox_update.log 便于排查",
+        "发布流程新增自动同步 dist/update.json 与 eBox.exe 到官网下载目录",
+        "版本号更新至 v3.2.1"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.2.0/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.2.1/eBox.exe"
     ]
 }
