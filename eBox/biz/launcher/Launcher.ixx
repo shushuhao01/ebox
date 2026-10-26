@@ -22,6 +22,11 @@ namespace biz
 		coro::LazyTask<void> coRun(std::shared_ptr<Env> env, std::wstring_view exePath, std::wstring_view params);
 
 	private:
+		// 获取/释放启动槽位：所有启动入口共用，保证同一时刻只有一条流水线在创建子进程，
+		// 且相邻两次启动至少间隔 kLaunchSpacing
+		coro::LazyTask<void> acquireLaunchSlot();
+		void releaseLaunchSlot();
+
 		coro::LazyTask<void> launch(const std::shared_ptr<Env>& env, std::wstring_view exePath, std::wstring_view params) const;
 		coro::LazyTask<void> launchInternal(std::shared_ptr<Env> env, std::wstring exePath, std::wstring params) const;
 		// UI 入口：启动 + 轮询兜底（慢电脑/注入失败时提示并允许重试）
@@ -44,6 +49,15 @@ namespace biz
 		// 使全局共享锁/线程池发生护送（convoy），最终把 UI 线程拖进锁等待，心跳超时卡死。
 		// 这里用一次性互斥：启动流水线进行中（spin up 阶段未结束）时，后续点击直接忽略，
 		// 只有第一击真正启动，杜绝连点风暴；启动阶段完成后立即放行下一次正常启动。
+		std::atomic<bool> m_bUiLaunchGuard{false};
+
+		// 启动槽位：UI 单击、RPC/CLI 批量启动都先取该槽位再创建子进程。
+		// 十几个实例同时初始化（CEF/皮肤/缓存并发读写）会互相争抢 IO 与 CPU，
+		// 个别实例可能因此拿不到资源而崩溃，故串行 + 最小间隔地错峰拉起。
 		std::atomic<bool> m_bLaunching{false};
+		// 相邻两次启动起点的最小间隔
+		static constexpr std::chrono::milliseconds kLaunchSpacing{500};
+		// 上一次真正发起启动的时刻，用于计算错峰等待
+		std::chrono::steady_clock::time_point m_lastLaunchStart{};
 	};
 }

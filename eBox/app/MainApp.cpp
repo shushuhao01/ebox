@@ -7,6 +7,12 @@ module;
 #include <windows.h>
 #include <restartmanager.h>
 #include <tlhelp32.h>
+// BCrypt：迁移校验时计算 SHA-256（只用 CreateHash/HashData/FinishHash，Win7 可用）
+#include <bcrypt.h>
+// SHGetKnownFolderPath：定位真实的“文档”目录，推导环境内 WXWork 数据目录位置
+#include <shlobj.h>
+#include <knownfolders.h>
+#include <objbase.h>
 module MainApp;
 
 import std;
@@ -251,6 +257,14 @@ namespace
 		std::atomic<int> phase{0};  // 0=复制 1=校验 2=清理原目录 3=清理未完成的复制
 		std::atomic<bool> stop{false};
 		std::atomic<int> skippedCount{0}; // 复制时源文件已消失、按"无数据可复制"跳过的文件数
+		// 校验（phase=1）进度：逐文件比对大小 + SHA-256
+		std::atomic<std::uint64_t> verifyFiles{0};
+		std::atomic<std::uint64_t> verifyTotalFiles{0};
+		std::uint64_t verifiedFileCount{0}; // 校验通过的文件数（join 后主线程读，用于完成提示）
+		std::uint64_t verifiedByteCount{0}; // 校验通过的字节数
+		// true=上次迁移已复制并校验通过、只差删除原目录（启动期续做时置位）。
+		// 此时绝不允许重新复制（源目录已被删掉一部分，重拷会用残缺数据覆盖好数据）。
+		bool resumeDelete{false};
 		// 删除原目录的进度（phase=2）：先统计文件数/字节数，删除时按文件逐个推进
 		std::atomic<std::uint64_t> delTotalFiles{0};
 		std::atomic<std::uint64_t> delTotalBytes{0};
@@ -359,8 +373,16 @@ namespace
 			fromPrefix.push_back(L'\\');
 		}
 
-		fs::recursive_directory_iterator it{fromRoot, fs::directory_options::skip_permission_denied, ec};
+		// 严格枚举：不使用 skip_permission_denied —— 任何读不到的子树都必须让迁移失败，
+		// 否则会"悄悄少复制一批文件"却仍判成功，切到目标目录后表现为数据缺失。
+		fs::recursive_directory_iterator it{fromRoot, fs::directory_options::none, ec};
 		const fs::recursive_directory_iterator end{};
+		if (ec)
+		{
+			state.error = std::format(L"读取源目录失败：{}\n{}\n\n已保留原目录。", fromRoot.native(),
+			                          narrow_to_wide(ec.message()));
+			return false;
+		}
 		while (!ec && it != end)
 		{
 			const fs::path src = it->path();
@@ -388,7 +410,8 @@ namespace
 				fs::create_directories(dst, mkEc);
 				if (mkEc)
 				{
-					state.error = std::format(L"无法创建目标目录：{}\n{}", dst.native(), narrow_to_wide(mkEc.message()));
+					state.error = std::format(L"无法创建目标目录：{}\n{}\n\n已保留原目录。", dst.native(),
+					                          narrow_to_wide(mkEc.message()));
 					return false;
 				}
 			}
@@ -398,16 +421,28 @@ namespace
 				const std::uint64_t size = it->file_size(sizeEc);
 				if (sizeEc)
 				{
-					continue; // 读不到大小（临时文件已消失等）直接跳过
+					// 读不到大小说明这个文件当前不可读（被独占/权限不足/枚举期间消失）。
+					// 不能跳过：跳过就等于少复制一个文件，而校验也查不出来。
+					state.error = std::format(L"读取源文件失败：{}\n{}\n\n"
+					                          L"请关闭占用该文件的程序后重新切换磁盘。\n\n已保留原目录。",
+					                          src.native(), narrow_to_wide(sizeEc.message()));
+					return false;
 				}
 				plan.push_back(CopyTask{src, dst, size});
 				state.total += size;
+			}
+			else if (typeEc)
+			{
+				state.error = std::format(L"读取源目录失败：{}\n{}\n\n已保留原目录。", src.native(),
+				                          narrow_to_wide(typeEc.message()));
+				return false;
 			}
 			it.increment(ec);
 		}
 		if (ec)
 		{
-			state.error = std::format(L"读取源目录失败：{}\n{}", fromRoot.native(), narrow_to_wide(ec.message()));
+			state.error = std::format(L"读取源目录失败：{}\n{}\n\n已保留原目录。", fromRoot.native(),
+			                          narrow_to_wide(ec.message()));
 			return false;
 		}
 		return true;
@@ -632,6 +667,168 @@ namespace
 			} while (Process32NextW(snapshot, &entry));
 		}
 		CloseHandle(snapshot);
+	}
+
+	// 迁移前结束"占用源数据文件"的所有进程。
+	// terminate_processes_under 只能结束映像位于源目录内的进程，而企业微信/微信的本体
+	// （如 D:\RJ\WXWork\WXWork.exe）装在别处、却持有 Env 内数据库与 hive 的句柄：
+	// 不结束它，SQLite（WAL 模式）会在复制期间继续写入，拷出来的是撕裂的快照。
+	// 这里用 Restart Manager 反查占用者（每批 64 个文件一个会话）。
+	void terminate_lockers_under_tree(const std::filesystem::path& root, MigrationState& state)
+	{
+		namespace fs = std::filesystem;
+		constexpr std::size_t kMaxProbeFiles = 4096;
+		constexpr std::size_t kMaxPriorityFiles = 1024;
+		constexpr std::size_t kFilesPerSession = 64;
+
+		static constexpr const wchar_t* kDataExts[] = {
+			L".db",   L".db-wal", L".db-shm", L".db-journal", L".sqlite", L".sqlite3",
+			L".ldb",  L".hive",   L".dat",    L".log",        L".idx",
+		};
+		const auto looks_like_data = [](const fs::path& path)
+		{
+			const std::wstring name = path.filename().native();
+			for (const wchar_t* ext : kDataExts)
+			{
+				const std::size_t len = ::wcslen(ext);
+				if (name.size() >= len && _wcsicmp(name.c_str() + (name.size() - len), ext) == 0)
+				{
+					return true;
+				}
+			}
+			return false;
+		};
+
+		std::vector<std::wstring> files;
+		files.reserve(kMaxProbeFiles);
+		// 企业微信的数据文件（客户资料/会话库都在 WXWork\<corp>\Data）优先探测：
+		// 多环境时数据目录内的文件可达数万个，只按枚举顺序取前 N 个会把后面环境的
+		// 企微整个漏掉 —— 企微进程没被结束就会在复制期间继续写库，拷出撕裂的快照。
+		std::vector<std::wstring> priority;
+		priority.reserve(kMaxPriorityFiles);
+		const auto is_wxwork_path = [](const std::wstring& path)
+		{
+			std::wstring lower = path;
+			for (wchar_t& ch : lower)
+			{
+				if (ch >= L'A' && ch <= L'Z')
+				{
+					ch = static_cast<wchar_t>(ch - L'A' + L'a');
+				}
+			}
+			return lower.find(L"\\wxwork\\") != std::wstring::npos;
+		};
+		std::error_code ec;
+		const fs::recursive_directory_iterator end{};
+		for (fs::recursive_directory_iterator it{root, fs::directory_options::skip_permission_denied, ec}; it != end;
+		     it.increment(ec))
+		{
+			std::error_code typeEc;
+			if (!it->is_regular_file(typeEc) || !looks_like_data(it->path()))
+			{
+				continue;
+			}
+			const std::wstring path = it->path().native();
+			if (is_wxwork_path(path))
+			{
+				if (priority.size() < kMaxPriorityFiles)
+				{
+					priority.push_back(path);
+				}
+			}
+			else if (files.size() < kMaxProbeFiles)
+			{
+				files.push_back(path);
+			}
+		}
+		files.insert(files.end(), priority.begin(), priority.end());
+		if (files.empty())
+		{
+			return;
+		}
+
+		const DWORD selfPid = GetCurrentProcessId();
+		std::vector<DWORD> targets;
+		const auto collect = [&](std::size_t begin, std::size_t count)
+		{
+			std::vector<const wchar_t*> resources;
+			resources.reserve(count);
+			for (std::size_t i = 0; i < count; ++i)
+			{
+				resources.push_back(files[begin + i].c_str());
+			}
+			DWORD sessionHandle = 0;
+			wchar_t sessionKey[CCH_RM_SESSION_KEY + 1]{};
+			if (RmStartSession(&sessionHandle, 0, sessionKey) != ERROR_SUCCESS)
+			{
+				return;
+			}
+			if (RmRegisterResources(sessionHandle, static_cast<UINT>(resources.size()), resources.data(), 0, nullptr,
+			                        0, nullptr) == ERROR_SUCCESS)
+			{
+				UINT needed = 0;
+				UINT got = 0;
+				DWORD reason = RmRebootReasonNone;
+				DWORD rc = RmGetList(sessionHandle, &needed, &got, nullptr, &reason);
+				if (rc == ERROR_MORE_DATA && needed > 0)
+				{
+					std::vector<RM_PROCESS_INFO> infos(needed);
+					got = needed;
+					rc = RmGetList(sessionHandle, &needed, &got, infos.data(), &reason);
+					if (rc == ERROR_SUCCESS)
+					{
+						for (UINT i = 0; i < got; ++i)
+						{
+							const DWORD pid = infos[i].Process.dwProcessId;
+							if (pid == 0 || pid == selfPid || pid <= 4 ||
+								std::find(targets.begin(), targets.end(), pid) != targets.end())
+							{
+								continue;
+							}
+							targets.push_back(pid);
+						}
+					}
+				}
+			}
+			RmEndSession(sessionHandle);
+		};
+		for (std::size_t begin = 0; begin < files.size(); begin += kFilesPerSession)
+		{
+			collect(begin, std::min(kFilesPerSession, files.size() - begin));
+		}
+
+		for (const DWORD pid : targets)
+		{
+			HANDLE hProcess = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+			if (!hProcess)
+			{
+				continue;
+			}
+			wchar_t imagePath[MAX_PATH * 2]{};
+			DWORD size = static_cast<DWORD>(std::size(imagePath));
+			const bool got = QueryFullProcessImageNameW(hProcess, 0, imagePath, &size) != FALSE;
+			CloseHandle(hProcess);
+			// 系统关键进程（svchost/explorer 等）不能杀，只能寄希望于重试
+			if (!got || is_protected_process(std::wstring{imagePath, size}))
+			{
+				continue;
+			}
+			{
+				std::lock_guard lock{state.textMutex};
+				// 借用第 0 个槽位展示（此时还没有复制线程在跑）
+				state.slots[0].closing = std::format(L"{}（PID {}）", std::wstring{imagePath, size}, pid);
+			}
+			end_process(pid);
+		}
+		{
+			std::lock_guard lock{state.textMutex};
+			state.slots[0].closing.clear();
+		}
+		// 给被结束的进程一点时间释放句柄（它们可能在退出前做 WAL checkpoint）
+		if (!targets.empty())
+		{
+			::Sleep(500);
+		}
 	}
 
 	// CopyFileEx 的进度回调：把"当前文件已传输字节"写进本线程槽位，
@@ -877,28 +1074,445 @@ namespace
 		}
 	}
 
-	// 校验：按计划逐项比对目标文件大小（不递归枚举，速度快）。
-	// 源文件在迁移过程中已消失的项没有数据可校验，直接跳过（复制时已计数并会在完成提示里说明）。
-	bool verify_copy_plan(const std::vector<CopyTask>& plan, std::wstring& error)
+	// ---- 迁移校验 ----
+	// 只比"计划里的大小"是不够的：计划阶段枚举不到的文件根本不在校验范围（旧实现会静默跳过），
+	// 而 WAL 模式的数据库边写边拷时大小可能一致、内容却是撕裂的。因此这里做严格校验：
+	// 重新枚举源目录，逐个文件比对目标侧的存在性、大小与 SHA-256，不通过就绝不切换。
+
+	// 统一成小写、反斜杠分隔的路径键（Windows 路径不区分大小写）
+	std::wstring path_key(std::wstring text)
 	{
-		for (const auto& task : plan)
+		for (auto& ch : text)
 		{
-			std::error_code ec;
-			const std::uint64_t size = std::filesystem::file_size(task.dst, ec);
-			if (!ec && size == task.size)
+			if (ch == L'/')
 			{
-				continue;
+				ch = L'\\';
 			}
-			std::error_code srcEc;
-			if (!std::filesystem::exists(task.src, srcEc) && !srcEc)
+			else if (ch >= L'A' && ch <= L'Z')
 			{
-				continue; // 源已消失：复制时已按"无数据可复制"跳过
+				ch = static_cast<wchar_t>(ch - L'A' + L'a');
 			}
-			error = std::format(L"数据目录迁移失败：校验未通过，文件未完整复制。\n{}\n\n已保留原目录。",
-			                    task.dst.native());
+		}
+		return text;
+	}
+
+	// 内容是"易变"的路径：日志/缓存/临时目录与临时文件。
+	// 这些不是用户数据，且环境一启动就会被改写，逐字节比对必然误报。
+	bool is_transient_path(const std::wstring& relativeKey)
+	{
+		static constexpr const wchar_t* kTransientDirs[] = {
+			L"\\logs\\", L"\\log\\",         L"\\cache\\", L"\\caches\\", L"\\gpucache\\",
+			L"\\code cache\\", L"\\cachestorage\\", L"\\crashpad\\", L"\\temp\\",
+			L"\\tmp\\",  L"\\dumps\\",
+		};
+		std::wstring text = L"\\";
+		text += relativeKey;
+		for (const wchar_t* dir : kTransientDirs)
+		{
+			if (text.find(dir) != std::wstring::npos)
+			{
+				return true;
+			}
+		}
+		static constexpr const wchar_t* kTransientExts[] = {L".tmp", L".dmp", L".etl", L".lock"};
+		for (const wchar_t* ext : kTransientExts)
+		{
+			const std::size_t len = ::wcslen(ext);
+			if (text.size() >= len && text.compare(text.size() - len, len, ext) == 0)
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	// 计算文件的 SHA-256（BCrypt 三段式；不能用 BCryptHash —— Win7 没有该导出）
+	bool sha256_file(const std::filesystem::path& path, std::array<unsigned char, 32>& digest)
+	{
+		HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ,
+		                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+		                            FILE_FLAG_SEQUENTIAL_SCAN, nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			return false;
+		}
+		BCRYPT_ALG_HANDLE algorithm = nullptr;
+		BCRYPT_HASH_HANDLE hash = nullptr;
+		bool ok = false;
+		do
+		{
+			if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, 0) < 0)
+			{
+				break;
+			}
+			if (BCryptCreateHash(algorithm, &hash, nullptr, 0, nullptr, 0, 0) < 0)
+			{
+				break;
+			}
+			std::array<unsigned char, 64 * 1024> buffer{};
+			for (;;)
+			{
+				DWORD read = 0;
+				if (!::ReadFile(file, buffer.data(), static_cast<DWORD>(buffer.size()), &read, nullptr))
+				{
+					break;
+				}
+				if (read == 0)
+				{
+					ok = BCryptFinishHash(hash, digest.data(), static_cast<ULONG>(digest.size()), 0) >= 0;
+					break;
+				}
+				if (BCryptHashData(hash, buffer.data(), read, 0) < 0)
+				{
+					break;
+				}
+			}
+		} while (false);
+		if (hash != nullptr)
+		{
+			BCryptDestroyHash(hash);
+		}
+		if (algorithm != nullptr)
+		{
+			BCryptCloseAlgorithmProvider(algorithm, 0);
+		}
+		::CloseHandle(file);
+		return ok;
+	}
+
+	// 严格枚举一棵目录树：相对路径(小写) → 大小。任何读不到的东西都算失败。
+	bool scan_tree(const std::filesystem::path& root, std::unordered_map<std::wstring, std::uint64_t>& files,
+	               std::uint64_t& bytes, std::wstring& error)
+	{
+		namespace fs = std::filesystem;
+		files.clear();
+		bytes = 0;
+		std::error_code ec;
+		if (!fs::is_directory(root, ec))
+		{
+			if (ec)
+			{
+				error = std::format(L"数据目录迁移校验失败：无法读取目录。\n{}\n{}\n\n已保留原目录。",
+				                    root.native(), narrow_to_wide(ec.message()));
+				return false;
+			}
+			return true; // 该子树不存在（Env/bin 可能本来就没有）
+		}
+		std::wstring prefix = root.native();
+		if (prefix.empty() || (prefix.back() != L'\\' && prefix.back() != L'/'))
+		{
+			prefix.push_back(L'\\');
+		}
+		const fs::recursive_directory_iterator end{};
+		for (fs::recursive_directory_iterator it{root, fs::directory_options::none, ec}; !ec && it != end;
+		     it.increment(ec))
+		{
+			std::error_code typeEc;
+			if (!it->is_regular_file(typeEc))
+			{
+				if (typeEc)
+				{
+					error = std::format(L"数据目录迁移校验失败：无法读取文件属性。\n{}\n{}\n\n已保留原目录。",
+					                    it->path().native(), narrow_to_wide(typeEc.message()));
+					return false;
+				}
+				continue; // 子目录
+			}
+			std::error_code sizeEc;
+			const std::uintmax_t size = it->file_size(sizeEc);
+			if (sizeEc)
+			{
+				error = std::format(L"数据目录迁移校验失败：无法读取文件大小。\n{}\n{}\n\n已保留原目录。",
+				                    it->path().native(), narrow_to_wide(sizeEc.message()));
+				return false;
+			}
+			std::wstring rel = it->path().native();
+			if (rel.size() > prefix.size() &&
+			    _wcsnicmp(rel.c_str(), prefix.c_str(), prefix.size()) == 0)
+			{
+				rel = rel.substr(prefix.size());
+			}
+			files[path_key(std::move(rel))] = static_cast<std::uint64_t>(size);
+			bytes += static_cast<std::uint64_t>(size);
+		}
+		if (ec)
+		{
+			error = std::format(L"数据目录迁移校验失败：读取目录失败。\n{}\n{}\n\n已保留原目录。",
+			                    root.native(), narrow_to_wide(ec.message()));
 			return false;
 		}
 		return true;
+	}
+
+	// 逐文件校验 from/Env、from/bin 是否已完整落到 to 下（大小 + SHA-256）。
+	// 目标侧多出的文件只统计、不判失败（例如目标根的提示文件，或易变文件）。
+	bool verify_copy_trees(const std::filesystem::path& from, const std::filesystem::path& to,
+	                       MigrationState& state, std::wstring& error)
+	{
+		namespace fs = std::filesystem;
+		const std::array<std::pair<fs::path, fs::path>, 2> pairs{{
+			{from / L"Env", to / L"Env"},
+			{from / L"bin", to / L"bin"},
+		}};
+
+		// 先统计要校验的文件数，供进度框显示 "x / y"
+		std::uint64_t totalFiles = 0;
+		for (const auto& pair : pairs)
+		{
+			std::unordered_map<std::wstring, std::uint64_t> files;
+			std::uint64_t bytes = 0;
+			if (!scan_tree(pair.first, files, bytes, error))
+			{
+				return false;
+			}
+			for (const auto& entry : files)
+			{
+				if (!is_transient_path(entry.first))
+				{
+					++totalFiles;
+				}
+			}
+		}
+		state.verifyTotalFiles.store(totalFiles);
+		state.verifyFiles.store(0);
+
+		std::uint64_t verifiedFiles = 0;
+		std::uint64_t verifiedBytes = 0;
+		for (const auto& [srcRoot, dstRoot] : pairs)
+		{
+			std::unordered_map<std::wstring, std::uint64_t> srcFiles;
+			std::unordered_map<std::wstring, std::uint64_t> dstFiles;
+			std::uint64_t srcBytes = 0;
+			std::uint64_t dstBytes = 0;
+			if (!scan_tree(srcRoot, srcFiles, srcBytes, error) || !scan_tree(dstRoot, dstFiles, dstBytes, error))
+			{
+				return false;
+			}
+			for (const auto& [rel, size] : srcFiles)
+			{
+				if (is_transient_path(rel))
+				{
+					continue;
+				}
+				const auto found = dstFiles.find(rel);
+				if (found == dstFiles.end())
+				{
+					error = std::format(L"数据目录迁移校验失败：目标目录缺少文件。\n源文件：{}\n目标目录：{}\n\n"
+					                    L"已保留原目录，可重新切换磁盘再试。",
+					                    (srcRoot / rel).native(), dstRoot.native());
+					return false;
+				}
+				if (found->second != size)
+				{
+					error = std::format(L"数据目录迁移校验失败：文件大小不一致。\n源文件：{}\n"
+					                    L"源大小：{} 字节\n目标大小：{} 字节\n\n已保留原目录。",
+					                    (srcRoot / rel).native(), size, found->second);
+					return false;
+				}
+				std::array<unsigned char, 32> srcDigest{};
+				std::array<unsigned char, 32> dstDigest{};
+				if (!sha256_file(srcRoot / rel, srcDigest))
+				{
+					error = std::format(L"数据目录迁移校验失败：无法读取源文件。\n{}\n"
+					                    L"（可能仍有程序占用该文件）\n\n已保留原目录。",
+					                    (srcRoot / rel).native());
+					return false;
+				}
+				if (!sha256_file(dstRoot / rel, dstDigest))
+				{
+					error = std::format(L"数据目录迁移校验失败：无法读取目标文件。\n{}\n\n已保留原目录。",
+					                    (dstRoot / rel).native());
+					return false;
+				}
+				if (srcDigest != dstDigest)
+				{
+					error = std::format(L"数据目录迁移校验失败：文件内容不一致（SHA-256 不同）。\n"
+					                    L"源文件：{}\n\n这通常是因为复制时该文件仍被程序写入。\n\n已保留原目录。",
+					                    (srcRoot / rel).native());
+					return false;
+				}
+				++verifiedFiles;
+				verifiedBytes += size;
+				state.verifyFiles.fetch_add(1, std::memory_order_relaxed);
+			}
+		}
+		state.verifiedFileCount = verifiedFiles;
+		state.verifiedByteCount = verifiedBytes;
+		return true;
+	}
+
+	// ---- 迁移完成标记 ----
+	// 写在目标目录根：记录"这次迁移已经逐文件校验通过、DataDir 已切换"。
+	// 删除原目录阶段被中断（断电/强杀/蓝屏）后，下次启动据此只续做删除，
+	// 绝不重新复制——此时源目录已被删掉一部分，重拷会用好数据覆盖成残缺数据。
+	constexpr wchar_t MIGRATION_MARKER[] = L".ebox-migration-complete.txt";
+
+	// ---- 迁移进行中标记 ----
+	// 同样写在目标目录根：开始复制前落盘，记录"目标目录里的 Env/bin 是本次迁移写入的
+	// 半成品"。复制阶段被中断（断电/强杀/蓝屏）后，目标目录会留下半套文件，下次启动
+	// 必须清掉再重拷；但目标根下也可能本来就有用户自己的数据（挂起项陈旧、用户手工把
+	// 旧数据拷回目标盘、目标目录被别的程序写入）。没有本标记就说明那些文件不是我们写的，
+	// 此时清理会静默删掉真实数据，因此必须先确认来源一致。
+	constexpr wchar_t MIGRATION_INCOMPLETE_MARKER[] = L".ebox-migration-incomplete.txt";
+
+	struct MigrationMarker
+	{
+		std::wstring from;
+		std::uint64_t files{0};
+		std::uint64_t bytes{0};
+	};
+
+	std::uint64_t parse_count(const std::wstring& text)
+	{
+		std::uint64_t value = 0;
+		for (const wchar_t ch : text)
+		{
+			if (ch < L'0' || ch > L'9')
+			{
+				return 0;
+			}
+			value = value * 10 + static_cast<std::uint64_t>(ch - L'0');
+		}
+		return value;
+	}
+
+	// 读取标记文件全文（UTF-16），失败返回空串
+	std::wstring read_marker_text(const std::filesystem::path& path)
+	{
+		HANDLE file = ::CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr,
+		                            OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			return {};
+		}
+		LARGE_INTEGER size{};
+		std::wstring text;
+		if (::GetFileSizeEx(file, &size) && size.QuadPart > 0 && size.QuadPart <= 64 * 1024)
+		{
+			text.resize(static_cast<std::size_t>(size.QuadPart) / sizeof(wchar_t));
+			DWORD read = 0;
+			if (::ReadFile(file, text.data(), static_cast<DWORD>(size.QuadPart), &read, nullptr) && read > 0)
+			{
+				text.resize(read / sizeof(wchar_t));
+			}
+			else
+			{
+				text.clear();
+			}
+		}
+		::CloseHandle(file);
+		return text;
+	}
+
+	// 写标记文件（UTF-16、隐藏属性）；返回 false 表示落盘失败
+	bool write_marker_text(const std::filesystem::path& path, const std::wstring& text)
+	{
+		HANDLE file = ::CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+		                            FILE_ATTRIBUTE_HIDDEN, nullptr);
+		if (file == INVALID_HANDLE_VALUE)
+		{
+			return false;
+		}
+		const DWORD wanted = static_cast<DWORD>(text.size() * sizeof(wchar_t));
+		DWORD written = 0;
+		const bool ok = ::WriteFile(file, text.data(), wanted, &written, nullptr) != FALSE && written == wanted;
+		::FlushFileBuffers(file);
+		::CloseHandle(file);
+		return ok;
+	}
+
+	bool write_migration_marker(const std::filesystem::path& to, const std::wstring& from, std::uint64_t files,
+	                            std::uint64_t bytes)
+	{
+		const std::wstring text =
+			std::format(L"version=1\r\nfrom={}\r\nfiles={}\r\nbytes={}\r\n", from, files, bytes);
+		return write_marker_text(to / MIGRATION_MARKER, text);
+	}
+
+	// 开始复制前落盘的「迁移进行中」标记
+	bool write_incomplete_marker(const std::filesystem::path& to, const std::wstring& from)
+	{
+		return write_marker_text(to / MIGRATION_INCOMPLETE_MARKER, std::format(L"version=1\r\nfrom={}\r\n", from));
+	}
+
+	// 读「迁移进行中」标记里记录的来源目录；不存在/损坏时返回空串
+	std::wstring read_incomplete_marker_from(const std::filesystem::path& to)
+	{
+		const std::wstring text = read_marker_text(to / MIGRATION_INCOMPLETE_MARKER);
+		std::size_t start = 0;
+		while (start < text.size())
+		{
+			std::size_t end = text.find(L'\n', start);
+			if (end == std::wstring::npos)
+			{
+				end = text.size();
+			}
+			std::wstring line = text.substr(start, end - start);
+			start = end + 1;
+			while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n'))
+			{
+				line.pop_back();
+			}
+			const auto eq = line.find(L'=');
+			if (eq != std::wstring::npos && line.substr(0, eq) == L"from")
+			{
+				return line.substr(eq + 1);
+			}
+		}
+		return {};
+	}
+
+	MigrationMarker read_migration_marker(const std::filesystem::path& to)
+	{
+		MigrationMarker marker;
+		const std::wstring text = read_marker_text(to / MIGRATION_MARKER);
+
+		std::size_t start = 0;
+		while (start < text.size())
+		{
+			std::size_t end = text.find(L'\n', start);
+			if (end == std::wstring::npos)
+			{
+				end = text.size();
+			}
+			std::wstring line = text.substr(start, end - start);
+			start = end + 1;
+			while (!line.empty() && (line.back() == L'\r' || line.back() == L'\n'))
+			{
+				line.pop_back();
+			}
+			const auto eq = line.find(L'=');
+			if (eq == std::wstring::npos)
+			{
+				continue;
+			}
+			const std::wstring key = line.substr(0, eq);
+			const std::wstring value = line.substr(eq + 1);
+			if (key == L"from")
+			{
+				marker.from = value;
+			}
+			else if (key == L"files")
+			{
+				marker.files = parse_count(value);
+			}
+			else if (key == L"bytes")
+			{
+				marker.bytes = parse_count(value);
+			}
+		}
+		return marker;
+	}
+
+	// 清掉目标目录根下的两个迁移标记。所有"迁移结束/放弃"的路径都必须调用：
+	// 完整标记是下次启动「只续做删除」的依据，进行中标记是"目标数据由我们写入"的凭据，
+	// 任一残留都会让下一次迁移误判目标目录的来源。
+	void delete_migration_marker(const std::filesystem::path& to)
+	{
+		std::error_code ec;
+		std::filesystem::remove(to / MIGRATION_MARKER, ec);
+		ec.clear();
+		std::filesystem::remove(to / MIGRATION_INCOMPLETE_MARKER, ec);
 	}
 
 	// 统计目录下待删除的文件数与总字节：删除阶段据此显示百分比进度
@@ -1064,15 +1678,22 @@ namespace
 			// 复制之后的校验、删除旧数据都没有字节进度：校验/清理切成"不确定进度"；
 			// 删除原目录可提前统计文件数，用确定进度并显示正在删除的文件。
 			const int phase = state->phase.load();
+			const bool phaseChanged = state->uiPhase != phase;
+			if (phaseChanged)
+			{
+				state->uiPhase = phase;
+				// 0=复制、2=删除原目录 有确定的字节/文件进度；1=校验、3=清理半成品 用不确定进度
+				SendMessageW(hwnd, TDM_SET_MARQUEE_PROGRESS_BAR,
+				             (phase == 0 || phase == 2) ? FALSE : TRUE, 0);
+				state->shownText.clear();
+				if (phase == 0)
+				{
+					// 清理完目标残骸回到复制阶段，进度条从 0 重新走
+					SendMessageW(hwnd, TDM_SET_PROGRESS_BAR_POS, 0, 0);
+				}
+			}
 			if (phase != 0)
 			{
-				const bool phaseChanged = state->uiPhase != phase;
-				if (phaseChanged)
-				{
-					state->uiPhase = phase;
-					SendMessageW(hwnd, TDM_SET_MARQUEE_PROGRESS_BAR, phase == 2 ? FALSE : TRUE, 0);
-					state->shownText.clear();
-				}
 				if (phase == 2)
 				{
 					const std::uint64_t delTotal = state->delTotalBytes.load();
@@ -1127,10 +1748,32 @@ namespace
 					}
 					return S_OK;
 				}
+				if (phase == 1)
+				{
+					// 逐文件校验（大小 + SHA-256）有明确文件数，显示 x / y 让用户看到在推进
+					if (++state->uiTick % 5 != 0 && !state->shownText.empty())
+					{
+						return S_OK;
+					}
+					const std::uint64_t verifyFiles = state->verifyFiles.load();
+					const std::uint64_t verifyTotal = state->verifyTotalFiles.load();
+					const std::wstring text =
+						verifyTotal > 0
+							? std::format(L"文件已复制完成，正在逐文件校验数据内容：{} / {} 个文件，请稍候…\n\n"
+							              L"每个文件都会比对大小与 SHA-256，确认与原目录完全一致后才切换数据目录。",
+							              verifyFiles, verifyTotal)
+							: std::wstring{L"文件已复制完成，正在校验数据，请稍候…"};
+					if (text != state->shownText)
+					{
+						state->shownText = text;
+						SendMessageW(hwnd, TDM_SET_ELEMENT_TEXT, TDE_CONTENT,
+						             reinterpret_cast<LPARAM>(text.c_str()));
+					}
+					return S_OK;
+				}
 				if (phaseChanged)
 				{
-					const std::wstring text = phase == 1 ? L"文件已复制完成，正在校验数据，请稍候…"
-					                                      : L"迁移未完成，正在清理目标目录中的临时文件…";
+					const std::wstring text = L"迁移未完成，正在清理目标目录中的临时文件…";
 					state->shownText = text;
 					SendMessageW(hwnd, TDM_SET_ELEMENT_TEXT, TDE_CONTENT,
 					             reinterpret_cast<LPARAM>(text.c_str()));
@@ -1231,18 +1874,40 @@ namespace
 
 		std::error_code ec;
 		const fs::path from = fs::weakly_canonical(fs::path{fromStr}, ec);
+		ec.clear();
 		const fs::path to = fs::weakly_canonical(fs::path{toStr}, ec);
+
+		MigrationState state;
+		state.sourceDir = from.native();
+		state.targetDir = to.native();
+
+		// 续做判定：DataDir 已经指向目标目录，说明上一轮的"复制 + 逐文件校验"已全部通过，
+		// 只是删除原目录的阶段被打断（断电/强杀/蓝屏）。此时源目录已被删掉一部分，
+		// 绝不能重新复制 —— 那会用好数据覆盖成残缺数据（客户资料数量对不上的直接原因）。
+		const std::wstring dataDirStr = read_reg_value(REG_VALUE_DATA_DIR);
+		if (!dataDirStr.empty() && !to.empty())
+		{
+			std::error_code dirEc;
+			const fs::path dataDir = fs::weakly_canonical(fs::path{dataDirStr}, dirEc);
+			if (!dirEc && _wcsicmp(dataDir.native().c_str(), to.native().c_str()) == 0)
+			{
+				state.resumeDelete = true;
+			}
+		}
+
 		// cleanupPartial=true 时清掉目标侧已复制的一半数据：否则下次切换会因
 		// "目标目录已存在 Env" 被拒绝，用户再也切换不回去。
-		const auto abort = [&](const std::wstring& msg, bool cleanupPartial)
+		// 续做删除时目标侧数据已校验通过、DataDir 正在使用，任何情况下都不能删。
+		const auto abort = [&state, &to](const std::wstring& msg, bool cleanupPartial)
 		{
 			delete_reg_value(REG_VALUE_PENDING_FROM);
 			delete_reg_value(REG_VALUE_PENDING_TO);
-			if (cleanupPartial && !to.empty())
+			if (cleanupPartial && !to.empty() && !state.resumeDelete)
 			{
 				std::error_code rmEc;
 				fs::remove_all(to / L"Env", rmEc);
 				fs::remove_all(to / L"bin", rmEc);
+				delete_migration_marker(to);
 			}
 			MessageBoxW(nullptr, msg.c_str(), MainApp::appName.data(), MB_OK | MB_ICONERROR | MB_TASKMODAL);
 		};
@@ -1253,65 +1918,204 @@ namespace
 			return;
 		}
 
-		fs::create_directories(to, ec);
-		if (ec)
+		// 同一目录或互相包含的一组校验：这两种情况下"复制 → 切换 → 删源"会打到正在使用的
+		// 数据本身。复制到自身只是空转，随后删源等于删掉唯一一份数据；目标在源内部时，
+		// 删源会连带删掉刚复制好的目标；源在目标内部时，worker 开头清理目标 Env/bin
+		// 会直接删掉源。任何一条都会造成环境数据（企微聊天记录/客户资料）整体丢失，
+		// 因此必须在动任何文件之前拒绝执行。
+		const std::wstring fromPath = from.native();
+		const std::wstring toPath = to.native();
+		const bool sameDir = _wcsicmp(fromPath.c_str(), toPath.c_str()) == 0;
+		const bool nestedDir = path_within(toPath, fromPath) || path_within(fromPath, toPath);
+		if (sameDir || nestedDir)
 		{
-			abort(std::format(L"数据目录迁移失败：无法创建目标目录。\n{}\n\n已保留原目录。", to.native()), false);
+			// 绝不能 cleanupPartial：目标与源重叠时清目标就可能清掉源里的真实数据
+			abort(std::format(L"数据目录迁移已取消：目标目录与当前数据目录相同或存在包含关系。\n\n"
+			                  L"当前数据目录：{}\n目标目录：{}\n\n"
+			                  L"请选择一个不重叠的独立目录后再切换磁盘。已保留现有数据。",
+			                  fromPath, toPath),
+			      false);
 			return;
 		}
 
-		MigrationState state;
-		state.targetDir = to.native();
-		state.sourceDir = from.native();
-
-		// 迁移前先结束数据目录下的环境子进程：它们是 cmd /c start 拉起的孤儿进程，
-		// 不随 eBox 退出而退出，常驻持有 Env 内的 hive/数据库文件，是迁移失败的主要根因。
-		terminate_processes_under(state.sourceDir, state, nullptr);
-
-		// 生成复制计划：一次枚举拿到全部文件与总大小（顺带在目标侧建目录）
 		std::vector<CopyTask> plan;
-		if (!build_copy_plan(from / L"Env", to / L"Env", plan, state) ||
-			!build_copy_plan(from / L"bin", to / L"bin", plan, state))
+		if (state.resumeDelete)
 		{
-			abort(state.error.empty() ? std::wstring{L"数据目录迁移失败，已保留原目录。"} : state.error, false);
-			return;
-		}
-
-		// 源目录是残骸（Env/bin 都不存在或全不可读）时，计划为空。此时若继续，
-		// 会把 DataDir 指向空目录并删掉原目录 —— 等于丢数据。直接取消。
-		if (plan.empty())
-		{
-			abort(L"数据目录迁移失败：源目录中没有可迁移的数据，已取消并保留原目录。", false);
-			return;
-		}
-
-		// 大文件排前面：如果最后只剩一个大文件，即便有字节级进度，尾部也会拖很久；
-		// 反过来让尾部变成大量小文件，收尾会很快。
-		std::sort(plan.begin(), plan.end(),
-		          [](const CopyTask& a, const CopyTask& b) { return a.size > b.size; });
-
-		// 空间校验：目标盘剩余空间必须放得下
-		if (!to.root_path().empty())
-		{
-			ULARGE_INTEGER freeBytes{};
-			if (GetDiskFreeSpaceExW(to.root_path().c_str(), &freeBytes, nullptr, nullptr) &&
-				freeBytes.QuadPart < state.total.load())
+			// 必须凭上一轮写下的完成标记确认"目标目录确实是这次迁移的产物"；
+			// 标记缺失或来源不一致时不做任何删除，只清挂起项，避免误删用户数据。
+			const MigrationMarker marker = read_migration_marker(to);
+			if (marker.from.empty() || _wcsicmp(marker.from.c_str(), from.native().c_str()) != 0)
 			{
-				abort(std::format(L"数据目录迁移失败：目标磁盘剩余空间不足。\n需要：{}，可用：{}\n\n已保留原目录。",
-				                  format_size(state.total.load()), format_size(freeBytes.QuadPart)),
-				      true);
+				delete_reg_value(REG_VALUE_PENDING_FROM);
+				delete_reg_value(REG_VALUE_PENDING_TO);
+				delete_migration_marker(to);
+				MessageBoxW(nullptr,
+				            std::format(L"上次的数据目录迁移记录不完整，已取消删除原目录。\n\n"
+				                        L"当前数据目录：{}\n原目录（未删除）：{}",
+				                        to.native(), from.native())
+				                .c_str(),
+				            MainApp::appName.data(), MB_OK | MB_ICONWARNING | MB_TASKMODAL);
 				return;
+			}
+
+			// 守卫：目标侧已经找不到数据（目标盘未接/被清空）时，删源就等于彻底丢数据。
+			// 把数据目录指回原目录并保留原目录，让用户检查目标盘后重新切换。
+			std::uint64_t dstFiles = 0;
+			std::uint64_t dstBytes = 0;
+			count_delete_tree(to / L"Env", dstFiles, dstBytes);
+			count_delete_tree(to / L"bin", dstFiles, dstBytes);
+			// 目标侧数量少于标记记录的量（目标盘未接/被清空/只恢复了一半）时删源就等于丢数据。
+			// count_delete_tree 统计的是目标全量（含日志等易变文件），正常情况只会比标记值多。
+			const bool dstIncomplete =
+				dstFiles == 0 || dstBytes == 0 || (marker.files > 0 && (dstFiles < marker.files || dstBytes < marker.bytes));
+			if (dstIncomplete)
+			{
+				write_reg_value(REG_VALUE_DATA_DIR, from.native());
+				delete_reg_value(REG_VALUE_PENDING_FROM);
+				delete_reg_value(REG_VALUE_PENDING_TO);
+				delete_migration_marker(to);
+				MessageBoxW(nullptr,
+				            std::format(L"目标目录中的数据不完整（少于迁移完成时校验的数量），已取消删除原目录。\n\n"
+				                        L"迁移时校验：{} 个文件（{}）\n目标目录现有：{} 个文件（{}）\n\n"
+				                        L"数据目录已指回原目录：{}\n请确认目标磁盘可用后重新切换磁盘。",
+				                        marker.files, format_size(marker.bytes), dstFiles, format_size(dstBytes),
+				                        from.native())
+				                .c_str(),
+				            MainApp::appName.data(), MB_OK | MB_ICONERROR | MB_TASKMODAL);
+				return;
+			}
+
+			// 原目录已经删干净（例如上次在删除收尾时退出）：无需再做任何事
+			std::error_code existEc;
+			if (!fs::exists(from / L"Env", existEc) && !fs::exists(from / L"bin", existEc))
+			{
+				delete_reg_value(REG_VALUE_PENDING_FROM);
+				delete_reg_value(REG_VALUE_PENDING_TO);
+				delete_migration_marker(to);
+				return;
+			}
+
+			// 只续做删除：跳过复制与校验，绝不用已被部分删除的源目录覆盖目标
+			state.phase = 2;
+			state.delScanning = true;
+		}
+		else
+		{
+			fs::create_directories(to, ec);
+			if (ec)
+			{
+				abort(std::format(L"数据目录迁移失败：无法创建目标目录。\n{}\n\n已保留原目录。", to.native()), false);
+				return;
+			}
+
+			// 目标目录守卫：worker 开头会先清空 to\Env、to\bin 再复制。若里面已经有不是本次
+			// 迁移写入的文件（挂起项陈旧、用户手工把旧数据拷回目标盘、目标目录被别的程序写
+			// 入），这一步会静默删掉真实数据。只有「迁移进行中」标记记录的来源与本次一致，
+			// 才能确认这些文件是上次中断留下的半成品、可以清掉重拷。
+			const auto target_has_entries = [](const std::filesystem::path& dir)
+			{
+				std::error_code dirEc;
+				if (!std::filesystem::is_directory(dir, dirEc) || dirEc)
+				{
+					return false;
+				}
+				std::error_code emptyEc;
+				const bool empty = std::filesystem::is_empty(dir, emptyEc);
+				// 读不到内容时保守按"有数据"处理：宁可让用户手工确认，也不误删真实数据
+				return emptyEc ? true : !empty;
+			};
+			if (target_has_entries(to / L"Env") || target_has_entries(to / L"bin"))
+			{
+				const std::wstring writtenFrom = read_incomplete_marker_from(to);
+				if (writtenFrom.empty() || _wcsicmp(writtenFrom.c_str(), from.native().c_str()) != 0)
+				{
+					// 目标里不是我们写的数据：既不能清，也不能把 DataDir 切过去
+					std::uint64_t dstFiles = 0;
+					std::uint64_t dstBytes = 0;
+					count_delete_tree(to / L"Env", dstFiles, dstBytes);
+					count_delete_tree(to / L"bin", dstFiles, dstBytes);
+					abort(std::format(L"数据目录迁移已取消：目标目录中已有数据，且不是上次迁移中断留下的半成品。\n\n"
+					                  L"目标目录：{}\n其中已有 {} 个文件（{}）\n\n"
+					                  L"为避免覆盖这些数据，已保留当前数据目录：{}\n"
+					                  L"请换一个空目录，或先备份并清空目标目录后重新切换磁盘。",
+					                  to.native(), dstFiles, format_size(dstBytes), from.native()),
+					      false);
+					return;
+				}
+			}
+			if (!write_incomplete_marker(to, from.native()))
+			{
+				abort(L"数据目录迁移失败：无法在目标目录写入迁移标记（可能被安全软件拦截），已保留原目录。", false);
+				return;
+			}
+
+			// 迁移前先结束数据目录下的环境子进程：它们是 cmd /c start 拉起的孤儿进程，
+			// 不随 eBox 退出而退出，常驻持有 Env 内的 hive/数据库文件，是迁移失败的主要根因。
+			terminate_processes_under(state.sourceDir, state, nullptr);
+			// 再结束映像不在源目录、却占着源目录数据文件的进程（企业微信本体、数据库等）：
+			// 不结束它们，WAL 模式的 SQLite 会在复制期间继续写入，拷出来是撕裂的快照。
+			terminate_lockers_under_tree(from, state);
+
+			// 生成复制计划：一次枚举拿到全部文件与总大小（顺带在目标侧建目录）
+			if (!build_copy_plan(from / L"Env", to / L"Env", plan, state) ||
+				!build_copy_plan(from / L"bin", to / L"bin", plan, state))
+			{
+				abort(state.error.empty() ? std::wstring{L"数据目录迁移失败，已保留原目录。"} : state.error, false);
+				return;
+			}
+
+			// 源目录是残骸（Env/bin 都不存在或全不可读）时，计划为空。此时若继续，
+			// 会把 DataDir 指向空目录并删掉原目录 —— 等于丢数据。直接取消。
+			if (plan.empty())
+			{
+				abort(L"数据目录迁移失败：源目录中没有可迁移的数据，已取消并保留原目录。", false);
+				return;
+			}
+
+			// 大文件排前面：如果最后只剩一个大文件，即便有字节级进度，尾部也会拖很久；
+			// 反过来让尾部变成大量小文件，收尾会很快。
+			std::sort(plan.begin(), plan.end(),
+			          [](const CopyTask& a, const CopyTask& b) { return a.size > b.size; });
+
+			// 空间校验：目标盘剩余空间必须放得下
+			if (!to.root_path().empty())
+			{
+				ULARGE_INTEGER freeBytes{};
+				if (GetDiskFreeSpaceExW(to.root_path().c_str(), &freeBytes, nullptr, nullptr) &&
+					freeBytes.QuadPart < state.total.load())
+				{
+					abort(std::format(L"数据目录迁移失败：目标磁盘剩余空间不足。\n需要：{}，可用：{}\n\n已保留原目录。",
+					                  format_size(state.total.load()), format_size(freeBytes.QuadPart)),
+					      true);
+					return;
+				}
 			}
 		}
 
-		// 复制失败时清掉目标侧已复制的一半数据：否则下次切换会因"目标目录已存在 Env"被拒绝。
+		// 复制/校验失败时清掉目标侧已复制的一半数据：否则下次切换会因"目标目录已存在 Env"被拒绝。
 		// 这一步也在 worker 里做（phase=3），几十 GB 的删除同样有进度提示，不会静默卡住。
+		// 续做删除时目标侧数据已校验通过、DataDir 正在使用，绝不能清目标。
 		const auto fail_migration = [&state, &to](std::wstring msg)
 		{
-			state.phase = 3;
-			std::error_code rmEc;
-			fs::remove_all(to / L"Env", rmEc);
-			fs::remove_all(to / L"bin", rmEc);
+			if (!state.resumeDelete)
+			{
+				state.phase = 3;
+				std::error_code rmEc;
+				fs::remove_all(to / L"Env", rmEc);
+				fs::remove_all(to / L"bin", rmEc);
+				std::error_code checkEc;
+				if (!fs::exists(to / L"Env", checkEc) && !fs::exists(to / L"bin", checkEc))
+				{
+					delete_migration_marker(to);
+				}
+				else
+				{
+					// 半成品没清干净（被占用/被拦截）时必须留着「进行中」标记：下次启动
+					// 才能确认目标里的残留是本次迁移写的，否则会被当成别人的数据而卡死。
+					std::error_code markerEc;
+					fs::remove(to / MIGRATION_MARKER, markerEc);
+				}
+			}
 			{
 				std::lock_guard lock{state.textMutex};
 				state.error = std::move(msg);
@@ -1321,26 +2125,65 @@ namespace
 
 		// 复制、校验、删除旧数据全部在同一个 worker 里完成：进度框只有 worker 真正结束才关闭，
 		// 避免"框已消失、后台还在删几十 GB 旧数据"的假死感。
-		std::jthread worker{[&state, &plan, to, from, &fail_migration]
+		std::jthread worker{[&state, &plan, &to, &from, &fail_migration]
 		{
-			copy_plan(plan, state);
-			if (state.stop.load())
+			if (!state.resumeDelete)
 			{
-				fail_migration(state.error);
-				return;
-			}
-			state.phase = 1; // 校验数据
-			std::wstring verifyError;
-			if (!verify_copy_plan(plan, verifyError))
-			{
-				fail_migration(std::move(verifyError));
-				return;
-			}
-			// 复制完成才切换 DataDir（写失败同样视为迁移失败，避免"指向空目录"）
-			if (!write_reg_value(REG_VALUE_DATA_DIR, to.native()))
-			{
-				fail_migration(L"数据目录迁移失败：写入配置失败，已保留原目录。");
-				return;
+				// 清掉目标侧上一次失败留下的半成品：这些文件在源目录里可能已不存在，
+				// 留着会被当成"迁移过来的数据"混进新数据目录。
+				state.phase = 3;
+				{
+					std::error_code rmEc;
+					fs::remove_all(to / L"Env", rmEc);
+					fs::remove_all(to / L"bin", rmEc);
+				}
+				// 只清"完成"标记；"进行中"标记必须保留到本次迁移成功——复制再次中断时，
+				// 下次启动正是靠它确认目标里的半成品是我们写的、可以清掉重拷。
+				{
+					std::error_code markerEc;
+					fs::remove(to / MIGRATION_MARKER, markerEc);
+				}
+				state.phase = 0;
+
+				copy_plan(plan, state);
+				if (state.stop.load())
+				{
+					fail_migration(state.error);
+					return;
+				}
+				// 复制期间源文件被删掉/移走（外部程序、清理工具）时，校验同样查不出来
+				// —— 校验重新扫描源目录，那个文件已经不存在了。源已不可信，必须中止。
+				const int vanished = state.skippedCount.load();
+				if (vanished > 0)
+				{
+					fail_migration(std::format(
+						L"数据目录迁移失败：复制期间有 {} 个源文件消失，无法确认数据完整。\n\n"
+						L"请先退出所有环境（含企业微信）后重新切换磁盘。\n\n已保留原目录。",
+						vanished));
+					return;
+				}
+				state.phase = 1; // 校验数据
+				std::wstring verifyError;
+				if (!verify_copy_trees(from, to, state, verifyError))
+				{
+					fail_migration(std::move(verifyError));
+					return;
+				}
+				// 先落"复制 + 校验已完成"的标记，再切换 DataDir：
+				// 两步之间无论在哪一步中断，都不会出现"DataDir 已切换但数据不可信"。
+				// 标记也是下次启动「只续做删除、绝不重拷」的唯一依据。
+				if (!write_migration_marker(to, from.native(), state.verifiedFileCount,
+				                            state.verifiedByteCount))
+				{
+					fail_migration(L"数据目录迁移失败：无法写入迁移完成标记，已保留原目录。");
+					return;
+				}
+				// 复制并逐文件校验完成才切换 DataDir（写失败同样视为迁移失败，避免"指向空目录"）
+				if (!write_reg_value(REG_VALUE_DATA_DIR, to.native()))
+				{
+					fail_migration(L"数据目录迁移失败：写入配置失败，已保留原目录。");
+					return;
+				}
 			}
 			// 防误删提示文件
 			const fs::path tipFile = to / L"请勿删除此文件夹.txt";
@@ -1437,8 +2280,15 @@ namespace
 		cfg.dwFlags = TDF_SHOW_PROGRESS_BAR | TDF_CALLBACK_TIMER;
 		cfg.pszWindowTitle = MainApp::appName.data();
 		cfg.pszMainIcon = TD_INFORMATION_ICON;
-		cfg.pszMainInstruction = L"正在迁移环境数据，请稍候…";
-		const std::wstring content = std::format(L"从：{}\n到：{}\n\n迁移期间请勿关闭电脑或强制结束进程。", fromStr, toStr);
+		cfg.pszMainInstruction =
+			state.resumeDelete ? L"正在清理原有数据目录，请稍候…" : L"正在迁移环境数据，请稍候…";
+		const std::wstring content =
+			state.resumeDelete
+				? std::format(L"上次迁移的数据已逐文件校验通过，数据目录已切换为：\n{}\n\n"
+				              L"现在只需删除原目录中的旧数据。\n原目录：{}\n\n"
+				              L"删除期间请勿关闭电脑或强制结束进程。",
+				              to.native(), from.native())
+				: std::format(L"从：{}\n到：{}\n\n迁移期间请勿关闭电脑或强制结束进程。", fromStr, toStr);
 		cfg.pszContent = content.c_str();
 		cfg.pfCallback = migration_dlg_callback;
 		cfg.lpCallbackData = reinterpret_cast<LONG_PTR>(&state);
@@ -1448,22 +2298,27 @@ namespace
 
 		if (state.status.load() != 1)
 		{
-			// 目标侧的半成品已由 worker 清掉，这里不用再删一遍
+			// 目标侧的半成品已由 worker 清掉（续做模式不会动目标），这里不用再删一遍
 			abort(state.error.empty() ? std::wstring{L"数据目录迁移失败，已保留原目录。"} : state.error, false);
 			return;
 		}
 
-		// 成功：清挂起项（旧数据已在 worker 里删除）
+		// 成功：清挂起项与完成标记（旧数据已在 worker 里删除）
 		delete_reg_value(REG_VALUE_PENDING_FROM);
 		delete_reg_value(REG_VALUE_PENDING_TO);
+		delete_migration_marker(to);
 		const bool oldKept = state.oldDeleteFailed;
 
-		std::wstring done = std::format(L"环境数据已迁移完成，数据目录已切换为：\n{}", to.native());
-		const int skipped = state.skippedCount.load();
-		if (skipped > 0)
+		std::wstring done;
+		if (state.resumeDelete)
 		{
-			done += std::format(
-				L"\n\n有 {} 个文件在迁移过程中已从原目录消失（可能被其它程序删除），已跳过。", skipped);
+			done = std::format(L"数据目录迁移已完成（续做删除原目录），数据目录为：\n{}", to.native());
+		}
+		else
+		{
+			done = std::format(L"环境数据已迁移完成，数据目录已切换为：\n{}\n\n"
+			                   L"已逐文件校验 {} 个文件（{}），与原目录内容完全一致。",
+			                   to.native(), state.verifiedFileCount, format_size(state.verifiedByteCount));
 		}
 		if (oldKept)
 		{
@@ -1910,6 +2765,350 @@ namespace
 		            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
 		return false;
 	}
+
+	// ---- 设置中心「修复企业微信数据」----
+	// 背景：3.2.0/3.2.1 的「切换数据盘」在删源阶段被中断后，下次启动会用残缺的源覆盖目标，
+	// 造成企业微信 Data 目录里 crm.db / user.db 等库缺失或变小（表现为客户备注、标签、
+	// 添加时间全部消失，点「添加为联系人」才恢复）。企微检测到数据异常时会就地留一份
+	// Backup\<时间戳>\Data 快照，这里按企业（corp）把当前库与快照比对，缺的、明显变小的回填。
+	constexpr std::uint64_t WXWORK_DB_MIN_COMPARE_BYTES = 64ull * 1024ull; // 小库本身会波动，不参与比对
+
+	struct WxWorkDbIssue
+	{
+		std::wstring fileName;
+		std::uint64_t liveSize{0};
+		std::uint64_t backupSize{0};
+		std::filesystem::path backupFile;
+		bool missing{false};
+	};
+
+	struct WxWorkCorpIssue
+	{
+		std::wstring envLabel;
+		std::wstring corp;
+		std::filesystem::path dataDir;
+		std::vector<WxWorkDbIssue> files;
+	};
+
+	// 环境内的「文档」相对路径（与 MemoryDll 的重定向规则一致：去掉盘符）
+	std::filesystem::path documents_rel_path()
+	{
+		PWSTR docs = nullptr;
+		if (SHGetKnownFolderPath(FOLDERID_Documents, 0, nullptr, &docs) != S_OK || docs == nullptr)
+		{
+			return {};
+		}
+		const std::filesystem::path rel{std::filesystem::path{docs}.relative_path()};
+		CoTaskMemFree(docs);
+		return rel;
+	}
+
+	// 企微的企业目录名是纯数字的企业 id（排除 Cache / Global 等公共目录）
+	bool is_corp_dir_name(const std::wstring& name)
+	{
+		if (name.size() < 10)
+		{
+			return false;
+		}
+		return std::all_of(name.begin(), name.end(), [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; });
+	}
+
+	// 该企业下企微自带的全部本地备份（<corp>\Backup\<时间戳>\Data），最新的在前
+	std::vector<std::filesystem::path> list_wxwork_backups(const std::filesystem::path& corpDir)
+	{
+		namespace fs = std::filesystem;
+		std::vector<std::pair<fs::file_time_type, fs::path>> found;
+		std::error_code ec;
+		const fs::path backupRoot = corpDir / L"Backup";
+		if (!fs::is_directory(backupRoot, ec) || ec)
+		{
+			return {};
+		}
+		std::error_code iterEc;
+		for (const auto& entry : fs::directory_iterator(backupRoot, fs::directory_options::skip_permission_denied, iterEc))
+		{
+			std::error_code entryEc;
+			if (!entry.is_directory(entryEc) || entryEc)
+			{
+				continue;
+			}
+			const fs::path data = entry.path() / L"Data";
+			if (!fs::is_directory(data, entryEc) || entryEc)
+			{
+				continue;
+			}
+			const auto time = fs::last_write_time(entry.path(), entryEc);
+			if (entryEc)
+			{
+				continue;
+			}
+			found.emplace_back(time, data);
+		}
+		std::sort(found.begin(), found.end(),
+		          [](const auto& a, const auto& b) { return a.first > b.first; });
+		std::vector<fs::path> result;
+		result.reserve(found.size());
+		for (auto& item : found)
+		{
+			result.push_back(std::move(item.second));
+		}
+		return result;
+	}
+
+	void scan_wxwork_corps(std::vector<WxWorkCorpIssue>& issues, std::size_t& envCount,
+	                       std::size_t& corpCount, std::size_t& noBackupCount)
+	{
+		namespace fs = std::filesystem;
+		const fs::path rel = documents_rel_path();
+		if (rel.empty())
+		{
+			return;
+		}
+		for (const auto& env : biz::env_mgr().getAllEnv())
+		{
+			++envCount;
+			const fs::path wxRoot = fs::path{app().envDataRoot()} / L"Env" /
+				std::format(L"{}", env->getIndex()) / rel / L"WXWork";
+			std::error_code rootEc;
+			if (!fs::is_directory(wxRoot, rootEc) || rootEc)
+			{
+				continue;
+			}
+			const std::wstring envLabel = env->getName().empty()
+				? std::format(L"环境 {}", env->getIndex())
+				: std::format(L"环境「{}」", env->getName());
+			std::error_code iterEc;
+			for (const auto& entry : fs::directory_iterator(wxRoot, fs::directory_options::skip_permission_denied, iterEc))
+			{
+				std::error_code entryEc;
+				if (!entry.is_directory(entryEc) || entryEc ||
+					!is_corp_dir_name(entry.path().filename().native()))
+				{
+					continue;
+				}
+				++corpCount;
+				const fs::path dataDir = entry.path() / L"Data";
+				const std::vector<fs::path> backups = list_wxwork_backups(entry.path());
+				if (backups.empty())
+				{
+					++noBackupCount;
+					continue;
+				}
+
+				WxWorkCorpIssue corp;
+				corp.envLabel = envLabel;
+				corp.corp = entry.path().filename().native();
+				corp.dataDir = dataDir;
+
+				// 同一个库可能并不在最新一份备份里（备份内容随时间变化），只比对最新备份会
+				// 漏掉"最新备份根本没有 crm.db"这种情况 —— 那正是客户备注消失的主因。
+				// 这里按文件名汇总所有备份提供的版本，新的在前。
+				struct BackupCandidate
+				{
+					fs::path file;
+					std::uint64_t size{0};
+				};
+				std::map<std::wstring, std::vector<BackupCandidate>> candidates;
+				for (const fs::path& backup : backups)
+				{
+					std::error_code backupEc;
+					for (const auto& file :
+					     fs::directory_iterator(backup, fs::directory_options::skip_permission_denied, backupEc))
+					{
+						std::error_code fileEc;
+						if (!file.is_regular_file(fileEc) || fileEc || file.path().extension() != L".db")
+						{
+							continue;
+						}
+						const std::uint64_t backupSize = file.file_size(fileEc);
+						if (fileEc || backupSize == 0)
+						{
+							continue;
+						}
+						candidates[file.path().filename().native()].push_back(
+							BackupCandidate{file.path(), backupSize});
+					}
+				}
+
+				// 以备份为基准：备份里有、当前没有或不足备份一半的库，判为不完整
+				for (const auto& [name, versions] : candidates)
+				{
+					const fs::path live = dataDir / name;
+					std::error_code liveEc;
+					const bool exists = fs::exists(live, liveEc) && !liveEc;
+					if (!exists)
+					{
+						// 缺失：取最新一份含该文件的备份
+						WxWorkDbIssue issue;
+						issue.fileName = name;
+						issue.backupFile = versions.front().file;
+						issue.backupSize = versions.front().size;
+						issue.missing = true;
+						corp.files.push_back(std::move(issue));
+						continue;
+					}
+					const std::uint64_t liveSize = fs::file_size(live, liveEc);
+					if (liveEc)
+					{
+						continue;
+					}
+					// 明显缩小：优先用最新一份"足以证明当前库不完整"的备份；最新备份本身也残缺时
+					// 继续往旧备份找，避免把恢复数据又恢复成残库
+					const BackupCandidate* pick = nullptr;
+					for (const BackupCandidate& candidate : versions)
+					{
+						if (candidate.size >= WXWORK_DB_MIN_COMPARE_BYTES && liveSize * 2 < candidate.size)
+						{
+							pick = &candidate;
+							break;
+						}
+					}
+					if (pick == nullptr)
+					{
+						continue;
+					}
+					WxWorkDbIssue issue;
+					issue.fileName = name;
+					issue.liveSize = liveSize;
+					issue.backupSize = pick->size;
+					issue.backupFile = pick->file;
+					corp.files.push_back(std::move(issue));
+				}
+				if (!corp.files.empty())
+				{
+					issues.push_back(std::move(corp));
+				}
+			}
+		}
+	}
+
+	std::wstring build_wxwork_details(const std::vector<WxWorkCorpIssue>& issues)
+	{
+		std::wstring text;
+		for (std::size_t i = 0; i < issues.size(); ++i)
+		{
+			const WxWorkCorpIssue& corp = issues[i];
+			text += std::format(L"{} {}，企业 {}\n", i + 1, corp.envLabel, corp.corp);
+			for (const WxWorkDbIssue& file : corp.files)
+			{
+				// 备份目录名就是企微的备份时间戳，便于用户判断会退回到哪个时间点
+				const std::wstring stamp = file.backupFile.parent_path().parent_path().filename().native();
+				if (file.missing)
+				{
+					text += std::format(L"    {}：缺失，用备份 {}（{}）回填\n", file.fileName, stamp,
+					                    format_size(file.backupSize));
+				}
+				else
+				{
+					text += std::format(L"    {}：当前 {}，备份 {} 为 {}\n", file.fileName,
+					                    format_size(file.liveSize), stamp, format_size(file.backupSize));
+				}
+			}
+			text += L"\n";
+		}
+		return text;
+	}
+
+	// 先把当前文件另存，再从备份回填；失败时尽量还原，避免把库弄成半截
+	bool restore_wxwork_db(const WxWorkCorpIssue& corp, const WxWorkDbIssue& issue,
+	                       const std::filesystem::path& keepDir, std::wstring& note)
+	{
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		const fs::path source = issue.backupFile;
+		if (source.empty())
+		{
+			note = L"未找到可用的备份文件";
+			return false;
+		}
+		const fs::path live = corp.dataDir / issue.fileName;
+		fs::create_directories(corp.dataDir, ec);
+		if (ec)
+		{
+			note = std::format(L"无法创建数据目录：{}", win_error_text(static_cast<DWORD>(ec.value())));
+			return false;
+		}
+		fs::create_directories(keepDir, ec);
+		if (ec)
+		{
+			note = std::format(L"无法创建备份目录：{}", win_error_text(static_cast<DWORD>(ec.value())));
+			return false;
+		}
+
+		// 旧库的 -wal/-shm/-journal 只属于旧文件。回填前必须一并移走：留着会被 SQLite
+		// 应用到新库上，同样会把库弄坏。这里移动而不是删除，回滚时能原样放回去。
+		std::vector<fs::path> sidecars;
+		{
+			const std::wstring base = live.native();
+			for (const wchar_t* suffix : {L"-wal", L"-shm", L"-journal"})
+			{
+				sidecars.emplace_back(base + suffix);
+			}
+		}
+		std::vector<std::pair<fs::path, fs::path>> movedSidecars; // <另存位置, 原位置>
+
+		fs::path kept;
+		const auto rollback = [&kept, &live, &movedSidecars]()
+		{
+			if (!kept.empty())
+			{
+				MoveFileExW(kept.c_str(), live.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+			}
+			for (auto& [stored, original] : movedSidecars)
+			{
+				MoveFileExW(stored.c_str(), original.c_str(),
+				            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH);
+			}
+		};
+
+		if (fs::exists(live, ec) && !ec)
+		{
+			kept = keepDir / issue.fileName;
+			DeleteFileW(kept.c_str());
+			if (!MoveFileExW(live.c_str(), kept.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			{
+				note = std::format(L"原文件被占用，无法替换（{}），请先退出该环境", win_error_text(GetLastError()));
+				return false;
+			}
+		}
+		for (const fs::path& sidecar : sidecars)
+		{
+			std::error_code sidecarEc;
+			if (!fs::exists(sidecar, sidecarEc) || sidecarEc)
+			{
+				continue;
+			}
+			const fs::path stored = keepDir / sidecar.filename();
+			DeleteFileW(stored.c_str());
+			if (!MoveFileExW(sidecar.c_str(), stored.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH))
+			{
+				note = std::format(L"旧的 {} 被占用，无法移除（{}），请先退出该环境",
+				                   sidecar.filename().native(), win_error_text(GetLastError()));
+				rollback();
+				return false;
+			}
+			movedSidecars.emplace_back(stored, sidecar);
+		}
+
+		if (!CopyFileW(source.c_str(), live.c_str(), FALSE))
+		{
+			const DWORD err = GetLastError();
+			DeleteFileW(live.c_str());
+			rollback();
+			note = std::format(L"从备份复制失败：{}", win_error_text(err));
+			return false;
+		}
+		std::error_code sizeEc;
+		const std::uint64_t copied = fs::file_size(live, sizeEc);
+		if (sizeEc || copied != issue.backupSize)
+		{
+			DeleteFileW(live.c_str());
+			rollback();
+			note = L"复制后大小与备份不一致，已还原原文件";
+			return false;
+		}
+		return true;
+	}
 }
 
 int run_self_check_and_repair(HWND owner)
@@ -2016,12 +3215,146 @@ int run_self_check_and_repair(HWND owner)
 	return 2;
 }
 
+int run_wxwork_data_repair(HWND owner)
+{
+	std::vector<WxWorkCorpIssue> issues;
+	std::size_t envCount = 0;
+	std::size_t corpCount = 0;
+	std::size_t noBackupCount = 0;
+	scan_wxwork_corps(issues, envCount, corpCount, noBackupCount);
+
+	std::size_t fileCount = 0;
+	for (const WxWorkCorpIssue& corp : issues)
+	{
+		fileCount += corp.files.size();
+	}
+
+	if (issues.empty())
+	{
+		std::wstring text = std::format(L"检查完成，未发现企业微信数据缺失。\n\n已检查 {} 个环境、{} 个企业。",
+		                                envCount, corpCount);
+		if (noBackupCount > 0)
+		{
+			text += std::format(L"\n其中 {} 个企业没有企微本地备份，无法比对。", noBackupCount);
+		}
+		MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		return 0;
+	}
+
+	// 先列出问题，由用户决定是否回填
+	{
+		const std::wstring instruction = std::format(L"发现 {} 个企业的 {} 个数据文件不完整", issues.size(), fileCount);
+		const std::wstring details = build_wxwork_details(issues);
+		std::wstring content = L"这些文件不完整时，企业微信对话列表会丢失客户备注、标签与添加时间。\n"
+		                       L"修复会用企微自带的本地备份回填，当前文件先另存到 .ebox-repair-backup 目录。\n\n"
+		                       L"注意：回填会把对应文件恢复到备份生成时的状态，备份之后新增的记录可能需要"
+		                       L"企微重新同步才会出现。\n\n"
+		                       L"请先退出对应环境，否则文件被占用会导致修复失败。";
+		if (noBackupCount > 0)
+		{
+			content += std::format(L"\n另有 {} 个企业没有企微本地备份，无法比对。", noBackupCount);
+		}
+		TASKDIALOGCONFIG cfg{sizeof(TASKDIALOGCONFIG)};
+		cfg.hwndParent = owner;
+		cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_EXPANDED_BY_DEFAULT;
+		cfg.pszWindowTitle = MainApp::appName.data();
+		cfg.pszMainIcon = TD_WARNING_ICON;
+		cfg.pszMainInstruction = instruction.c_str();
+		cfg.pszContent = content.c_str();
+		cfg.pszExpandedInformation = details.c_str();
+		TASKDIALOG_BUTTON buttons[2]{};
+		buttons[0].nButtonID = REPAIR_BUTTON_ID;
+		buttons[0].pszButtonText = L"立即修复";
+		buttons[1].nButtonID = IDCANCEL;
+		buttons[1].pszButtonText = L"暂不修复";
+		cfg.pButtons = buttons;
+		cfg.cButtons = 2;
+		cfg.nDefaultButton = REPAIR_BUTTON_ID;
+		int pressed = IDCANCEL;
+		TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+		if (pressed != REPAIR_BUTTON_ID)
+		{
+			return 2;
+		}
+	}
+
+	SYSTEMTIME st{};
+	GetLocalTime(&st);
+	const std::wstring stamp = std::format(L"{:04}{:02}{:02}-{:02}{:02}{:02}", st.wYear, st.wMonth,
+	                                       st.wDay, st.wHour, st.wMinute, st.wSecond);
+
+	std::size_t fixedCount = 0;
+	std::vector<std::wstring> failures;
+	for (const WxWorkCorpIssue& corp : issues)
+	{
+		const std::filesystem::path keepDir = corp.dataDir.parent_path() / L".ebox-repair-backup" / stamp;
+		for (const WxWorkDbIssue& file : corp.files)
+		{
+			std::wstring note;
+			if (restore_wxwork_db(corp, file, keepDir, note))
+			{
+				++fixedCount;
+			}
+			else
+			{
+				failures.push_back(std::format(L"{} {} / {}：{}", corp.envLabel, corp.corp, file.fileName, note));
+			}
+		}
+	}
+
+	if (failures.empty())
+	{
+		MessageBoxW(owner,
+		            std::format(L"修复完成：已回填 {} 个数据文件。\n\n"
+		                        L"请重新启动对应环境并登录企业微信，确认客户列表已恢复正常。",
+		                        fixedCount).c_str(),
+		            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		return 1;
+	}
+
+	std::wstring details;
+	for (const std::wstring& line : failures)
+	{
+		details += line;
+		details += L"\n";
+	}
+	const std::wstring instruction = std::format(L"有 {} 个数据文件未能修复", failures.size());
+	TASKDIALOGCONFIG cfg{sizeof(TASKDIALOGCONFIG)};
+	cfg.hwndParent = owner;
+	cfg.dwFlags = TDF_ALLOW_DIALOG_CANCELLATION | TDF_POSITION_RELATIVE_TO_WINDOW | TDF_EXPANDED_BY_DEFAULT;
+	cfg.pszWindowTitle = MainApp::appName.data();
+	cfg.pszMainIcon = TD_ERROR_ICON;
+	cfg.pszMainInstruction = instruction.c_str();
+	cfg.pszContent = L"文件被占用是最常见的原因。请先退出对应环境（含企微相关进程）后，"
+	                 L"再点击「修复企业微信数据」重试。";
+	cfg.pszExpandedInformation = details.c_str();
+	cfg.dwCommonButtons = TDCBF_CLOSE_BUTTON;
+	TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
+	return 2;
+}
+
 bool request_data_dir_change(const std::wstring& targetDir)
 {
 	try
 	{
 		const std::wstring from{app().envDataRoot()};
-		if (targetDir.empty() || _wcsicmp(from.c_str(), targetDir.c_str()) == 0)
+		if (targetDir.empty())
+		{
+			return false;
+		}
+		// 与启动期迁移同一套判定：相同目录或互相包含时，"复制 + 删除原目录"会直接毁掉
+		// 正在使用的环境数据，这里提前拒绝，避免先写挂起项、重启后才失败。
+		std::error_code fromEc;
+		std::error_code toEc;
+		const std::wstring fromPath = std::filesystem::weakly_canonical(std::filesystem::path{from}, fromEc).native();
+		const std::wstring toPath =
+			std::filesystem::weakly_canonical(std::filesystem::path{targetDir}, toEc).native();
+		if (fromEc || toEc || fromPath.empty() || toPath.empty())
+		{
+			return false;
+		}
+		if (_wcsicmp(fromPath.c_str(), toPath.c_str()) == 0 || path_within(toPath, fromPath) ||
+			path_within(fromPath, toPath))
 		{
 			return false;
 		}

@@ -174,13 +174,13 @@ public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 3;
 	static constexpr int kVerMinor = 2;
-	static constexpr int kVerPatch = 1;
-	static constexpr int kVerCode  = 30201;  // 单调递增数字，用于版本比较
+	static constexpr int kVerPatch = 2;
+	static constexpr int kVerCode  = 30202;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v3.2.1"};
-	static constexpr std::wstring_view appUpdateDate{L"2026/10/25"};
+	static constexpr std::wstring_view appVersion{L"v3.2.2"};
+	static constexpr std::wstring_view appUpdateDate{L"2026/10/26"};
 
 	// ===== 自动升级配置 =====
 	// 按可靠性排序、逐个尝试，任一源成功即用；同一份 update.json 由发布流程同步到全部位置
@@ -274,6 +274,19 @@ public:
 			{
 				const std::wstring recorded{buf};
 
+				// 记录目录所在磁盘当前不可达（迁移到移动硬盘后未接入、盘符未挂载）时，
+				// 绝不能回退到别的盘：下面的候选扫描会把注册表 DataDir 改写成另一个空目录，
+				// 指向真实环境数据（企微聊天记录/客户资料）的记录就此被覆盖，用户重新接上
+				// 磁盘后也再找不到原来的数据。直接沿用记录值，按"数据暂时不可用"处理。
+				{
+					std::error_code rootEc;
+					const fs::path recordedRoot = fs::path{recorded}.root_path();
+					if (!recordedRoot.empty() && !fs::exists(recordedRoot, rootEc))
+					{
+						return recorded;
+					}
+				}
+
 				if (hasEnvData(recorded))
 				{
 					// 记录目录确有数据 → 沿用
@@ -282,19 +295,37 @@ public:
 						save_env_data_root(recorded);  // 写入新键
 						return recorded;
 					}
+					// 有数据但当前不可写（磁盘只读/被安全软件拦截）：同样不能改指别处，
+					// 否则记录被空目录覆盖后就再也找不回这批环境数据。
+					return recorded;
 				}
 				else
 				{
 					// 记录目录无数据（可能被整体剪切/清空，如用户把 C:\eBoxData 移到 D:\eBoxData）：
 					// 优先改用“其它盘上实际仍有数据”的目录，避免在新的空目录里重建。
-					std::array<std::wstring_view, 4> dataCands{L"D:\\eBoxData", L"C:\\eBoxData", L"D:\\2BoxData", L"C:\\2BoxData"};
-					for (const std::wstring_view cand : dataCands)
+					// 但只在记录目录本身不存在或为空时才扫候选：若它里面已有别的文件
+					// （bin/logs 等），说明这是一套正在用的 eBox 目录，此时改指别的盘等于
+					// 把用户切到另一份来历不明的旧环境数据上（企微显示成别人的账号/旧记录），
+					// 而原来那套环境会凭空消失。这种情况一律沿用记录目录。
+					std::error_code existEc;
+					bool recordedExists = fs::exists(fs::path{recorded}, existEc);
+					if (recordedExists)
 					{
-						const std::wstring candStr{cand};
-						if (hasEnvData(candStr) && tryDir(candStr))
+						std::error_code emptyEc;
+						const bool empty = fs::is_empty(fs::path{recorded}, emptyEc);
+						recordedExists = emptyEc ? true : !empty;
+					}
+					if (!recordedExists)
+					{
+						std::array<std::wstring_view, 4> dataCands{L"D:\\eBoxData", L"C:\\eBoxData", L"D:\\2BoxData", L"C:\\2BoxData"};
+						for (const std::wstring_view cand : dataCands)
 						{
-							save_env_data_root(candStr);
-							return candStr;
+							const std::wstring candStr{cand};
+							if (hasEnvData(candStr) && tryDir(candStr))
+							{
+								save_env_data_root(candStr);
+								return candStr;
+							}
 						}
 					}
 					// 其它盘都没有数据 → 沿用记录目录（重建）
@@ -515,3 +546,10 @@ export bool request_data_dir_change(const std::wstring& targetDir);
 // 加入 Windows Defender 信任区（第三方安全软件只给出手动放行指引）。
 // 返回 0=未发现问题，1=问题已全部修复，2=仍有问题或用户取消。
 export int run_self_check_and_repair(HWND owner);
+
+// 设置中心「修复企业微信数据」：把各环境 WXWork\<corp>\Data 与企微自带本地备份
+// （<corp>\Backup\<时间戳>\Data）按企业比对，回填缺失或异常缩小的库（crm.db、user.db 等）。
+// 回填前会把当前文件另存到 <corp>\.ebox-repair-backup\<时间戳>\，失败时自动还原。
+// 需先退出对应环境，否则文件被占用会失败。
+// 返回 0=未发现问题，1=已修复，2=仍有问题或用户取消。
+export int run_wxwork_data_repair(HWND owner);

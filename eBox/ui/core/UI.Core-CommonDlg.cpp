@@ -6570,6 +6570,7 @@ namespace ui
 		{
 			ChangeDataDir,
 			Repair,
+			WxWorkDataRepair,
 		};
 
 		struct SettingItem
@@ -6624,10 +6625,36 @@ namespace ui
 			return -1;
 		}
 
-		// 设置项图标：ChangeDataDir=硬盘外形（白色机身 + 插槽 + 指示灯），Repair=盾牌 + 对勾
+		// 设置项图标：ChangeDataDir=硬盘外形（白色机身 + 插槽 + 指示灯），
+		// Repair=盾牌 + 对勾，WxWorkDataRepair=数据库圆筒
 		void draw_setting_icon(HDC hdc, const RECT& tile, int dpi, SettingAction action)
 		{
 			const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+			if (action == SettingAction::WxWorkDataRepair)
+			{
+				const int left = tile.left + S(13);
+				const int right = tile.right - S(13);
+				const int top = tile.top + S(15);
+				const int bottom = tile.bottom - S(14);
+				const int eh = S(4); // 圆筒顶/底椭圆的半高
+				HBRUSH hBrush = CreateSolidBrush(RGB(0xff, 0xff, 0xff));
+				HPEN hPen = CreatePen(PS_SOLID, std::max(1, S(2)), CLEAN_ACCENT);
+				const HGDIOBJ oldBrush = SelectObject(hdc, hBrush);
+				const HGDIOBJ oldPen = SelectObject(hdc, hPen);
+				Rectangle(hdc, left, top, right, bottom);
+				Ellipse(hdc, left, bottom - eh, right, bottom + eh);
+				Ellipse(hdc, left, top - eh, right, top + eh);
+				// 两道分隔弧线，读起来像一摞数据
+				const int row1 = top + S(8);
+				const int row2 = top + S(16);
+				Arc(hdc, left, row1 - eh, right, row1 + eh, right, row1, left, row1);
+				Arc(hdc, left, row2 - eh, right, row2 + eh, right, row2, left, row2);
+				SelectObject(hdc, oldPen);
+				SelectObject(hdc, oldBrush);
+				DeleteObject(hBrush);
+				DeleteObject(hPen);
+				return;
+			}
 			if (action == SettingAction::Repair)
 			{
 				const int cx = (tile.left + tile.right) / 2;
@@ -6816,6 +6843,9 @@ namespace ui
 				break;
 			case SettingAction::Repair:
 				run_self_check_and_repair(data.hwnd);
+				break;
+			case SettingAction::WxWorkDataRepair:
+				run_wxwork_data_repair(data.hwnd);
 				break;
 			}
 		}
@@ -7009,6 +7039,13 @@ namespace ui
 			item.title = L"检查与修复";
 			item.subtitle = L"自检运行组件与环境数据，修复被杀毒软件误删的文件";
 			item.action = SettingAction::Repair;
+			data.items.push_back(std::move(item));
+		}
+		{
+			SettingItem item;
+			item.title = L"修复企业微信数据";
+			item.subtitle = L"对比企微自带备份，回填丢失或异常的客户数据文件";
+			item.action = SettingAction::WxWorkDataRepair;
 			data.items.push_back(std::move(item));
 		}
 
