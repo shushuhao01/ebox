@@ -4347,7 +4347,182 @@ namespace ui
 			}
 		}
 
-		// 3) 常见安装目录：根层 + 一层子目录下的 exe
+		// 版本号目录名（如 "5.10.7600.6676"）解析为数字段；非纯数字返回空
+		std::vector<unsigned long long> parse_version_segments(const std::wstring& s)
+		{
+			std::vector<unsigned long long> nums;
+			unsigned long long cur = 0;
+			bool hasDigit = false;
+			for (const wchar_t c : s)
+			{
+				if (c >= L'0' && c <= L'9')
+				{
+					cur = cur * 10 + static_cast<unsigned long long>(c - L'0');
+					hasDigit = true;
+				}
+				else if (c == L'.')
+				{
+					if (!hasDigit)
+					{
+						return {};
+					}
+					nums.push_back(cur);
+					cur = 0;
+					hasDigit = false;
+				}
+				else
+				{
+					return {};
+				}
+			}
+			if (!hasDigit)
+			{
+				return {};
+			}
+			nums.push_back(cur);
+			return nums;
+		}
+
+		bool version_greater(const std::vector<unsigned long long>& a, const std::vector<unsigned long long>& b)
+		{
+			const std::size_t n = (std::max)(a.size(), b.size());
+			for (std::size_t i = 0; i < n; ++i)
+			{
+				const unsigned long long x = (i < a.size()) ? a[i] : 0;
+				const unsigned long long y = (i < b.size()) ? b[i] : 0;
+				if (x != y)
+				{
+					return x > y;
+				}
+			}
+			return false;
+		}
+
+		// 3) 特例：腾讯应用宝（Androws 内核）
+		// 卸载项的 DisplayIcon 指向 Uninstall.exe（被 is_helper_exe 过滤），安装目录也不在
+		// 常规扫描根下，默认扫描必然漏掉。这里从卸载项反推安装目录，取版本号最大的
+		// 子目录里的 AndrowsStore.exe —— 实测该入口可正常启动且支持多开
+		// （AndrowsLauncher.exe 直接启动无效，Androws.exe 启动后很快自行退出）。
+		void scan_tencent_yyb(std::vector<AppEntry>& out)
+		{
+			constexpr std::wstring_view subKey{L"Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall"};
+			const HKEY hRoots[] = {HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER};
+			const REGSAM views[] = {KEY_WOW64_64KEY, KEY_WOW64_32KEY};
+			std::filesystem::path appDir;
+			const auto readStr = [](HKEY hSub, const wchar_t* value, std::wstring& outStr) -> bool
+			{
+				wchar_t buf[MAX_PATH * 2]{};
+				DWORD size = sizeof(buf) - sizeof(wchar_t);
+				if (RegQueryValueExW(hSub, value, nullptr, nullptr, reinterpret_cast<LPBYTE>(buf), &size) != ERROR_SUCCESS)
+				{
+					return false;
+				}
+				outStr = buf;
+				return !outStr.empty();
+			};
+			for (const HKEY hRoot : hRoots)
+			{
+				for (const REGSAM view : views)
+				{
+					HKEY hKey = nullptr;
+					if (RegOpenKeyExW(hRoot, subKey.data(), 0, KEY_READ | view, &hKey) != ERROR_SUCCESS)
+					{
+						continue;
+					}
+					wchar_t subName[256]{};
+					for (DWORD i = 0;; ++i)
+					{
+						DWORD subLen = 256;
+						if (RegEnumKeyExW(hKey, i, subName, &subLen, nullptr, nullptr, nullptr, nullptr) != ERROR_SUCCESS)
+						{
+							break;
+						}
+						HKEY hSub = nullptr;
+						if (RegOpenKeyExW(hKey, subName, 0, KEY_READ, &hSub) != ERROR_SUCCESS)
+						{
+							continue;
+						}
+						std::wstring displayName, displayIcon;
+						const bool hasName = readStr(hSub, L"DisplayName", displayName);
+						const bool hasIcon = readStr(hSub, L"DisplayIcon", displayIcon);
+						RegCloseKey(hSub);
+						if (!hasName || !hasIcon || displayName.find(L"应用宝") == std::wstring::npos)
+						{
+							continue;
+						}
+						// DisplayIcon 形如 "D:\...\Application\Uninstall.exe,0"
+						std::wstring exePath = displayIcon;
+						const std::size_t comma = exePath.find_last_of(L',');
+						if (comma != std::wstring::npos &&
+						    exePath.substr(comma + 1).find_first_not_of(L"0123456789") == std::wstring::npos)
+						{
+							exePath = exePath.substr(0, comma);
+						}
+						if (exePath.size() >= 2 && exePath.front() == L'"' && exePath.back() == L'"')
+						{
+							exePath = exePath.substr(1, exePath.size() - 2);
+						}
+						appDir = std::filesystem::path{exePath}.parent_path();
+						break;
+					}
+					RegCloseKey(hKey);
+					if (!appDir.empty())
+					{
+						break;
+					}
+				}
+				if (!appDir.empty())
+				{
+					break;
+				}
+			}
+			if (appDir.empty())
+			{
+				return;
+			}
+			std::filesystem::path storeExe = appDir / L"AndrowsStore.exe";
+			if (!app_path_exists(storeExe.wstring()))
+			{
+				// Application 目录本身没有主程序：遍历版本号子目录，取版本最大的
+				std::filesystem::path best;
+				std::vector<unsigned long long> bestVer;
+				std::error_code ec;
+				for (const auto& entry : std::filesystem::directory_iterator(appDir, ec))
+				{
+					if (ec)
+					{
+						break;
+					}
+					std::error_code ec2;
+					if (!entry.is_directory(ec2))
+					{
+						continue;
+					}
+					const auto ver = parse_version_segments(entry.path().filename().wstring());
+					if (ver.empty())
+					{
+						continue;
+					}
+					const std::filesystem::path candidate = entry.path() / L"AndrowsStore.exe";
+					if (!app_path_exists(candidate.wstring()))
+					{
+						continue;
+					}
+					if (best.empty() || version_greater(ver, bestVer))
+					{
+						best = candidate;
+						bestVer = ver;
+					}
+				}
+				storeExe = best;
+			}
+			if (app_path_exists(storeExe.wstring()))
+			{
+				app_try_add(out, L"腾讯应用宝", storeExe.wstring());
+			}
+		}
+
+		// 4) 常见安装目录：根层 + 一层子目录下的 exe
 		void scan_common_dirs(std::vector<AppEntry>& out)
 		{
 			std::vector<std::wstring> roots;
@@ -4540,6 +4715,7 @@ namespace ui
 		{
 			std::vector<AppEntry> apps;
 			scan_registry_apps(apps);
+			scan_tencent_yyb(apps);
 			scan_start_menu_lnk(apps);
 			scan_common_dirs(apps);
 			// 应用置顶记忆：标记已置顶项
