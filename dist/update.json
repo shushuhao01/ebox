@@ -1,19 +1,23 @@
 {
-    "latestVersion": "v3.2.5",
-    "latestVersionCode": 30205,
+    "latestVersion": "v3.2.6",
+    "latestVersionCode": 30206,
     "releaseDate": "2026/10/28",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "0f37a27f63acebe4b59828e05b580e2a7dd7553c3175b268f78db606a419dc6f",
-    "downloadSize": 3910656,
+    "downloadSha256": "6c4835e7c5903caab3bc584f772a335287f55973c39b7099a4de8848afb5b25f",
+    "downloadSize": 3930624,
     "changelog": [
-        "修复退出 eBox 时误杀宿主机原生应用：结束环境进程不再按进程名全局匹配，桌面原生启动的企业微信等应用不会再被一并结束",
-        "结束环境进程改为按环境归属的 PID 与进程树逐级收敛，多开应用退出依旧清理干净、零残留",
-        "版本号更新至 v3.2.5"
+        "系统公告全新升级：客户端公告栏标题支持两行自适应换行，超出自动省略，强提醒公告以深红高亮加粗展示，一眼可见",
+        "公告详情改为固定尺寸弹窗，正文完整可滚动查看；只配置跳转链接时，点击公告栏直接打开浏览器",
+        "授权平台公告支持标题、正文、强提醒、跳转链接编辑与实时效果预览，并新增「立即发送」「定时发送」「取消定时」「撤销公告」",
+        "公告通过 SSE 长连接与心跳双通道实时下发，服务端统一推送结构化公告数据，老版本客户端保持兼容",
+        "服务端启动自动补建公告配置表并扩容字段，升级无需手工执行 SQL",
+        "修复点击更新按钮导致 eBox 停止工作的问题",
+        "版本号更新至 v3.2.6"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.2.5/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.2.6/eBox.exe"
     ]
 }
