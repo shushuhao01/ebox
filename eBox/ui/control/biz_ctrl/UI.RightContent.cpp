@@ -14,10 +14,13 @@ namespace
 	constexpr float MARGIN = 24.f;
 	// 头部系统状态看板高度（含 CPU/内存/GPU/显存/磁盘 曲线卡片）
 	constexpr float FEATURES_AREA_HEIGHT = 172.f;
-	constexpr float BANNER_EXPANDED_HEIGHT = 40.f;
+	constexpr float BANNER_MIN_HEIGHT = 40.f;
+	constexpr float BANNER_TEXT_PADDING = 20.f;   // 标题上下留白（标题两行时自动增高）
 	constexpr float BANNER_COLLAPSED_HEIGHT = 24.f;
 	constexpr float BANNER_BTN_WIDTH = 44.f;
 	constexpr float BANNER_BTN_HEIGHT = 20.f;
+	constexpr float BANNER_BADGE_WIDTH = 46.f;    // 强提醒左侧“强提醒”胶囊宽度
+	constexpr float BANNER_BADGE_GAP = 8.f;
 	constexpr std::wstring_view BANNER_TEXT{
 		L"提示：启用进程后建议改环境名称；下次如需再次启动对应进程，无需重新新建，直接启动该环境即可"
 	};
@@ -160,51 +163,94 @@ namespace ui
 
 	void RightContent::refreshNotice()
 	{
-		std::wstring notice = biz::licenseserver::currentNotice();
-		if (notice == m_noticeText)
+		biz::licenseserver::NoticeInfo notice = biz::licenseserver::currentNotice();
+		if (notice == m_notice)
 		{
 			return;
 		}
-		m_noticeText = std::move(notice);
-		rebuildBannerLayout();
+		m_notice = std::move(notice);
+		// 新公告（含强提醒）到达时自动展开，保证用户能看到最新内容
+		if (!m_notice.empty())
+		{
+			m_bannerVisible = true;
+			m_bannerCollapsed = false;
+			m_btnBannerToggle->setText(L"收起");
+		}
+		const auto [width, height] = size();
+		if (width > 0.f)
+		{
+			onResize(width, height);
+		}
+		else
+		{
+			rebuildBannerLayout(0.f);
+		}
 		update();
 	}
 
-	void RightContent::rebuildBannerLayout()
+	void RightContent::rebuildBannerLayout(float bannerWidth)
 	{
 		m_bannerLayout.reset();
-		if (m_noticeText.empty())
-		{
-			return;
-		}
-		const float availWidth = (m_bannerRect.right - m_bannerRect.left) - BANNER_BTN_WIDTH * 2.f - 22.f - 10.f;
-		if (availWidth <= 0.f)
+		m_bannerTextWidth = 0.f;
+		m_bannerTextHeight = 0.f;
+		m_bannerExpandedHeight = BANNER_MIN_HEIGHT;
+		if (bannerWidth <= 0.f)
 		{
 			return; // 尚未布局（首次构造时），等 onResize 再重建
 		}
-		const float layoutHeight = BANNER_EXPANDED_HEIGHT - 4.f;
+		// 标题优先；仅配置内容时以内容作为标题展示
+		std::wstring text = m_notice.title;
+		if (text.empty())
+		{
+			text = m_notice.content;
+		}
+		if (text.empty() && !m_notice.link.empty())
+		{
+			text = L"点击查看详情"; // 仅配置链接：公告栏本身即跳转入口
+		}
+		if (text.empty())
+		{
+			return; // 无公告文本：绘制时回退本地提示
+		}
+		const float badgeWidth = m_notice.strong ? BANNER_BADGE_WIDTH + BANNER_BADGE_GAP : 0.f;
+		m_bannerTextWidth = bannerWidth - BANNER_BTN_WIDTH * 2.f - 22.f - 10.f - badgeWidth;
+		if (m_bannerTextWidth <= 0.f)
+		{
+			return;
+		}
+		const bool strong = m_notice.strong;
 		UniqueComPtr<IDWriteTextLayout> layout;
 		HRESULT hr = app().dWriteFactory()->CreateTextLayout(
-			m_noticeText.c_str(),
-			static_cast<UINT32>(m_noticeText.size()),
-			app().textFormat().pTipsFormat,
-			availWidth, layoutHeight, &layout);
+			text.c_str(),
+			static_cast<UINT32>(text.size()),
+			strong ? app().textFormat().pBoldFormat : app().textFormat().pTipsFormat,
+			m_bannerTextWidth, std::numeric_limits<float>::max(), &layout);
 		if (FAILED(hr))
 		{
 			return;
 		}
-		// 单行不换行，超出宽度用省略号截断
-		layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+		// 逐字换行：先按自然高度求行高，再限制为最多两行，超出部分用省略号收尾
+		layout->SetWordWrapping(DWRITE_WORD_WRAPPING_CHARACTER);
+		DWRITE_TEXT_METRICS natural{};
+		if (FAILED(layout->GetMetrics(&natural)))
+		{
+			return;
+		}
+		const float lineHeight = natural.lineCount > 0 ? natural.height / static_cast<float>(natural.lineCount) : natural.height;
+		const float maxHeight = lineHeight * 2.f;
+		layout->SetMaxHeight(maxHeight);
 		IDWriteInlineObject* ellipsis = nullptr;
-		if (SUCCEEDED(app().dWriteFactory()->CreateEllipsisTrimmingSign(
-			             layout.get(), &ellipsis)))
+		if (SUCCEEDED(app().dWriteFactory()->CreateEllipsisTrimmingSign(layout.get(), &ellipsis)))
 		{
 			DWRITE_TRIMMING trimming{};
 			trimming.granularity = DWRITE_TRIMMING_GRANULARITY_CHARACTER;
 			layout->SetTrimming(&trimming, ellipsis);
 			ellipsis->Release();
 		}
+		DWRITE_TEXT_METRICS fitted{};
+		m_bannerTextHeight = SUCCEEDED(layout->GetMetrics(&fitted)) ? fitted.height : maxHeight;
 		m_bannerLayout = std::move(layout);
+		m_bannerExpandedHeight = std::max(BANNER_MIN_HEIGHT, m_bannerTextHeight + BANNER_TEXT_PADDING);
 	}
 
 	void RightContent::onResize(float width, float height)
@@ -212,9 +258,10 @@ namespace ui
 		m_featuresArea.setBounds(D2D1::RectF(PADDING, PADDING, width - PADDING, PADDING + FEATURES_AREA_HEIGHT));
 
 		const float bannerTop = PADDING + FEATURES_AREA_HEIGHT + MARGIN;
-		const float bannerHeight = m_bannerVisible ? (m_bannerCollapsed ? BANNER_COLLAPSED_HEIGHT : BANNER_EXPANDED_HEIGHT) : 0.f;
+		// 先按新宽度重建标题布局（最多两行自适应），得到展开态高度再定位公告栏
+		rebuildBannerLayout(width - PADDING * 2.f);
+		const float bannerHeight = m_bannerVisible ? (m_bannerCollapsed ? BANNER_COLLAPSED_HEIGHT : m_bannerExpandedHeight) : 0.f;
 		m_bannerRect = D2D1::RectF(PADDING, bannerTop, width - PADDING, bannerTop + bannerHeight);
-		rebuildBannerLayout();  // 宽度变化时按新宽度重建公告文本布局（省略号截断）
 		if (m_bannerVisible)
 		{
 			const float btnY = bannerTop + (bannerHeight - BANNER_BTN_HEIGHT) * 0.5f;
@@ -311,40 +358,58 @@ namespace ui
 
 		m_featuresArea.draw(renderCtx);
 
-		// 公告栏：横向卡片，红字提示，支持收起/关闭
+		// 公告栏：横向卡片（强提醒为深红底 + 白字加粗），支持收起/关闭
 		if (m_bannerVisible)
 		{
+			const bool strong = m_notice.strong && !m_notice.empty();
 			const D2D1_ROUNDED_RECT bannerRounded = D2D1::RoundedRect(m_bannerRect, 8.f, 8.f);
-			solidBrush->SetColor(D2D1::ColorF(0xfff3e0));
+			solidBrush->SetColor(D2D1::ColorF(strong ? 0x8e1b12 : 0xfff3e0));
 			renderTarget->FillRoundedRectangle(bannerRounded, solidBrush);
-			solidBrush->SetColor(D2D1::ColorF(0xffcc80));
+			solidBrush->SetColor(D2D1::ColorF(strong ? 0x6d150e : 0xffcc80));
 			renderTarget->DrawRoundedRectangle(bannerRounded, solidBrush);
 
-			solidBrush->SetColor(D2D1::ColorF(0xd32f2f));
 			const float bannerHeight = m_bannerRect.bottom - m_bannerRect.top;
-			const float textTop = m_bannerRect.top + (bannerHeight - 18.f) * 0.5f;
 			if (!m_bannerCollapsed)
 			{
-				const float textWidth = m_bannerRect.right - m_bannerRect.left - BANNER_BTN_WIDTH * 2 - 32.f;
-				if (!m_noticeText.empty() && m_bannerLayout)
+				float textX = m_bannerRect.left + 10.f;
+				if (strong)
 				{
-					// 服务端系统公告（最新一条）：单行省略号截断布局
-					renderTarget->DrawTextLayout(D2D1::Point2F(m_bannerRect.left + 10.f, textTop),
-					                             m_bannerLayout, solidBrush);
+					// 左侧“强提醒”胶囊（白底深红字），强化视觉反差
+					const float badgeTop = m_bannerRect.top + (bannerHeight - 20.f) * 0.5f;
+					const D2D1_ROUNDED_RECT badge = D2D1::RoundedRect(
+						D2D1::RectF(textX, badgeTop, textX + BANNER_BADGE_WIDTH, badgeTop + 20.f), 10.f, 10.f);
+					solidBrush->SetColor(D2D1::ColorF(0xffffff));
+					renderTarget->FillRoundedRectangle(badge, solidBrush);
+					solidBrush->SetColor(D2D1::ColorF(0x8e1b12));
+					renderTarget->DrawTextW(L"强提醒", 3u, app().textFormat().pTipsFormat,
+					                        D2D1::RectF(textX, badgeTop + 2.f, textX + BANNER_BADGE_WIDTH, badgeTop + 20.f),
+					                        solidBrush);
+					textX += BANNER_BADGE_WIDTH + BANNER_BADGE_GAP;
+				}
+				if (m_bannerLayout)
+				{
+					// 服务端系统公告：标题最多两行，整体纵向居中
+					const float textTop = m_bannerRect.top + (bannerHeight - m_bannerTextHeight) * 0.5f;
+					solidBrush->SetColor(D2D1::ColorF(strong ? 0xffffff : 0xd32f2f));
+					renderTarget->DrawTextLayout(D2D1::Point2F(textX, textTop), m_bannerLayout, solidBrush);
 				}
 				else
 				{
 					// 无服务端公告：回退本地使用提示
+					const float textTop = m_bannerRect.top + (bannerHeight - 18.f) * 0.5f;
+					const float textWidth = m_bannerRect.right - textX - BANNER_BTN_WIDTH * 2 - 22.f;
+					solidBrush->SetColor(D2D1::ColorF(0xd32f2f));
 					renderTarget->DrawTextW(BANNER_TEXT.data(),
 					                        static_cast<UINT32>(BANNER_TEXT.size()),
 					                        app().textFormat().pTipsFormat,
-					                        D2D1::RectF(m_bannerRect.left + 10.f, textTop,
-					                                    m_bannerRect.left + 10.f + textWidth, textTop + 18.f),
+					                        D2D1::RectF(textX, textTop, textX + textWidth, textTop + 18.f),
 					                        solidBrush);
 				}
 			}
 			else
 			{
+				const float textTop = m_bannerRect.top + (bannerHeight - 18.f) * 0.5f;
+				solidBrush->SetColor(D2D1::ColorF(strong ? 0xffffff : 0xd32f2f));
 				renderTarget->DrawTextW(L"公告",
 				                        2u,
 				                        app().textFormat().pTipsFormat,
@@ -507,14 +572,51 @@ namespace ui
 		{
 			return;
 		}
+		// e.point 是 owner 窗口坐标系，转换为控件局部坐标
+		const D2D1_RECT_F& bo = getBoundsInOwner();
+		const D2D1_POINT_2F localPt{ e.point.x - bo.left, e.point.y - bo.top };
+		// 公告栏优先：收起态点击展开；有详情弹窗；无详情有链接直接跳转
+		if (m_bannerVisible &&
+		    localPt.x >= m_bannerRect.left && localPt.x <= m_bannerRect.right &&
+		    localPt.y >= m_bannerRect.top && localPt.y <= m_bannerRect.bottom)
+		{
+			if (m_bannerCollapsed)
+			{
+				m_bannerCollapsed = false;
+				m_btnBannerToggle->setText(L"收起");
+				const auto [ctrlW, ctrlH] = size();
+				onResize(ctrlW, ctrlH);
+				update();
+				return;
+			}
+			if (!m_notice.empty())
+			{
+				openNoticeDetail();
+			}
+			return;
+		}
 		if (m_envDetail.hasDetail())
 		{
 			return; // 非空态：点击交由环境详情处理
 		}
-		// e.point 是 owner 窗口坐标系，转换为控件局部坐标
-		const D2D1_RECT_F& bo = getBoundsInOwner();
-		const D2D1_POINT_2F localPt{ e.point.x - bo.left, e.point.y - bo.top };
 		openAgreementDialogFromNotice(localPt);
+	}
+
+	void RightContent::openNoticeDetail()
+	{
+		if (m_notice.content.empty())
+		{
+			// 没有正文：有链接直接跳转浏览器，否则不做处理
+			if (!m_notice.link.empty())
+			{
+				ui::open_external_url(m_notice.link);
+			}
+			return;
+		}
+		ui::show_notice_dialog(owner() ? owner()->nativeHandle() : nullptr,
+		                       m_notice.title, m_notice.content, m_notice.link, m_notice.strong);
+		// 模态弹窗关闭后重绘，避免窗口残留旧内容
+		updateWholeWnd();
 	}
 
 	void RightContent::openAgreementDialogFromNotice(D2D1_POINT_2F localPt)

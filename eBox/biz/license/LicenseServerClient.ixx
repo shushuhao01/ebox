@@ -44,6 +44,18 @@ export namespace biz
 		export ActivateResult activate(const std::wstring& code, const std::wstring& machineFp,
 		                               const std::wstring& appVersion, const std::wstring& os);
 
+		// 服务端系统公告（结构化）：服务端 noticeData 下发，老服务端仅有 notice 字符串时回退为标题
+		export struct NoticeInfo
+		{
+			std::wstring title;    // 标题（服务端已保证非空时优先标题；老数据为公告字符串）
+			std::wstring content;  // 详情正文（空=仅标题公告）
+			std::wstring link;     // 跳转链接（空=无跳转）
+			bool strong{false};    // 是否强提醒（客户端高亮配色 + 加粗）
+
+			bool empty() const { return title.empty() && content.empty() && link.empty(); }
+			bool operator==(const NoticeInfo&) const = default;
+		};
+
 		// 心跳结果
 		export struct HeartbeatResult
 		{
@@ -51,7 +63,7 @@ export namespace biz
 			bool online{false};
 			std::wstring status;   // ok / revoked / expired / kicked
 			std::int64_t graceUntil{0};  // 授权真实到期（离线可用到该时刻）
-			std::wstring notice;
+			NoticeInfo notice;     // 服务端系统公告（空=已撤下）
 			int heartbeatIntervalHours{6}; // 服务端授权策略：心跳间隔（小时），同步写入本地注册表
 			bool forceOnlineActivate{false}; // 服务端授权策略：是否强制在线激活，同步写入本地注册表
 		};
@@ -60,12 +72,12 @@ export namespace biz
 
 		// 服务端系统公告实时推送（SSE 长连接）。
 		//   阻塞式监听 GET /api/v1/notice/stream：连上即收到当前公告快照，之后在公告变更时实时推送；
-		//   每收到一条事件即回调 onNotice（空串=公告已撤下）。
+		//   每收到一条事件即回调 onNotice（空=公告已撤下）。
 		//   stopToken 触发或连接断开时返回；返回 true=曾成功建立连接（正常结束），
 		//   false=建连/鉴权失败（调用方据此退避重连）。
 		export bool listenNoticeStream(const std::wstring& code, const std::wstring& machineFp,
 		                               std::stop_token stopToken,
-		                               const std::function<void(const std::wstring&)>& onNotice);
+		                               const std::function<void(const NoticeInfo&)>& onNotice);
 
 		// 服务端解绑换机结果
 		export struct UnbindResult
@@ -94,10 +106,10 @@ export namespace biz
 		export void markOnline(bool online);
 		export bool onlineNow();
 
-		// 服务端系统公告（最新一条）：心跳获取后持久化（注册表 Notice），供 UI 公告栏展示；
-		// 传入空串表示清除（服务端已撤下公告）。纯离线码不经过心跳，不受影响。
-		export void storeNotice(const std::wstring& notice);
-		export std::wstring currentNotice();
+		// 服务端系统公告（最新一条）：心跳/SSE 获取后持久化（注册表），供 UI 公告栏展示；
+		// 传入空公告表示清除（服务端已撤下公告）。纯离线码不经过心跳，不受影响。
+		export void storeNotice(const NoticeInfo& notice);
+		export NoticeInfo currentNotice();
 
 		// 联调用：写注册表覆盖服务器地址
 		export void setServerUrl(const std::wstring& url);

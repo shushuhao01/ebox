@@ -137,6 +137,33 @@ const PATCH_TABLES: Array<{ table: string; columns: Array<{ name: string; ddl: s
   },
 ];
 
+// ==================== 系统配置表（公告正文等长文本存储） ====================
+
+const CREATE_SYSTEM_CONFIG_SQL = `
+CREATE TABLE IF NOT EXISTS \`system_config\` (
+  \`id\` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  \`cfg_key\` VARCHAR(64) NOT NULL UNIQUE,
+  \`cfg_value\` TEXT NULL,
+  \`remark\` VARCHAR(255) NULL,
+  \`updated_at\` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`;
+
+/**
+ * system_config.cfg_value 扩容为 TEXT（幂等）。
+ * 公告正文最长 2000 字，原 VARCHAR(255) 无法容纳；老库升级后启动时自动修正列类型。
+ */
+async function ensureSystemConfigText(runner: QueryRunner): Promise<void> {
+  const rows: Array<{ dataType?: string }> = await runner.query(
+    `SELECT DATA_TYPE AS dataType FROM information_schema.columns
+     WHERE table_schema = DATABASE() AND table_name = 'system_config' AND column_name = 'cfg_value'`
+  );
+  if (!rows.length) return; // 表不存在：由 database/schema.sql 统一创建
+  const type = String(rows[0].dataType || '').toLowerCase();
+  if (type === 'text' || type === 'mediumtext' || type === 'longtext') return;
+  await runner.query('ALTER TABLE `system_config` MODIFY COLUMN `cfg_value` TEXT NULL');
+  log.info('✅ system_config.cfg_value 已扩容为 TEXT（支持长公告正文）');
+}
+
 /** 补齐单表缺失字段，返回补列数量 */
 async function ensureColumns(
   runner: QueryRunner,
@@ -172,6 +199,9 @@ export async function ensureSchema(): Promise<void> {
     await ensureColumns(runner, CHANNEL_CLICK_TABLE, CHANNEL_CLICK_COLUMNS);
     await runner.query(CREATE_CHANNEL_STATS_SQL);
     await ensureColumns(runner, CHANNEL_STATS_TABLE, CHANNEL_STATS_COLUMNS);
+    // 系统配置表：公告正文要求 TEXT，表不存在时后端自建
+    await runner.query(CREATE_SYSTEM_CONFIG_SQL);
+    await ensureSystemConfigText(runner);
     for (const t of PATCH_TABLES) {
       await ensureColumns(runner, t.table, t.columns);
     }

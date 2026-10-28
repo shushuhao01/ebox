@@ -2158,9 +2158,519 @@ namespace ui
 			}
 		}
 
-		// 供首页用户须知等外部模块调用：直接打开《用户协议》/《隐私协议》弹窗（不涉及勾选回写）
-		// 注意：这两个导出函数必须定义在 `namespace ui` 作用域（不能放在匿名命名空间内），
-		// 否则会因内链接导致跨模块无法解析，故其定义放在本文件末尾 namespace ui 作用域处。
+		// ---- 服务端系统公告详情弹窗（固定 560×560，标题最多两行，正文自绘可滚动）----
+		constexpr wchar_t NOTICE_DLG_CLASS[] = L"eBoxNoticeDialog";
+		constexpr int NOTICE_CLOSE_ID = 3012;
+		constexpr int NOTICE_LINK_ID = 3013;
+		constexpr int NOTICE_DLG_WIDTH = 560;
+		constexpr int NOTICE_DLG_HEIGHT = 560;
+
+		constexpr int NOTICE_BODY_LEFT  = 28;
+		constexpr int NOTICE_SB_WIDTH   = 8;
+		constexpr int NOTICE_SB_LEFT    = NOTICE_DLG_WIDTH - 26;
+		constexpr int NOTICE_BODY_RIGHT = NOTICE_SB_LEFT - 14;
+		constexpr int NOTICE_SCROLL_STEP = 24;
+		constexpr COLORREF NOTICE_STRONG_TOP    = RGB(0x8e, 0x1b, 0x12); // 强提醒标题区（深红）
+		constexpr COLORREF NOTICE_STRONG_BOTTOM = RGB(0x6d, 0x15, 0x0e);
+		constexpr COLORREF NOTICE_STRONG_SUB    = RGB(0xf0, 0xc9, 0xc4);
+		constexpr COLORREF NOTICE_TITLE_COLOR   = RGB(0x1f, 0x2a, 0x37);
+		constexpr COLORREF NOTICE_TEXT_COLOR    = RGB(0x33, 0x3a, 0x45);
+		constexpr COLORREF NOTICE_SUB_COLOR     = RGB(0x8a, 0x94, 0xa6);
+
+		struct NoticeDialogData
+		{
+			HWND hwnd{nullptr};
+			HWND hClose{nullptr};
+			HWND hLink{nullptr};
+			HFONT hFontTitle{nullptr};
+			HFONT hFontBody{nullptr};
+			HFONT hFontSub{nullptr};
+			int dpi{96};
+			std::wstring title;
+			std::wstring content;
+			std::wstring link;
+			bool strong{false};
+			int titleHeight{0};    // 标题实际高度（像素，最多两行）
+			int headerBottom{0};   // 标题区底边（像素）
+			int bodyTop{0};        // 正文可视区上边（像素）
+			int bodyBottom{0};     // 正文可视区下边（像素）
+			int contentHeight{0};  // 正文完整高度（像素）
+			int scrollY{0};
+			bool scrollDragging{false};
+			int dragGrabY{0};
+			bool done{false};
+		};
+
+		void notice_dlg_create_fonts(NoticeDialogData& data)
+		{
+			for (HFONT* font : {&data.hFontTitle, &data.hFontBody, &data.hFontSub})
+			{
+				if (*font)
+				{
+					DeleteObject(*font);
+					*font = nullptr;
+				}
+			}
+			data.hFontTitle = CreateFontW(-MulDiv(17, data.dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data.hFontBody = CreateFontW(-MulDiv(12, data.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data.hFontSub = CreateFontW(-MulDiv(11, data.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+		}
+
+		// 测量标题（最多两行）与正文高度，并据此计算标题区/正文区边界
+		void notice_dlg_measure(NoticeDialogData& data)
+		{
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			const int bodyW = S(NOTICE_BODY_RIGHT) - S(NOTICE_BODY_LEFT);
+			int lineH = S(26);
+			int titleH = S(26);
+			int contentH = 0;
+			HDC hdc = GetDC(data.hwnd);
+			if (hdc)
+			{
+				SetBkMode(hdc, TRANSPARENT);
+				HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data.hFontTitle));
+				TEXTMETRICW tm{};
+				if (GetTextMetricsW(hdc, &tm))
+				{
+					lineH = tm.tmHeight;
+				}
+				RECT tr{0, 0, bodyW, 0};
+				DrawTextW(hdc, data.title.c_str(), static_cast<int>(data.title.size()), &tr,
+				          DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_LEFT);
+				titleH = std::min<int>(tr.bottom, lineH * 2); // 标题最多两行
+				if (titleH <= 0)
+				{
+					titleH = lineH;
+				}
+
+				SelectObject(hdc, data.hFontBody);
+				RECT cr{0, 0, bodyW, 0};
+				DrawTextW(hdc, data.content.c_str(), static_cast<int>(data.content.size()), &cr,
+				          DT_CALCRECT | DT_WORDBREAK | DT_NOPREFIX | DT_LEFT);
+				contentH = cr.bottom;
+				SelectObject(hdc, hOld);
+				ReleaseDC(data.hwnd, hdc);
+			}
+			data.titleHeight = titleH;
+			data.headerBottom = S(22) + titleH + S(8) + S(18) + S(18);
+			data.bodyTop = data.headerBottom + S(18);
+			data.bodyBottom = S(NOTICE_DLG_HEIGHT - 64);
+			data.contentHeight = contentH;
+		}
+
+		void notice_dlg_layout(NoticeDialogData& data)
+		{
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			if (data.hClose)
+			{
+				SetWindowPos(data.hClose, nullptr,
+				             S(NOTICE_DLG_WIDTH - 172), S(NOTICE_DLG_HEIGHT - 46), S(148), S(36),
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hLink)
+			{
+				SetWindowPos(data.hLink, nullptr,
+				             S(NOTICE_DLG_WIDTH - 172 - 118), S(NOTICE_DLG_HEIGHT - 46), S(108), S(36),
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+		}
+
+		void notice_dlg_recalc(NoticeDialogData& data)
+		{
+			notice_dlg_create_fonts(data);
+			if (data.hClose)
+			{
+				SendMessageW(data.hClose, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontBody), TRUE);
+			}
+			if (data.hLink)
+			{
+				SendMessageW(data.hLink, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontBody), TRUE);
+			}
+			notice_dlg_measure(data);
+			notice_dlg_layout(data);
+			const int bodyH = data.bodyBottom - data.bodyTop;
+			const int maxScroll = data.contentHeight > bodyH ? data.contentHeight - bodyH : 0;
+			data.scrollY = data.scrollY < 0 ? 0 : (data.scrollY > maxScroll ? maxScroll : data.scrollY);
+		}
+
+		LRESULT CALLBACK notice_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+		{
+			auto* data = reinterpret_cast<NoticeDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+			case WM_CREATE:
+			{
+				auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+				data = static_cast<NoticeDialogData*>(cs->lpCreateParams);
+				data->hwnd = hwnd;
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+
+				const HINSTANCE hInst = GetModuleHandleW(nullptr);
+				data->dpi = ui::dlg_dpi(hwnd);
+				data->hClose = CreateWindowExW(0, L"BUTTON", L"我知道了",
+				                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                               0, 0, 0, 0, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(NOTICE_CLOSE_ID)),
+				                               hInst, nullptr);
+				if (!data->link.empty())
+				{
+					data->hLink = CreateWindowExW(0, L"BUTTON", L"查看详情",
+					                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+					                              0, 0, 0, 0, hwnd,
+					                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(NOTICE_LINK_ID)),
+					                              hInst, nullptr);
+				}
+				notice_dlg_recalc(*data);
+				return 0;
+			}
+			case WM_DPICHANGED:
+			{
+				if (data)
+				{
+					data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					notice_dlg_recalc(*data);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+				if (data && wParam != SIZE_MINIMIZED)
+				{
+					notice_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
+			case WM_ERASEBKGND:
+				return 1;
+			case WM_PAINT:
+			{
+				if (!data)
+				{
+					break;
+				}
+				const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
+				PAINTSTRUCT ps{};
+				HDC hdc = BeginPaint(hwnd, &ps);
+				RECT rc{};
+				GetClientRect(hwnd, &rc);
+				fill_v_gradient(hdc, rc, RGB(0xf7, 0xfa, 0xfe), RGB(0xff, 0xff, 0xff));
+
+				// 标题区：强提醒使用深红渐变，普通公告仅在顶部画主题色条
+				RECT header{0, 0, rc.right, data->headerBottom};
+				if (data->strong)
+				{
+					fill_v_gradient(hdc, header, NOTICE_STRONG_TOP, NOTICE_STRONG_BOTTOM);
+				}
+				else
+				{
+					RECT bar{0, 0, rc.right, S(3)};
+					HBRUSH hBrush = CreateSolidBrush(CLEAN_ACCENT);
+					FillRect(hdc, &bar, hBrush);
+					DeleteObject(hBrush);
+				}
+
+				SetBkMode(hdc, TRANSPARENT);
+				const int titleTop = S(22);
+				HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontTitle));
+				SetTextColor(hdc, data->strong ? RGB(0xff, 0xff, 0xff) : NOTICE_TITLE_COLOR);
+				RECT tr{S(NOTICE_BODY_LEFT), titleTop, S(NOTICE_BODY_RIGHT) + S(NOTICE_SB_WIDTH) + S(4),
+				        titleTop + data->titleHeight};
+				DrawTextW(hdc, data->title.c_str(), static_cast<int>(data->title.size()), &tr,
+				          DT_LEFT | DT_NOPREFIX | DT_WORDBREAK | DT_END_ELLIPSIS);
+
+				SelectObject(hdc, data->hFontSub);
+				SetTextColor(hdc, data->strong ? NOTICE_STRONG_SUB : NOTICE_SUB_COLOR);
+				RECT sr{S(NOTICE_BODY_LEFT), titleTop + data->titleHeight + S(8),
+				        rc.right - S(28), titleTop + data->titleHeight + S(8) + S(18)};
+				const wchar_t* sub = data->strong ? L"强提醒公告 · 请注意查看" : L"系统公告";
+				DrawTextW(hdc, sub, -1, &sr, DT_LEFT | DT_NOPREFIX | DT_SINGLELINE);
+				SelectObject(hdc, hOld);
+
+				// 正文（按滚动偏移绘制，裁剪到可视区）
+				const int bodyH = data->bodyBottom - data->bodyTop;
+				if (!data->content.empty())
+				{
+					const int save = SaveDC(hdc);
+					IntersectClipRect(hdc, S(NOTICE_BODY_LEFT), data->bodyTop, S(NOTICE_BODY_RIGHT), data->bodyBottom);
+					HFONT hOldBody = static_cast<HFONT>(SelectObject(hdc, data->hFontBody));
+					SetTextColor(hdc, NOTICE_TEXT_COLOR);
+					RECT br{S(NOTICE_BODY_LEFT), data->bodyTop - data->scrollY,
+					        S(NOTICE_BODY_RIGHT), data->bodyTop - data->scrollY + data->contentHeight};
+					DrawTextW(hdc, data->content.c_str(), static_cast<int>(data->content.size()), &br,
+					          DT_LEFT | DT_NOPREFIX | DT_WORDBREAK);
+					SelectObject(hdc, hOldBody);
+					RestoreDC(hdc, save);
+				}
+
+				// 内容超出可视区时才显示滚动条
+				if (data->contentHeight > bodyH)
+				{
+					const int maxScroll = data->contentHeight - bodyH;
+					RECT track{S(NOTICE_SB_LEFT), data->bodyTop,
+					           S(NOTICE_SB_LEFT + NOTICE_SB_WIDTH), data->bodyBottom};
+					draw_round_rect(hdc, track, S(4), RGB(0xec, 0xf1, 0xf8), RGB(0xe4, 0xea, 0xf2), 1);
+					const int thumbH = std::max(S(30), bodyH * bodyH / data->contentHeight);
+					const int maxTop = bodyH - thumbH;
+					int thumbTop = track.top + (maxTop > 0 && maxScroll > 0
+						                            ? maxTop * data->scrollY / maxScroll
+						                            : 0);
+					RECT thumb{track.left, thumbTop, track.right, thumbTop + thumbH};
+					draw_round_rect(hdc, thumb, S(4), RGB(0x9c, 0xb8, 0xd8), RGB(0x9c, 0xb8, 0xd8), 0);
+				}
+
+				// 底部分隔线
+				HPEN hLine = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
+				HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hLine));
+				MoveToEx(hdc, S(24), S(NOTICE_DLG_HEIGHT - 52), nullptr);
+				LineTo(hdc, rc.right - S(24), S(NOTICE_DLG_HEIGHT - 52));
+				SelectObject(hdc, hOldPen);
+				DeleteObject(hLine);
+
+				EndPaint(hwnd, &ps);
+				return 0;
+			}
+			case WM_CTLCOLORBTN:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkMode(hdc, TRANSPARENT);
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_DRAWITEM:
+			{
+				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+				if (dis->CtlID == NOTICE_CLOSE_ID)
+				{
+					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
+					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+					wchar_t buf[64]{};
+					GetWindowTextW(dis->hwndItem, buf, 64);
+					draw_modern_dlg_button(dis->hDC, dis->rcItem, true, hover, pressed, buf, false);
+					return TRUE;
+				}
+				if (dis->CtlID == NOTICE_LINK_ID)
+				{
+					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
+					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+					wchar_t buf[64]{};
+					GetWindowTextW(dis->hwndItem, buf, 64);
+					draw_modern_dlg_button(dis->hDC, dis->rcItem, false, hover, pressed, buf, false);
+					return TRUE;
+				}
+				return FALSE;
+			}
+			case WM_COMMAND:
+				if (LOWORD(wParam) == NOTICE_CLOSE_ID)
+				{
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				if (LOWORD(wParam) == NOTICE_LINK_ID)
+				{
+					if (data && !data->link.empty())
+					{
+						ShellExecuteW(nullptr, L"open", data->link.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+					}
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				return 0;
+			case WM_CLOSE:
+				DestroyWindow(hwnd);
+				return 0;
+			case WM_MOUSEWHEEL:
+			{
+				const int bodyH = data->bodyBottom - data->bodyTop;
+				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+				if (maxScroll > 0)
+				{
+					const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
+					const int value = data->scrollY - delta / WHEEL_DELTA * ui::dlg_s(NOTICE_SCROLL_STEP, data->dpi);
+					data->scrollY = value < 0 ? 0 : (value > maxScroll ? maxScroll : value);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_KEYDOWN:
+			{
+				const int bodyH = data->bodyBottom - data->bodyTop;
+				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+				if (maxScroll > 0)
+				{
+					int v = data->scrollY;
+					switch (LOWORD(wParam))
+					{
+					case VK_UP:
+						v -= ui::dlg_s(NOTICE_SCROLL_STEP, data->dpi);
+						break;
+					case VK_DOWN:
+						v += ui::dlg_s(NOTICE_SCROLL_STEP, data->dpi);
+						break;
+					case VK_PRIOR:
+						v -= bodyH;
+						break;
+					case VK_NEXT:
+						v += bodyH;
+						break;
+					case VK_HOME:
+						v = 0;
+						break;
+					case VK_END:
+						v = maxScroll;
+						break;
+					default:
+						return 0;
+					}
+					data->scrollY = v < 0 ? 0 : (v > maxScroll ? maxScroll : v);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_LBUTTONDOWN:
+			{
+				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+				const int sbLeft = ui::dlg_s(NOTICE_SB_LEFT, data->dpi);
+				const int sbRight = ui::dlg_s(NOTICE_SB_LEFT + NOTICE_SB_WIDTH, data->dpi);
+				const int bodyH = data->bodyBottom - data->bodyTop;
+				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+				if (maxScroll > 0 && pt.x >= sbLeft && pt.x <= sbRight &&
+				    pt.y >= data->bodyTop && pt.y <= data->bodyBottom)
+				{
+					const int thumbH = std::max(ui::dlg_s(30, data->dpi), bodyH * bodyH / data->contentHeight);
+					const int maxTop = bodyH - thumbH;
+					int curTop = data->bodyTop + (maxTop > 0 ? maxTop * data->scrollY / maxScroll : 0);
+					if (pt.y >= curTop && pt.y <= curTop + thumbH)
+					{
+						data->scrollDragging = true;
+						data->dragGrabY = pt.y - curTop;
+						SetCapture(hwnd);
+					}
+					else if (pt.y < curTop)
+					{
+						data->scrollY = data->scrollY - bodyH < 0 ? 0 : data->scrollY - bodyH;
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+					else
+					{
+						data->scrollY = data->scrollY + bodyH > maxScroll ? maxScroll : data->scrollY + bodyH;
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+					return 0;
+				}
+				break;
+			}
+			case WM_MOUSEMOVE:
+			{
+				if (data->scrollDragging)
+				{
+					const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
+					const int bodyH = data->bodyBottom - data->bodyTop;
+					const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
+					const int thumbH = std::max(ui::dlg_s(30, data->dpi), bodyH * bodyH / data->contentHeight);
+					const int maxTop = bodyH - thumbH;
+					if (maxTop > 0 && maxScroll > 0)
+					{
+						int newThumbTop = pt.y - data->dragGrabY;
+						if (newThumbTop < data->bodyTop) newThumbTop = data->bodyTop;
+						if (newThumbTop > data->bodyTop + maxTop) newThumbTop = data->bodyTop + maxTop;
+						data->scrollY = (newThumbTop - data->bodyTop) * maxScroll / maxTop;
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+				}
+				return 0;
+			}
+			case WM_LBUTTONUP:
+				if (data->scrollDragging)
+				{
+					data->scrollDragging = false;
+					if (GetCapture() == hwnd)
+					{
+						ReleaseCapture();
+					}
+				}
+				return 0;
+			case WM_CAPTURECHANGED:
+				data->scrollDragging = false;
+				return 0;
+			case WM_DESTROY:
+				for (HFONT* font : {&data->hFontTitle, &data->hFontBody, &data->hFontSub})
+				{
+					if (*font)
+					{
+						DeleteObject(*font);
+						*font = nullptr;
+					}
+				}
+				data->done = true;
+				return 0;
+			default:
+				break;
+			}
+			return DefWindowProcW(hwnd, msg, wParam, lParam);
+		}
+
+		void show_notice_dialog_impl(HWND hOwner, const std::wstring& title, const std::wstring& content,
+		                             const std::wstring& link, bool strong)
+		{
+			static const bool classRegistered = []()
+			{
+				WNDCLASSEXW wc = {sizeof(wc)};
+				wc.lpfnWndProc = notice_dlg_proc;
+				wc.hInstance = GetModuleHandleW(nullptr);
+				wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+				wc.hbrBackground = reinterpret_cast<HBRUSH>((COLOR_WINDOW + 1));
+				wc.style = 0;
+				wc.lpszClassName = NOTICE_DLG_CLASS;
+				return RegisterClassExW(&wc) != 0;
+			}();
+			(void)classRegistered;
+
+			NoticeDialogData data;
+			data.title = title.empty() ? std::wstring(L"系统公告") : title;
+			data.content = content;
+			data.link = link;
+			data.strong = strong;
+			const SIZE clientSize = ui::dlg_client_size(hOwner, NOTICE_DLG_WIDTH, NOTICE_DLG_HEIGHT);
+
+			const HWND hDlg = CreateWindowExW(0, NOTICE_DLG_CLASS, L"系统公告",
+			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
+			                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
+			                                  GetModuleHandleW(nullptr), &data);
+			if (!hDlg)
+			{
+				return;
+			}
+			ui::dlg_fit_client(hDlg, clientSize);
+			ui::dlg_center_on(hDlg, hOwner);
+			ShowWindow(hDlg, SW_SHOW);
+			UpdateWindow(hDlg);
+			SetFocus(hDlg); // 让弹窗接收鼠标滚轮与键盘方向键
+			if (hOwner && IsWindow(hOwner))
+			{
+				EnableWindow(hOwner, FALSE);
+			}
+
+			MSG msg{};
+			while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
+			{
+				TranslateMessage(&msg);
+				DispatchMessageW(&msg);
+			}
+
+			if (hOwner && IsWindow(hOwner))
+			{
+				EnableWindow(hOwner, TRUE);
+				SetFocus(hOwner);
+				InvalidateRect(hOwner, nullptr, TRUE);
+			}
+		}
+
+
 		void activate_dlg_show_error(ActivateDialogData& data, std::wstring_view msg)
 		{
 			if (!data.hError)
@@ -6618,6 +7128,30 @@ namespace ui
 	void show_privacy_agreement_dialog(HWND hOwner)
 	{
 		show_agreement_dialog(hOwner, nullptr, L"eBox 隐私协议", AGREEMENT_TEXT_PRIVACY);
+	}
+
+	// ---- 公告详情弹窗 / 外部链接跳转（跨模块导出，供内容区公告栏调用）----
+	void show_notice_dialog(HWND hOwner, const std::wstring& title, const std::wstring& content,
+	                        const std::wstring& link, bool strong)
+	{
+		show_notice_dialog_impl(hOwner, title, content, link, strong);
+	}
+
+	void open_external_url(const std::wstring& url)
+	{
+		// 仅允许 http/https，避免 ShellExecuteW 打开本地文件或可执行程序
+		if (url.empty())
+		{
+			return;
+		}
+		std::wstring lower = url;
+		std::transform(lower.begin(), lower.end(), lower.begin(),
+		               [](wchar_t c) { return static_cast<wchar_t>(std::towlower(c)); });
+		if (!lower.starts_with(L"http://") && !lower.starts_with(L"https://"))
+		{
+			return;
+		}
+		ShellExecuteW(nullptr, L"open", url.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
 	}
 
 	// ---- 易歪歪安装位置检测：命中被重定向的系统用户目录 → 提示改装到非系统盘 ----

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { addClient, removeClient } from '../services/NoticeBroadcaster';
-import { getConfigValue } from '../services/ConfigService';
+import { getNoticeEvent } from '../services/ConfigService';
 import { findByCode } from '../services/KeyService';
 import { AppDataSource } from '../config/database';
 import { Device } from '../entities/Device';
@@ -10,7 +10,8 @@ const router = Router();
 // GET /api/v1/notice/stream?code=&machineFp=
 //   服务端 → 客户端 系统公告实时推送（SSE 长连接）。
 //   鉴权：code 已登记且该 machineFp 为在绑设备（仅已激活客户端可连）。
-//   事件格式：data: {"notice":"..."}   空串表示公告已撤下。
+//   事件格式：data: {"notice":"标题","noticeData":{"title","content","strong","link"}}
+//   空串 / noticeData=null 表示公告已撤下。
 //   连上即下发当前公告快照，之后仅在变更时推送；另每 25s 发送 ": ping" 保活注释。
 router.get('/notice/stream', async (req, res) => {
   const code = String(req.query.code || '');
@@ -36,7 +37,7 @@ router.get('/notice/stream', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders?.();
 
-  addClient(res, await getConfigValue('notice'));
+  addClient(res, await getNoticeEvent());
 
   const cleanup = () => removeClient(res);
   req.on('close', cleanup);

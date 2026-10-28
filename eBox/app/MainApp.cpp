@@ -9,6 +9,8 @@ module;
 #include <tlhelp32.h>
 // BCrypt：迁移校验时计算 SHA-256（只用 CreateHash/HashData/FinishHash，Win7 可用）
 #include <bcrypt.h>
+// 崩溃兜底：MINIDUMP_* 结构定义（MiniDumpWriteDump 运行时从 Dbghelp.dll 动态取）
+#include <dbghelp.h>
 // SHGetKnownFolderPath：定位真实的“文档”目录，推导环境内 WXWork 数据目录位置
 #include <shlobj.h>
 #include <knownfolders.h>
@@ -47,10 +49,71 @@ namespace
 
 	// 见下方实现：启动时静默把数据目录/程序目录加入 Defender 排除项（只成功执行一次）
 	void ensure_defender_exclusions_async();
+
+	// ===== 崩溃兜底 =====
+	// 更新流程等 UI 回调一旦抛出未处理的结构化异常，系统会把它升级为
+	// STATUS_FATAL_USER_CALLBACK_EXCEPTION(0xc000041d) 直接杀进程，现场只剩一个
+	// 笼统的"停止工作"弹窗。这里在进程最外层兜住，落一份完整 minidump 便于定位。
+	// 注意：过滤器运行在异常上下文，只做最小必要的文件操作，避免二次异常。
+	LONG WINAPI ebox_unhandled_exception_filter(EXCEPTION_POINTERS* info)
+	{
+		wchar_t appData[MAX_PATH] = {};
+		if (SUCCEEDED(SHGetFolderPathW(nullptr, CSIDL_LOCAL_APPDATA, nullptr, SHGFP_TYPE_CURRENT, appData)))
+		{
+			const std::wstring root = std::wstring(appData) + L"\\eBox";
+			const std::wstring crashDir = root + L"\\crash";
+			CreateDirectoryW(root.c_str(), nullptr);
+			CreateDirectoryW(crashDir.c_str(), nullptr);
+
+			SYSTEMTIME st{};
+			GetLocalTime(&st);
+			const auto two_digit = [](WORD v) -> std::wstring
+			{
+				return (v < 10 ? L"0" : L"") + std::to_wstring(v);
+			};
+			const std::wstring dumpPath = crashDir + L"\\eBox_crash_" + std::to_wstring(st.wYear) +
+			                              two_digit(st.wMonth) + two_digit(st.wDay) + L"_" +
+			                              two_digit(st.wHour) + two_digit(st.wMinute) + two_digit(st.wSecond) +
+			                              L"_p" + std::to_wstring(GetCurrentProcessId()) + L".dmp";
+
+			// 动态加载：避免进程启动即绑定 dbghelp，也避免加载器锁内做多余导入
+			HMODULE hDbgHelp = LoadLibraryW(L"Dbghelp.dll");
+			if (hDbgHelp)
+			{
+				using PFN_MiniDumpWriteDump = BOOL(WINAPI*)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE,
+				                                            PMINIDUMP_EXCEPTION_INFORMATION,
+				                                            PMINIDUMP_USER_STREAM_INFORMATION,
+				                                            PMINIDUMP_CALLBACK_INFORMATION);
+				auto pMiniDumpWriteDump = reinterpret_cast<PFN_MiniDumpWriteDump>(
+				    reinterpret_cast<void*>(GetProcAddress(hDbgHelp, "MiniDumpWriteDump")));
+				if (pMiniDumpWriteDump)
+				{
+					const HANDLE hFile = CreateFileW(dumpPath.c_str(), GENERIC_WRITE, 0, nullptr,
+					                                 CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+					if (hFile != INVALID_HANDLE_VALUE)
+					{
+						MINIDUMP_EXCEPTION_INFORMATION mei{};
+						mei.ThreadId = GetCurrentThreadId();
+						mei.ExceptionPointers = info;
+						mei.ClientPointers = FALSE;
+						pMiniDumpWriteDump(GetCurrentProcess(), GetCurrentProcessId(), hFile,
+						                   MiniDumpWithFullMemory, &mei, nullptr, nullptr);
+						CloseHandle(hFile);
+					}
+				}
+				FreeLibrary(hDbgHelp);
+			}
+		}
+		// 已落盘：不再走 WER 上报/弹窗，直接让进程结束
+		return EXCEPTION_EXECUTE_HANDLER;
+	}
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
+	// 兜底：未处理异常时生成 minidump（%LOCALAPPDATA%\eBox\crash），避免只剩系统弹窗
+	SetUnhandledExceptionFilter(&ebox_unhandled_exception_filter);
+
 	try
 	{
 		// 退出/重启接力：新实例必须等旧实例完全退出后再抢单实例互斥，

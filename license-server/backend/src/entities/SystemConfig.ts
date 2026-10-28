@@ -8,7 +8,7 @@ export class SystemConfig {
   @Column({ length: 64, name: 'cfg_key', unique: true })
   cfgKey!: string;
 
-  @Column({ length: 255, name: 'cfg_value' })
+  @Column({ type: 'text', name: 'cfg_value', nullable: true })
   cfgValue!: string;
 
   @Column({ type: 'varchar', length: 255, nullable: true })

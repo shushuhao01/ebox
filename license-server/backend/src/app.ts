@@ -30,7 +30,7 @@ import adminBatchRoutes from './routes/admin/batches';
 import adminUserRoutes from './routes/admin/users';
 import adminSiteRoutes from './routes/admin/site';
 import { markExpiredKeys } from './services/KeyService';
-import { getConfigValue } from './services/ConfigService';
+import { getConfigValue, processScheduledNotice } from './services/ConfigService';
 import { cleanExpiredData } from './services/LogService';
 import { cleanSiteVisitLogs, cleanSiteOnline } from './services/SiteAnalyticsService';
 import { cleanChannelClicks } from './services/ChannelService';
@@ -184,6 +184,15 @@ async function main() {
         }
       } catch (e) {
         log.error('日志清理失败', e);
+      }
+    });
+
+    // 定时任务：系统公告定时发送（每分钟检查一次，到点即发布并实时推送）
+    cron.schedule('* * * * *', async () => {
+      try {
+        await processScheduledNotice();
+      } catch (e) {
+        log.error('定时公告发送失败', e);
       }
     });
 

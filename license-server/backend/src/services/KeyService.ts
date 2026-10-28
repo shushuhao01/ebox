@@ -8,7 +8,7 @@ import { RevokeLog } from '../entities/RevokeLog';
 import { KeyCustomer } from '../entities/KeyCustomer';
 import { KeyBatch } from '../entities/KeyBatch';
 import { buildLicenseCode, decodeAndVerify, codeFingerprint } from '../crypto/licenseCodec';
-import { getConfigValue } from './ConfigService';
+import { getConfigValue, getNoticeEvent } from './ConfigService';
 import { ApiError } from '../middleware/errorHandler';
 
 const keyRepo = () => AppDataSource.getRepository(LicenseKey);
@@ -299,7 +299,8 @@ export interface HeartbeatResult {
   online: boolean;
   graceUntil: number; // 服务端时间 + 宽限天数
   serverTime: number;
-  notice?: string;
+  notice?: string; // 兼容串（老客户端只认这一项）
+  noticeData?: { title: string; content: string; strong: boolean; link: string } | null; // 结构化公告
   heartbeatIntervalHours?: number; // 授权策略：心跳间隔（小时），客户端同步到本地注册表
   forceOnlineActivate?: boolean;   // 授权策略：是否强制在线激活，客户端同步到本地注册表
 }
@@ -354,12 +355,21 @@ export async function clientHeartbeat(
     })
   );
 
-  const notice = await getConfigValue('notice');
+  const noticeEvent = await getNoticeEvent();
   // 授权策略随心跳下发：客户端同步到本地注册表（在线码；未登记离线码用本地默认）
   const heartbeatIntervalHours = Number(await getConfigValue('heartbeat_interval_hours')) || 6;
   const forceOnlineActivate = (await getConfigValue('force_online_activate')) === '1';
   // graceUntil = 授权真实到期时间：激活后即使长时间离线，也能用完整个授权期限
-  return { status: 'ok', online: true, graceUntil: keyExpireAt(key, serverTime), serverTime, notice: notice || undefined, heartbeatIntervalHours, forceOnlineActivate };
+  return {
+    status: 'ok',
+    online: true,
+    graceUntil: keyExpireAt(key, serverTime),
+    serverTime,
+    notice: noticeEvent.notice || undefined,
+    noticeData: noticeEvent.noticeData,
+    heartbeatIntervalHours,
+    forceOnlineActivate,
+  };
 }
 
 // ---------------------------------------------------------------------------

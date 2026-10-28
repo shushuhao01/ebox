@@ -37,8 +37,10 @@ namespace ui
 
 	private:
 		virtual void drawImpl(const RenderContext& renderCtx) override;
-		// 按当前公告文本重建公告栏文本布局（超宽省略号，单行）
-		void rebuildBannerLayout();
+		// 按公告栏可用宽度重建标题布局（最多两行自适应高度，超出省略号）
+		void rebuildBannerLayout(float bannerWidth);
+		// 点击公告栏：有详情则弹窗，无详情有链接则直接跳转
+		void openNoticeDetail();
 		// 由用户须知第6条协议名命中区域分派弹窗
 		void openAgreementDialogFromNotice(D2D1_POINT_2F localPt);
 
@@ -59,8 +61,12 @@ namespace ui
 		D2D1_RECT_F m_bannerRect{};
 		bool m_bannerVisible{true};
 		bool m_bannerCollapsed{false};
-		std::wstring m_noticeText;                       // 服务端系统公告（最新一条，空=无公告）
-		UniqueComPtr<IDWriteTextLayout> m_bannerLayout;  // 公告文本布局（单行省略号）
+		// 服务端系统公告（最新一条，空=无公告）
+		biz::licenseserver::NoticeInfo m_notice;
+		UniqueComPtr<IDWriteTextLayout> m_bannerLayout;  // 公告标题布局（最多两行）
+		float m_bannerTextWidth{0.f};                    // 标题可用宽度
+		float m_bannerTextHeight{0.f};                   // 标题实际高度（两行截断后）
+		float m_bannerExpandedHeight{40.f};              // 公告栏展开时的高度（按标题自适应）
 		std::unique_ptr<Button> m_btnBannerToggle;
 		std::unique_ptr<Button> m_btnBannerClose;
 		FeaturesArea m_featuresArea{this};

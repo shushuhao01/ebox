@@ -62,9 +62,9 @@ namespace
 	// 换机/续期场景由发码工具生成，到期 = 原码剩余时间对应的日期，且新旧客户端均兼容
 	constexpr BYTE kLegacyFormatMinor = 7;
 
-	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.2.5）
+	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.2.6）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v3.2.5";
+	constexpr wchar_t kAppVersion[] = L"v3.2.6";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()
@@ -1252,9 +1252,9 @@ namespace biz
 							return;
 						}
 						// 在线托管码：同步服务端系统公告（最新一条），变化时通知 UI 刷新公告栏
-						if (hb.notice != licenseserver::currentNotice())
+						if (!(hb.notice == licenseserver::currentNotice()))
 						{
-							licenseserver::storeNotice(hb.notice);  // 空串=服务端已撤下公告
+							licenseserver::storeNotice(hb.notice);  // 空=服务端已撤下公告
 							PostMessageW(FindWindowW(kMainWindowClassName, nullptr),
 							             WM_APP_LICENSENOTICE, 0, 0);
 						}
@@ -1292,10 +1292,10 @@ namespace biz
 				{
 					const bool established = licenseserver::listenNoticeStream(
 						code, fp, stopToken,
-						[](const std::wstring& notice)
+						[](const licenseserver::NoticeInfo& notice)
 						{
-							// 与服务端公告比对，变化才落盘并通知 UI（空串=服务端已撤下公告）
-							if (notice != licenseserver::currentNotice())
+							// 与服务端公告比对，变化才落盘并通知 UI（空=服务端已撤下公告）
+							if (!(notice == licenseserver::currentNotice()))
 							{
 								licenseserver::storeNotice(notice);
 								PostMessageW(FindWindowW(kMainWindowClassName, nullptr),

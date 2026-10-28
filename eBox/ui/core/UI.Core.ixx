@@ -15,6 +15,14 @@ namespace ui
 	export void show_user_agreement_dialog(HWND hOwner);
 	export void show_privacy_agreement_dialog(HWND hOwner);
 
+	// 弹出服务端系统公告详情弹窗（固定 560×560，标题最多两行，正文可滚动，
+	// 配置了链接时底部显示“查看详情”按钮）；strong=true 时使用强提醒深红标题区。
+	export void show_notice_dialog(HWND hOwner, const std::wstring& title, const std::wstring& content,
+	                               const std::wstring& link, bool strong);
+
+	// 用系统默认浏览器打开 http/https 链接（其他协议忽略）
+	export void open_external_url(const std::wstring& url);
+
 	export struct RenderContext
 	{
 		UniqueComPtr<ID2D1HwndRenderTarget> renderTarget;

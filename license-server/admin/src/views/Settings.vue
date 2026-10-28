@@ -44,16 +44,111 @@
             <el-divider />
 
             <div class="form-item">
-              <div class="form-label">公告（Notice）</div>
+              <div class="form-label">
+                系统公告
+                <span class="hint">客户端首页公告栏；保存草稿不会推送，需「立即发送」或设置定时发送</span>
+              </div>
+
+              <div class="notice-status">
+                <template v-if="publishedNotice">
+                  <el-tag type="success" size="small" effect="dark">已发布</el-tag>
+                  <span class="notice-status-text">《{{ publishedNotice.title || '无标题' }}》{{ formatTime(publishedNotice.publishedAt) }}</span>
+                </template>
+                <el-tag v-else type="info" size="small">未发布</el-tag>
+
+                <template v-if="pendingNotice">
+                  <el-tag type="warning" size="small" effect="dark">待定时</el-tag>
+                  <span class="notice-status-text">{{ formatTime(pendingNotice.publishAt) }} 自动发送</span>
+                  <el-button link type="warning" @click="handleCancelSchedule">取消定时</el-button>
+                </template>
+              </div>
+
               <el-input
-                v-model="policy.notice"
-                type="textarea"
-                :rows="3"
-                maxlength="500"
+                v-model="noticeForm.title"
+                maxlength="80"
                 show-word-limit
-                placeholder="客户端展示的公告内容（可选）"
+                placeholder="公告标题（客户端公告栏显示，最长 2 行）"
+                style="width: 480px; max-width: 100%; margin-bottom: 10px"
+              />
+
+              <el-input
+                v-model="noticeForm.content"
+                type="textarea"
+                :rows="5"
+                maxlength="2000"
+                show-word-limit
+                placeholder="公告详情（可选）：填写后客户端点击公告栏弹出详情窗口"
                 style="width: 480px; max-width: 100%"
               />
+
+              <div class="notice-options">
+                <span class="notice-option-label">强提醒</span>
+                <el-switch v-model="noticeForm.strong" active-text="开启" inactive-text="关闭" inline-prompt />
+                <span class="hint">开启后公告栏以深红底白字高亮，提醒用户注意</span>
+              </div>
+
+              <div class="notice-options">
+                <span class="notice-option-label">跳转链接</span>
+                <el-input
+                  v-model="noticeForm.link"
+                  maxlength="500"
+                  placeholder="https://（可选，配置后客户端详情窗口显示「查看详情」）"
+                  style="width: 360px; max-width: 100%"
+                />
+              </div>
+
+              <div class="notice-options">
+                <span class="notice-option-label">发送方式</span>
+                <el-radio-group v-model="sendMode">
+                  <el-radio-button label="now">立即发送</el-radio-button>
+                  <el-radio-button label="schedule">定时发送</el-radio-button>
+                </el-radio-group>
+                <el-date-picker
+                  v-if="sendMode === 'schedule'"
+                  v-model="sendAt"
+                  type="datetime"
+                  placeholder="选择发送时间"
+                  format="YYYY-MM-DD HH:mm:ss"
+                  value-format="YYYY-MM-DD HH:mm:ss"
+                  style="width: 200px"
+                />
+              </div>
+
+              <div class="notice-preview-wrap">
+                <span class="notice-option-label">效果预览</span>
+                <div class="notice-preview" :class="{ strong: noticeForm.strong }">
+                  <span class="np-tag">公告</span>
+                  <span class="np-text">{{ previewTitle }}</span>
+                  <span v-if="noticeForm.content || noticeForm.link" class="np-action">
+                    {{ noticeForm.content ? '查看详情' : '查看' }}
+                  </span>
+                </div>
+              </div>
+
+              <div class="notice-actions">
+                <el-button :loading="noticeSaving" @click="handleSaveDraft">保存草稿</el-button>
+                <el-button
+                  v-if="sendMode === 'now'"
+                  type="primary"
+                  :icon="Promotion"
+                  :loading="noticeSending"
+                  @click="handleSendNotice"
+                >
+                  立即发送
+                </el-button>
+                <el-button v-else type="primary" :icon="Timer" :loading="noticeSending" @click="handleScheduleNotice">
+                  定时发送
+                </el-button>
+                <el-button
+                  type="danger"
+                  plain
+                  :disabled="!publishedNotice && !pendingNotice"
+                  :loading="noticeWithdrawing"
+                  @click="handleWithdraw"
+                >
+                  撤销公告
+                </el-button>
+              </div>
             </div>
 
             <el-divider />
@@ -115,8 +210,20 @@
 <script setup lang="ts">
 import { computed, onMounted, reactive, ref } from 'vue'
 import { ElMessage, ElMessageBox, type FormInstance, type FormRules } from 'element-plus'
-import { Check, RefreshLeft, Lock, Delete } from '@element-plus/icons-vue'
-import { getConfig, updateConfig, cleanLogs, type SystemConfig } from '@/api/config'
+import { Check, RefreshLeft, Lock, Delete, Promotion, Timer } from '@element-plus/icons-vue'
+import {
+  getConfig,
+  updateConfig,
+  cleanLogs,
+  sendNotice,
+  scheduleNotice,
+  cancelScheduledNotice,
+  withdrawNotice,
+  type SystemConfig,
+  type NoticePayload,
+  type PendingNotice,
+  type NoticeState,
+} from '@/api/config'
 import { changePassword } from '@/api/users'
 import { useUserStore } from '@/stores/user'
 
@@ -128,6 +235,12 @@ const policy = reactive<SystemConfig>({
   offline_grace_days: '7',
   force_online_activate: '0',
   notice: '',
+  notice_title: '',
+  notice_content: '',
+  notice_strong: '0',
+  notice_link: '',
+  notice_published: null,
+  notice_pending_task: null,
   online_threshold_minutes: '30',
   log_retention_days: '1',
   log_clean_time: '03:00',
@@ -136,6 +249,36 @@ const policy = reactive<SystemConfig>({
 const forceOnline = ref(false)
 const saving = ref(false)
 const cleaning = ref(false)
+
+// ============ 系统公告 ============
+const noticeForm = reactive({ title: '', content: '', strong: false, link: '' })
+const sendMode = ref<'now' | 'schedule'>('now')
+const sendAt = ref('')
+const publishedNotice = ref<NoticePayload | null>(null)
+const pendingNotice = ref<PendingNotice | null>(null)
+const noticeSaving = ref(false)
+const noticeSending = ref(false)
+const noticeWithdrawing = ref(false)
+
+// 预览标题：标题优先，无标题时取正文首个非空行（与客户端横幅一致）
+const previewTitle = computed(
+  () =>
+    noticeForm.title.trim() ||
+    noticeForm.content.split(/\r?\n/).find((s) => s.trim())?.trim() ||
+    '公告标题',
+)
+
+function formatTime(ts: number): string {
+  if (!ts) return '—'
+  const d = new Date(ts)
+  const p = (n: number) => String(n).padStart(2, '0')
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`
+}
+
+function applyNoticeState(state: NoticeState) {
+  publishedNotice.value = state.notice_published ?? null
+  pendingNotice.value = state.notice_pending_task ?? null
+}
 
 // 与后端 getOnlineWindowMinutes 保持一致：在线窗口 = 心跳间隔*60 + 宽限
 const onlineWindowMin = computed(
@@ -153,6 +296,19 @@ async function loadPolicy() {
     policy.log_retention_days = data.log_retention_days ?? '1'
     policy.log_clean_time = data.log_clean_time ?? '03:00'
     forceOnline.value = policy.force_online_activate === '1'
+
+    noticeForm.title = data.notice_title ?? ''
+    noticeForm.content = data.notice_content ?? ''
+    noticeForm.strong = data.notice_strong === '1'
+    noticeForm.link = data.notice_link ?? ''
+    applyNoticeState(data)
+    // 老数据迁移：只有已发布公告（历史 notice）时，回填到草稿便于继续编辑
+    if (!noticeForm.title && !noticeForm.content && data.notice_published) {
+      noticeForm.title = data.notice_published.title
+      noticeForm.content = data.notice_published.content
+      noticeForm.strong = data.notice_published.strong
+      noticeForm.link = data.notice_published.link
+    }
   } catch {
     // 拦截器已提示
   }
@@ -164,7 +320,6 @@ async function savePolicy() {
     await updateConfig({
       heartbeat_interval_hours: String(policy.heartbeat_interval_hours),
       force_online_activate: forceOnline.value ? '1' : '0',
-      notice: policy.notice,
       online_threshold_minutes: String(policy.online_threshold_minutes),
       log_retention_days: String(policy.log_retention_days),
       log_clean_time: policy.log_clean_time,
@@ -175,6 +330,116 @@ async function savePolicy() {
     // 拦截器已提示
   } finally {
     saving.value = false
+  }
+}
+
+function buildNoticeBody() {
+  return {
+    title: noticeForm.title.trim(),
+    content: noticeForm.content,
+    strong: noticeForm.strong,
+    link: noticeForm.link.trim(),
+  }
+}
+
+function noticeContentEmpty(): boolean {
+  return !noticeForm.title.trim() && !noticeForm.content.trim()
+}
+
+async function handleSaveDraft() {
+  noticeSaving.value = true
+  try {
+    await updateConfig({
+      notice_title: noticeForm.title,
+      notice_content: noticeForm.content,
+      notice_strong: noticeForm.strong ? '1' : '0',
+      notice_link: noticeForm.link.trim(),
+    })
+    ElMessage.success('公告草稿已保存（未推送到客户端）')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    noticeSaving.value = false
+  }
+}
+
+async function handleSendNotice() {
+  if (noticeContentEmpty()) {
+    ElMessage.warning('请填写公告标题或内容')
+    return
+  }
+  noticeSending.value = true
+  try {
+    applyNoticeState(await sendNotice(buildNoticeBody()))
+    ElMessage.success('公告已发送，在线客户端将立即更新')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    noticeSending.value = false
+  }
+}
+
+async function handleScheduleNotice() {
+  if (noticeContentEmpty()) {
+    ElMessage.warning('请填写公告标题或内容')
+    return
+  }
+  if (!sendAt.value) {
+    ElMessage.warning('请选择发送时间')
+    return
+  }
+  const ts = new Date(sendAt.value.replace(/-/g, '/')).getTime()
+  if (!ts || ts <= Date.now()) {
+    ElMessage.warning('发送时间需晚于当前时间')
+    return
+  }
+  noticeSending.value = true
+  try {
+    applyNoticeState(await scheduleNotice({ ...buildNoticeBody(), sendAt: new Date(ts).toISOString() }))
+    ElMessage.success(`已设置定时发送：${formatTime(ts)}`)
+  } catch {
+    // 拦截器已提示
+  } finally {
+    noticeSending.value = false
+  }
+}
+
+async function handleCancelSchedule() {
+  try {
+    await ElMessageBox.confirm('确定取消已设置的定时发送吗？', '取消定时发送', {
+      type: 'warning',
+      confirmButtonText: '取消定时',
+      cancelButtonText: '返回',
+    })
+  } catch {
+    return
+  }
+  try {
+    applyNoticeState(await cancelScheduledNotice())
+    ElMessage.success('已取消定时发送')
+  } catch {
+    // 拦截器已提示
+  }
+}
+
+async function handleWithdraw() {
+  try {
+    await ElMessageBox.confirm('撤销后所有客户端将立即隐藏公告栏，确定撤销吗？', '撤销公告', {
+      type: 'warning',
+      confirmButtonText: '撤销',
+      cancelButtonText: '取消',
+    })
+  } catch {
+    return
+  }
+  noticeWithdrawing.value = true
+  try {
+    applyNoticeState(await withdrawNotice())
+    ElMessage.success('公告已撤销')
+  } catch {
+    // 拦截器已提示
+  } finally {
+    noticeWithdrawing.value = false
   }
 }
 
@@ -291,6 +556,103 @@ onMounted(loadPolicy)
       font-size: 13px;
       color: var(--text-main);
     }
+  }
+
+  .notice-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+
+    .notice-status-text {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+  }
+
+  .notice-options {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+  }
+
+  .notice-option-label {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-main);
+    min-width: 60px;
+  }
+
+  .notice-preview-wrap {
+    margin-top: 16px;
+  }
+
+  .notice-preview {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-sizing: border-box;
+    width: 480px;
+    max-width: 100%;
+    margin-top: 8px;
+    padding: 10px 14px;
+    border: 1px solid #ffcc80;
+    border-radius: 8px;
+    background: #fff8e6;
+    color: #d32f2f;
+
+    .np-tag {
+      flex: none;
+      padding: 1px 8px;
+      border: 1px solid rgba(211, 47, 47, 0.35);
+      border-radius: 10px;
+      font-size: 12px;
+      color: #d32f2f;
+    }
+
+    .np-text {
+      flex: 1;
+      display: -webkit-box;
+      overflow: hidden;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 2;
+      font-size: 13px;
+      line-height: 20px;
+      word-break: break-all;
+    }
+
+    .np-action {
+      flex: none;
+      font-size: 12px;
+      opacity: 0.85;
+    }
+
+    // 强提醒：与客户端一致的深红底 + 白字加粗
+    &.strong {
+      border-color: #8e1b12;
+      background: #8e1b12;
+      color: #ffffff;
+
+      .np-tag {
+        border-color: rgba(255, 255, 255, 0.4);
+        background: rgba(255, 255, 255, 0.16);
+        color: #ffffff;
+      }
+
+      .np-text {
+        font-weight: 700;
+      }
+    }
+  }
+
+  .notice-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 16px;
   }
 }
 </style>

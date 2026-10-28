@@ -146,12 +146,14 @@ namespace ui
 		std::stop_source m_dlStopSource;     // 下载协程的取消令牌（关窗/点取消时 request_stop）
 		biz::update::CheckResult m_lastCheckResult{biz::update::CheckResult::NoUpdate};  // 最近一次检查结果（用于区分提示）
 		bool m_manualCheckPending{false};  // 用户点击"更新"触发实时检查：检查完成后自动弹窗展示结果
+		bool m_updateDialogOpen{false};    // 更新详情弹窗是否已打开（防止重复弹窗/后台检查结果重入）
 
 		// ===== 下载进度（跨线程 atomic，供进度弹窗轮询）=====
 		std::atomic<std::uint64_t> m_dlDownloaded{0};
 		std::atomic<std::uint64_t> m_dlTotal{0};
 		std::atomic<int> m_dlState{0};   // 0=进行中 1=成功 2=失败 3=用户取消
-		std::optional<biz::update::DownloadOutcome> m_dlOutcome;  // 下载完成结果（主线程读）
+		std::mutex m_dlOutcomeMutex;     // 保护 m_dlOutcome（IO 线程写、UI 线程读）
+		std::optional<biz::update::DownloadOutcome> m_dlOutcome;
 
 		// ===== 退出清理（进程终止）在后台线程执行，避免阻塞 UI 线程 =====
 		bool m_bExitStarted{false};  // 仅 UI 线程读写

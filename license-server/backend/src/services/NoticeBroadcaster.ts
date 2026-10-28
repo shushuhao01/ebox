@@ -3,10 +3,24 @@ import { logger } from '../config/logger';
 
 // ============================================================
 // 服务端系统公告实时推送（SSE）连接池
-//   后台修改 notice 后，向所有在线长连接即时广播；客户端收到即刷新公告栏。
+//   后台保存/发送公告后，向所有在线长连接即时广播；客户端收到即刷新公告栏。
 //   心跳仍会随响应下发公告作为兜底，两条通道互不依赖：
 //   SSE 断线不影响授权校验（心跳负责作废/过期/下线），心跳失败也不影响公告实时性。
 // ============================================================
+
+/** 结构化公告（客户端用于横幅两行标题 + 详情弹窗 + 链接跳转） */
+export interface NoticeData {
+  title: string;
+  content: string;
+  strong: boolean;
+  link: string;
+}
+
+/** SSE / 心跳统一下发格式：notice 为老客户端兼容串（标题或正文首行），noticeData 为结构化数据 */
+export interface NoticeEvent {
+  notice: string;
+  noticeData: NoticeData | null;
+}
 
 // 已建立的 SSE 连接（每个元素是一个尚未结束的 HTTP 响应）
 const clients = new Set<Response>();
@@ -36,16 +50,16 @@ function stopKeepaliveIfIdle(): void {
   }
 }
 
-// 写入一条 notice 事件；notice 为空串表示"公告已撤下"
-function writeNotice(res: Response, notice: string): void {
-  res.write(`data: ${JSON.stringify({ notice })}\n\n`);
+// 写入一条公告事件；notice 为空串且 noticeData 为 null 表示"公告已撤下"
+function writeNotice(res: Response, event: NoticeEvent): void {
+  res.write(`data: ${JSON.stringify(event)}\n\n`);
 }
 
 /** 新客户端接入：登记连接并立即下发当前公告快照，避免等待下一次变更。 */
-export function addClient(res: Response, initialNotice: string): void {
+export function addClient(res: Response, initial: NoticeEvent): void {
   clients.add(res);
   ensureKeepalive();
-  writeNotice(res, initialNotice);
+  writeNotice(res, initial);
 }
 
 /** 客户端断开：注销连接。 */
@@ -55,12 +69,12 @@ export function removeClient(res: Response): void {
 }
 
 /** 广播公告变更到所有在线连接。 */
-export function broadcastNotice(notice: string): void {
+export function broadcastNotice(event: NoticeEvent): void {
   if (clients.size === 0) return;
   let sent = 0;
   for (const res of clients) {
     try {
-      writeNotice(res, notice);
+      writeNotice(res, event);
       sent++;
     } catch {
       clients.delete(res);

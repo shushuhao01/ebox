@@ -27,7 +27,10 @@ namespace
 	constexpr wchar_t kRegWasOnline[] = L"WasOnline";
 	constexpr wchar_t kRegLastHeartbeatAt[] = L"LastHeartbeatAt";
 	constexpr wchar_t kRegGraceUntil[] = L"GraceUntil";
-	constexpr wchar_t kRegNotice[] = L"Notice";
+	constexpr wchar_t kRegNotice[] = L"Notice";              // 标题（兼容旧版本：仅该值）
+	constexpr wchar_t kRegNoticeContent[] = L"NoticeContent";
+	constexpr wchar_t kRegNoticeLink[] = L"NoticeLink";
+	constexpr wchar_t kRegNoticeStrong[] = L"NoticeStrong";  // 1=强提醒
 
 	// ---------------------------------------------------------------------------
 	// UTF-8 <-> 宽字符
@@ -379,6 +382,27 @@ namespace
 			}
 		}
 	};
+
+	// ---------------------------------------------------------------------------
+	// 公告解析：优先结构化 noticeData，缺失时回退旧 notice 字符串（仅标题）
+	// ---------------------------------------------------------------------------
+	biz::licenseserver::NoticeInfo parseNoticeJson(const Json& root)
+	{
+		biz::licenseserver::NoticeInfo info;
+		if (const Json* nd = root.find("noticeData"); nd && nd->type == Json::Type::Object)
+		{
+			info.title = utf8ToWide(nd->stringValue("title"));
+			info.content = utf8ToWide(nd->stringValue("content"));
+			info.link = utf8ToWide(nd->stringValue("link"));
+			info.strong = nd->boolValue("strong");
+		}
+		if (info.title.empty())
+		{
+			// 老服务端/兼容字段：仅下发纯标题公告串
+			info.title = utf8ToWide(root.stringValue("notice"));
+		}
+		return info;
+	}
 
 	// ---------------------------------------------------------------------------
 	// URL 解析与同步 WinHTTP 请求
@@ -842,7 +866,7 @@ namespace biz
 			result.online = data->boolValue("online");
 			result.status = utf8ToWide(data->stringValue("status"));
 			result.graceUntil = data->numberValue("graceUntil");
-			result.notice = utf8ToWide(data->stringValue("notice"));
+			result.notice = parseNoticeJson(*data);
 			// 授权策略随心跳下发：同步写入本地注册表，下一次心跳循环即生效
 			if (const Json* hb = data->find("heartbeatIntervalHours"); hb && hb->type == Json::Type::Number)
 			{
@@ -864,12 +888,12 @@ namespace biz
 		// 服务端系统公告实时推送（SSE 长连接）。
 		//   连接 GET /api/v1/notice/stream?code=&machineFp=，服务端连上即下发当前公告快照，
 		//   之后在公告变更时实时推送；每 25s 发送 ": ping" 保活注释。
-		//   本函数阻塞式读取事件流：每收到一条 data 事件即回调 onNotice（空串=公告已撤下）。
+		//   本函数阻塞式读取事件流：每收到一条 data 事件即回调 onNotice（空=公告已撤下）。
 		//   stopToken 触发或连接断开/出错时返回。
 		//   返回 true 表示曾成功建立连接（读流正常结束），false 表示建连/鉴权失败（调用方据此退避重连）。
 		bool listenNoticeStream(const std::wstring& code, const std::wstring& machineFp,
 		                        std::stop_token stopToken,
-		                        const std::function<void(const std::wstring&)>& onNotice)
+		                        const std::function<void(const NoticeInfo&)>& onNotice)
 		{
 			const std::wstring url = serverBaseUrl() + L"/api/v1/notice/stream?code=" + code +
 			                         L"&machineFp=" + machineFp;
@@ -975,7 +999,7 @@ namespace biz
 					Json root;
 					if (JsonParser(payload).parse(root))
 					{
-						const std::wstring notice = utf8ToWide(root.stringValue("notice"));
+						const NoticeInfo notice = parseNoticeJson(root);
 						if (onNotice)
 						{
 							onNotice(notice);
@@ -1088,27 +1112,38 @@ namespace biz
 			regWriteQword(kRegLastHeartbeatAt, static_cast<std::int64_t>(std::time(nullptr)));
 		}
 
-		void storeNotice(const std::wstring& notice)
+		void storeNotice(const NoticeInfo& notice)
 		{
-			if (notice.empty())
+			HKEY hKey = nullptr;
+			if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
 			{
-				// 服务端已撤下公告：删除注册表记录
-				HKEY hKey = nullptr;
-				if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-				{
-					RegDeleteValueW(hKey, kRegNotice);
-					RegCloseKey(hKey);
-				}
 				return;
 			}
-			regWriteString(kRegNotice, notice);
+			if (notice.empty())
+			{
+				// 服务端已撤下公告：删除全部公告记录
+				RegDeleteValueW(hKey, kRegNotice);
+				RegDeleteValueW(hKey, kRegNoticeContent);
+				RegDeleteValueW(hKey, kRegNoticeLink);
+				RegDeleteValueW(hKey, kRegNoticeStrong);
+				RegCloseKey(hKey);
+				return;
+			}
+			RegCloseKey(hKey);
+			regWriteString(kRegNotice, notice.title);
+			regWriteString(kRegNoticeContent, notice.content);
+			regWriteString(kRegNoticeLink, notice.link);
+			regWriteDword(kRegNoticeStrong, notice.strong ? 1 : 0);
 		}
 
-		std::wstring currentNotice()
+		NoticeInfo currentNotice()
 		{
-			std::wstring out;
-			regReadString(kRegNotice, out);
-			return out;
+			NoticeInfo info;
+			regReadString(kRegNotice, info.title);
+			regReadString(kRegNoticeContent, info.content);
+			regReadString(kRegNoticeLink, info.link);
+			info.strong = regReadDword(kRegNoticeStrong) != 0;
+			return info;
 		}
 	}
 }

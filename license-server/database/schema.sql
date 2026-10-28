@@ -141,11 +141,11 @@ CREATE TABLE IF NOT EXISTS `operation_logs` (
   KEY `idx_user` (`user_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 系统设置
+-- 系统设置（cfg_value 使用 TEXT：公告正文最长 2000 字）
 CREATE TABLE IF NOT EXISTS `system_config` (
   `id` BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
   `cfg_key` VARCHAR(64) NOT NULL UNIQUE,
-  `cfg_value` VARCHAR(255) NOT NULL,
+  `cfg_value` TEXT NULL,
   `remark` VARCHAR(255) NULL,
   `updated_at` DATETIME NULL ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

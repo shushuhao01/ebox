@@ -1293,6 +1293,10 @@ namespace ui
 		{
 			// IO 线程检查完毕：取出堆上结果，所有权转移到 UI 线程
 			std::unique_ptr<biz::update::CheckOutcome> pOutcome(reinterpret_cast<biz::update::CheckOutcome*>(wParam));
+			if (!pOutcome)
+			{
+				return;  // 空指针（异常 PostMessage）：直接忽略，避免解引用崩溃
+			}
 			onCheckUpdateDone(std::move(*pOutcome));
 		}
 		else if (message == WM_APP_LICENSENOTICE)
@@ -1340,7 +1344,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.2.5   更新时间：2026/10/29   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.2.6   更新时间：2026/10/29   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
@@ -1626,6 +1630,11 @@ namespace ui
 
 	void MainWindow::showUpdateDialog()
 	{
+		if (m_updateDialogOpen)
+		{
+			// 已有更新详情弹窗在显示：直接忽略，避免重入覆盖 m_pendingUpdate
+			return;
+		}
 		if (!m_pendingUpdate)
 		{
 			// 无待装更新：先实时拉取最新 manifest（时间戳破除 CDN 缓存），检查完成后自动展示结果
@@ -1637,7 +1646,8 @@ namespace ui
 			startUpdateCheck(true);  // 手动点击更新：强制绕过"已忽略此版本"，保证随时可更新
 			return;
 		}
-		const auto& manifest = *m_pendingUpdate;
+		// 值拷贝：模态对话框期间后台复检可能重写 m_pendingUpdate，用引用会在对话框结束后悬垂
+		const biz::update::UpdateManifest manifest = *m_pendingUpdate;
 
 		// 组装 changelog 文本
 		std::wstring content;
@@ -1663,6 +1673,15 @@ namespace ui
 		                     (manifest.minSkipVersionCode <= 0 ||
 		                      MainApp::kVerCode > manifest.minSkipVersionCode);
 
+		// 按钮数组必须与 TaskDialogIndirect 处于同一作用域：
+		// 原实现把 buttons 声明在 if/else 块内，出块后 config.pButtons 指向已销毁的栈内存，
+		// TaskDialogIndirect 内部读取该数组会访问非法地址（0xc0000005 @ comctl32!TaskDialog）。
+		TASKDIALOG_BUTTON buttons[2]{};
+		buttons[0].nButtonID = IDOK;
+		buttons[0].pszButtonText = L"立即更新";
+		buttons[1].nButtonID = IDCANCEL;
+		buttons[1].pszButtonText = L"以后再说";
+
 		TASKDIALOGCONFIG config{};
 		config.cbSize = sizeof(config);
 		config.hwndParent = nativeHandle();
@@ -1671,30 +1690,16 @@ namespace ui
 		config.pszMainIcon = TD_INFORMATION_ICON;
 		config.pszMainInstruction = mainInstr.c_str();
 		config.pszContent = contentFull.c_str();
-
-		if (canSkip)
-		{
-			TASKDIALOG_BUTTON buttons[2];
-			buttons[0].nButtonID = IDOK;
-			buttons[0].pszButtonText = L"立即更新";
-			buttons[1].nButtonID = IDCANCEL;
-			buttons[1].pszButtonText = L"以后再说";
-			config.cButtons = 2;
-			config.pButtons = buttons;
-		}
-		else
-		{
-			// 强制更新：只提供"立即更新"，不允许忽略
-			TASKDIALOG_BUTTON buttons[1];
-			buttons[0].nButtonID = IDOK;
-			buttons[0].pszButtonText = L"立即更新";
-			config.cButtons = 1;
-			config.pButtons = buttons;
-		}
+		// 强制更新：只提供"立即更新"，不允许忽略
+		config.cButtons = canSkip ? 2 : 1;
+		config.pButtons = buttons;
 		config.nDefaultButton = IDOK;
 
 		int nButton = -1;
-		if (FAILED(TaskDialogIndirect(&config, &nButton, nullptr, nullptr)))
+		m_updateDialogOpen = true;
+		const HRESULT dlgResult = TaskDialogIndirect(&config, &nButton, nullptr, nullptr);
+		m_updateDialogOpen = false;
+		if (FAILED(dlgResult))
 		{
 			// TaskDialog 不可用：回退到 MessageBox
 			const int ret = MessageBoxW(nativeHandle(), (mainInstr + L"\r\n\r\n" + contentFull).c_str(),
@@ -1746,7 +1751,9 @@ namespace ui
 			if (state != 0)
 			{
 				// 下载完成/失败/取消：自动关闭弹窗（此弹窗仅有的按钮是 IDCANCEL）
-				SendMessageW(hwnd, TDM_CLICK_BUTTON, IDCANCEL, 0);
+				// 必须用 PostMessage：SendMessage 会在回调内同步重入对话框消息循环，
+				// 在 TDN_TIMER 处理过程中销毁对话框，导致 comctl32 内部状态被破坏后继续访问而崩溃
+				PostMessageW(hwnd, TDM_CLICK_BUTTON, IDCANCEL, 0);
 			}
 			break;
 		}
@@ -1770,11 +1777,18 @@ namespace ui
 
 	void MainWindow::startDownloadAndApply(biz::update::UpdateManifest manifest)
 	{
+		// 重建取消令牌：上一次下载被取消后 stop_source 已处于 stop 状态，
+		// 复用会让新下载协程一启动就被判定为取消
+		m_dlStopSource = std::stop_source{};
+
 		// 重置下载状态
 		m_dlDownloaded.store(0);
 		m_dlTotal.store(manifest.downloadSize);
 		m_dlState.store(0);
-		m_dlOutcome.reset();
+		{
+			std::lock_guard<std::mutex> lk(m_dlOutcomeMutex);
+			m_dlOutcome.reset();
+		}
 
 		// 启动后台下载协程（IO 线程）
 		m_updateScope.spawn(([this, manifest]() -> coro::LazyTask<void>
@@ -1794,12 +1808,15 @@ namespace ui
 			{
 				DeleteFileW(biz::update::getTempDownloadPath(manifest.latestVersionCode).c_str());
 			}
-			m_dlOutcome = std::move(outcome);
+			const bool succeeded = outcome.result == biz::update::DownloadResult::Success;
+			{
+				std::lock_guard<std::mutex> lk(m_dlOutcomeMutex);
+				m_dlOutcome = std::move(outcome);
+			}
 			// 用户取消状态优先：不被协程后续完成覆盖
 			if (m_dlState.load(std::memory_order_acquire) != 3)
 			{
-				m_dlState.store(m_dlOutcome->result == biz::update::DownloadResult::Success ? 1 : 2,
-				                std::memory_order_release);
+				m_dlState.store(succeeded ? 1 : 2, std::memory_order_release);
 			}
 			co_return;
 		})());
@@ -1826,13 +1843,19 @@ namespace ui
 
 		// 弹窗关闭：根据状态处理
 		const int state = m_dlState.load();
-		if (state == 1 && m_dlOutcome && m_dlOutcome->result == biz::update::DownloadResult::Success)
+		// 快照下载结果：避免协程线程并发写 m_dlOutcome 造成数据竞争
+		std::optional<biz::update::DownloadOutcome> dlOutcome;
+		{
+			std::lock_guard<std::mutex> lk(m_dlOutcomeMutex);
+			dlOutcome = m_dlOutcome;
+		}
+		if (state == 1 && dlOutcome && dlOutcome->result == biz::update::DownloadResult::Success)
 		{
 			// 二次确认安装
 			if (MessageBoxW(nativeHandle(), L"更新下载完成，点击确定开始安装（程序将退出并自动重启）。",
 			                MainApp::appName.data(), MB_OKCANCEL | MB_ICONINFORMATION) == IDOK)
 			{
-				if (biz::update::applyUpdate(m_dlOutcome->filePath))
+				if (biz::update::applyUpdate(dlOutcome->filePath))
 				{
 					destroyWindow();  // 退出当前进程，bat 接管覆盖 + 重启
 				}
@@ -1850,10 +1873,10 @@ namespace ui
 		{
 			// 失败
 			std::wstring msg = L"下载更新失败。";
-			if (m_dlOutcome && !m_dlOutcome->errorMessage.empty())
+			if (dlOutcome && !dlOutcome->errorMessage.empty())
 			{
 				msg += L"\r\n";
-				msg += m_dlOutcome->errorMessage;
+				msg += dlOutcome->errorMessage;
 			}
 			MessageBoxW(nativeHandle(), msg.c_str(), MainApp::appName.data(), MB_OK | MB_ICONERROR);
 		}
