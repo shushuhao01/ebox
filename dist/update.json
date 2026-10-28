@@ -1,24 +1,22 @@
 {
-    "latestVersion": "v3.2.2",
-    "latestVersionCode": 30202,
-    "releaseDate": "2026/10/26",
+    "latestVersion": "v3.2.3",
+    "latestVersionCode": 30203,
+    "releaseDate": "2026/10/28",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "817a3c62509d3e16e09ea627190569d204fd9ae7a320c664265836ba52fd8772",
-    "downloadSize": 3890688,
+    "downloadSha256": "cc517c72c172ea74776c5badfea9fcd7113318bd2a625403549318ab125a69e7",
+    "downloadSize": 3932160,
     "changelog": [
-        "数据目录迁移改为两阶段事务：复制完成后逐文件 SHA-256 校验通过才切换，中断后可安全续做，失败保留原目录",
-        "迁移前结束占用进程；目标目录已有其它数据、同目录或互相包含时拒绝迁移，避免覆盖唯一一份数据",
-        "新增设置中心「修复企业微信数据」：用企业微信自带备份回填缺失或异常缩小的数据库，恢复客户备注、标签与添加时间",
-        "回填前将原库与 -wal/-shm/-journal 另存到 .ebox-repair-backup，失败自动还原",
-        "数据目录所在磁盘暂不可用时不再改写配置，避免真实数据「丢失」",
-        "启动前预检环境数据目录（自动创建、写探针、剩余空间检查），避免应用初始化崩溃",
-        "多实例启动改为串行错峰（间隔 500ms），避免同时拉起抢占资源",
-        "版本号更新至 v3.2.2"
+        "所有弹窗完成 DPI 适配：布局按所在显示器 DPI 缩放，高缩放/多屏下不再文字拥挤或控件过小",
+        "弹窗支持跨显示器拖拽后自动重排，并按屏幕工作区限制最大高度，矮屏下不再超出屏幕",
+        "环境卡片新增应用名称标识：同程序同色、常显（离线为灰色），宽度自适应，与运行时间水平对齐",
+        "标识名称取自「选择要启动的应用」列表的显示名（如 WXWork 显示为 企业微信），每张卡片只显示一个标识",
+        "启动选择器记忆上次选择的应用路径，重启后仍显示，点击清除后才隐藏",
+        "版本号更新至 v3.2.3"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.2.2/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.2.3/eBox.exe"
     ]
 }
