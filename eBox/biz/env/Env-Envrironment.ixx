@@ -167,7 +167,7 @@ namespace biz
 		std::unordered_map<void*, TopLevelWindow> m_sparse;
 	};
 
-	export class Env
+	export class Env : public std::enable_shared_from_this<Env>
 	{
 	public:
 		Env(std::uint32_t index, std::uint64_t flag,
@@ -216,6 +216,10 @@ namespace biz
 		bool ensureRegistryHiveFile();
 		bool saveRegistryHive();
 		bool unloadRegistryHive();
+		// 异步保存：RegSaveKeyW 是不可取消的内核同步操作（耗时随 hive 脏页增长，
+		// 大环境可达数秒），不能跑在进程退出回调/UI 线程上。这里丢到后台执行器，
+		// 连续请求自动合并为一次。
+		void saveRegistryHiveAsync();
 		bool isRegistryHiveLoaded() const { return m_hiveLoaded; }
 
 	public:
@@ -270,7 +274,13 @@ namespace biz
 		std::wstring m_flagName;
 		std::wstring m_name;
 		std::wstring m_appPath;
-		bool m_hiveLoaded{false};
+		// load/save/unload 会互相抢占同一 hive（RegLoadKeyW 与 RegSaveKeyW/RegUnLoadKeyW
+		// 并发时行为未定义），用本环境的互斥量串行化；不同环境之间仍可并行。
+		// 用 timed_mutex：loadRegistryHive 需要有界等待，不能被后台保存/卸载长时间拖住。
+		std::timed_mutex m_hiveMutex;
+		std::atomic<bool> m_hiveLoaded{false};
+		// 已排队/执行中的异步保存请求（合并用）
+		std::atomic<bool> m_saveQueued{false};
 		std::wstring m_pendingHiveFile;
 		// 首次启动计时起点（首个进程加入环境的时刻），用于判定首次启动是否完成
 		std::uint64_t m_firstProcStartTick{0};

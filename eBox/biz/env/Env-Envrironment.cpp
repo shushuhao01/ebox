@@ -53,6 +53,58 @@ namespace biz
 			RegDeleteKeyW(HKEY_CURRENT_USER, tempSubKey);
 			return ok;
 		}
+		// 注册表 hive 保存/卸载的后台执行器。
+		//
+		// RegSaveKeyW 与 RegUnLoadKeyW 都是不可取消的内核同步操作，耗时随该 hive 的
+		// 脏页量增长（豆包这类 Electron 应用频繁写注册表，单次可达数秒）。之前它们
+		// 直接跑在调用线程上，造成两类卡顿：
+		//   1. 进程退出回调（线程池线程）里同步 RegSaveKeyW：线程池被长时间占用，
+		//      后续进程/窗口事件迟迟得不到处理，表现为整体卡顿；
+		//   2. 上面这些操作一旦落到 UI 线程，超过看门狗的 4s 阈值即判定"卡死"。
+		// 现在统一丢到一条懒启动的后台线程串行执行，调用线程立即返回。
+		class HiveWorker
+		{
+		public:
+			static HiveWorker& instance()
+			{
+				static HiveWorker worker;
+				return worker;
+			}
+
+			void post(std::function<void()> job)
+			{
+				{
+					std::lock_guard lock(m_mutex);
+					m_jobs.push_back(std::move(job));
+				}
+				m_cv.notify_one();
+			}
+
+		private:
+			HiveWorker()
+			{
+				// 进程退出由 ExitProcess 兜底，无需 stop/join
+				std::thread([this] { run(); }).detach();
+			}
+
+			void run()
+			{
+				std::unique_lock lock(m_mutex);
+				for (;;)
+				{
+					m_cv.wait(lock, [this] { return !m_jobs.empty(); });
+					std::function<void()> job = std::move(m_jobs.front());
+					m_jobs.pop_front();
+					lock.unlock();
+					job();
+					lock.lock();
+				}
+			}
+
+			std::mutex m_mutex;
+			std::condition_variable m_cv;
+			std::deque<std::function<void()>> m_jobs;
+		};
 	}
 
 	WaitObject::WaitObject()
@@ -307,13 +359,57 @@ namespace biz
 		}
 	}
 
+	// 目标文件内容是否与内嵌数据完全一致：先比大小，再逐块比较（不整文件读入内存）。
+	bool embedded_file_matches(const std::filesystem::path& target, const char* address, unsigned int size)
+	{
+		namespace fs = std::filesystem;
+		std::error_code ec;
+		if (!fs::exists(target, ec) || ec)
+		{
+			return false;
+		}
+		if (const auto fileSize = fs::file_size(target, ec); ec || fileSize != size)
+		{
+			return false;
+		}
+		std::ifstream targetFile{target, std::ios::binary};
+		if (!targetFile)
+		{
+			return false;
+		}
+		constexpr std::size_t BLOCK = 64 * 1024;
+		std::vector<char> buf(BLOCK);
+		std::size_t offset = 0;
+		while (offset < size)
+		{
+			const std::size_t want = (std::min)(BLOCK, static_cast<std::size_t>(size) - offset);
+			targetFile.read(buf.data(), static_cast<std::streamsize>(want));
+			if (static_cast<std::size_t>(targetFile.gcount()) != want)
+			{
+				return false;
+			}
+			if (!std::equal(buf.data(), buf.data() + want, address + offset))
+			{
+				return false;
+			}
+			offset += want;
+		}
+		return true;
+	}
+
 	// 将内嵌资源写入目标文件（内容一致时跳过），供 DLL / 注入器 exe 共用。
+	// 先与内存中的内嵌数据比较：一致就完全不碰磁盘，避免每次启动都新建一个
+	// 700KB 的临时 PE 文件（新文件必然被杀软实时扫描，拖慢启动）。
 	// 仅按文件大小判断"未变化"不可靠（新旧文件大小可能恰好相同，导致旧版
-	// 永远不被覆盖），因此与目标文件逐块比较内容，一致才跳过覆盖。
+	// 永远不被覆盖），因此仍逐块比较内容。
 	// 若文件正被运行中的进程占用（覆盖失败），则保留旧文件，不影响已注入的进程。
 	void write_embedded_file(const std::filesystem::path& target, const char* address, unsigned int size)
 	{
 		namespace fs = std::filesystem;
+		if (embedded_file_matches(target, address, size))
+		{
+			return;
+		}
 		std::error_code ec;
 		// 临时文件使用进程唯一后缀，避免多线程/多实例并发写同一 .temp 的竞态
 		const fs::path tempWithSuffix = std::format(L"{}.{}.temp", target.native(), GetCurrentProcessId());
@@ -322,51 +418,7 @@ namespace biz
 			tempFile.write(address, size);
 			tempFile.close();
 		}
-		bool needReplace = true;
-		if (fs::exists(target, ec) && !ec)
-		{
-			if (const auto fileSize = fs::file_size(target, ec); !ec && fileSize == size)
-			{
-				std::ifstream targetFile{target, std::ios::binary};
-				std::ifstream tempFile{tempWithSuffix, std::ios::binary};
-				if (targetFile && tempFile)
-				{
-					constexpr std::size_t BLOCK = 64 * 1024;
-					std::vector<char> targetBuf(BLOCK);
-					std::vector<char> tempBuf(BLOCK);
-					needReplace = false;
-					while (true)
-					{
-						targetFile.read(targetBuf.data(), static_cast<std::streamsize>(BLOCK));
-						const std::streamsize targetRead = targetFile.gcount();
-						tempFile.read(tempBuf.data(), static_cast<std::streamsize>(BLOCK));
-						const std::streamsize tempRead = tempFile.gcount();
-						if (targetRead != tempRead)
-						{
-							needReplace = true;
-							break;
-						}
-						if (targetRead == 0)
-						{
-							break;
-						}
-						if (!std::equal(targetBuf.data(), targetBuf.data() + targetRead, tempBuf.data()))
-						{
-							needReplace = true;
-							break;
-						}
-					}
-				}
-			}
-		}
-		if (needReplace)
-		{
-			if (!MoveFileExW(tempWithSuffix.native().c_str(), target.native().c_str(), MOVEFILE_REPLACE_EXISTING))
-			{
-				fs::remove(tempWithSuffix, ec);
-			}
-		}
-		else
+		if (!MoveFileExW(tempWithSuffix.native().c_str(), target.native().c_str(), MOVEFILE_REPLACE_EXISTING))
 		{
 			fs::remove(tempWithSuffix, ec);
 		}
@@ -786,6 +838,14 @@ namespace biz
 
 	bool Env::loadRegistryHive()
 	{
+		// 有界等待锁：hive 锁可能正被后台 HiveWorker 的 RegSaveKeyW / RegUnLoadKeyW 占用，
+		// 而这两个内核调用在杀软实时扫描下可能持续十几秒。启动流程不能因此被卡住——
+		// 拿不到锁就让调用方回退为进程级虚拟注册表（DLL 侧已支持），宁可这次不持久化。
+		std::unique_lock hiveLock(m_hiveMutex, std::defer_lock);
+		if (!hiveLock.try_lock_for(std::chrono::seconds{2}))
+		{
+			return false;
+		}
 		if (m_hiveLoaded)
 		{
 			return true;
@@ -829,6 +889,7 @@ namespace biz
 
 	bool Env::saveRegistryHive()
 	{
+		std::lock_guard hiveLock(m_hiveMutex);
 		if (!m_hiveLoaded)
 		{
 			return false;
@@ -868,6 +929,7 @@ namespace biz
 
 	bool Env::unloadRegistryHive()
 	{
+		std::lock_guard hiveLock(m_hiveMutex);
 		if (m_hiveLoaded)
 		{
 			enable_privilege(SE_RESTORE_NAME);
@@ -877,6 +939,28 @@ namespace biz
 		// 卸载释放了 hive 文件锁，此时才把 .tmp 落盘替换为正式文件
 		commitPendingHiveFile();
 		return true;
+	}
+
+	void Env::saveRegistryHiveAsync()
+	{
+		if (!m_hiveLoaded)
+		{
+			return;
+		}
+		// 已排队/执行中的请求直接合并：任务执行时读到的是当时的注册表内容，
+		// 期间的变更都会被这一次覆盖，无需重复保存。
+		bool expected = false;
+		if (!m_saveQueued.compare_exchange_strong(expected, true))
+		{
+			return;
+		}
+		// 持有 shared_ptr 保活：环境在保存任务执行期间被删除也不会访问已释放对象。
+		std::shared_ptr<Env> self = shared_from_this();
+		HiveWorker::instance().post([self]
+		{
+			self->saveRegistryHive();
+			self->m_saveQueued = false;
+		});
 	}
 
 	std::shared_ptr<ProcessInfo> Env::addProcess(DWORD pid)
@@ -1095,7 +1179,9 @@ namespace biz
 		// hive 保持加载，仅在 eBox 退出 / 删除环境时卸载。
 		if (removed && remaining == 0)
 		{
-			saveRegistryHive();
+			// 异步保存：RegSaveKeyW 在进程退出回调的线程池线程上同步执行会堵住
+			// 后续进程/窗口事件（多开 Electron 时表现为整体卡顿），改为后台执行。
+			saveRegistryHiveAsync();
 			// 首次启动完成判定：进程全部退出（cmd 中转进程退出时应用已完成注入，
 			// 故此处即为应用未启动或被用户关闭）即清除 pending 标记；
 			// 窗口出现则由 addToplevelWindow 路径即时清除

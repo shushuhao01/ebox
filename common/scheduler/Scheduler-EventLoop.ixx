@@ -185,7 +185,13 @@ namespace sched
 		{
 			std::unique_lock lock(m_queueLock);
 
-			DWORD dwMilliseconds = INFINITE;
+			// 空闲时也不能无限等待：外层 UI 循环每次迭代才刷新一次卡死 watchdog 心跳，
+			// 若这里以 INFINITE 挂在等待上，应用空闲超过 4 秒就会被 watchdog 误判为
+			// "UI 卡死"并写下一堆假 dump。给等待加一个上限，保证心跳始终按时跳动。
+			constexpr DWORD kMaxIdleWaitMs = 1000;
+
+			DWORD dwMilliseconds = kMaxIdleWaitMs;
+			bool bWaitForTask = false; // 本次等待的截止点是否恰好是定时任务的到点时间
 			const auto [bHasTask, tp] = m_timeQueue.nextTaskTimePoint();
 			if (bHasTask)
 			{
@@ -194,14 +200,22 @@ namespace sched
 				{
 					delay = 0;
 				}
-				dwMilliseconds = static_cast<DWORD>(delay);
+				// 任务在空闲上限内到点：等到任务时间点；否则只等到空闲上限，
+				// 下一轮迭代再重新计算，既不误判卡死也不会提前触发任务。
+				if (delay <= static_cast<decltype(delay)>(kMaxIdleWaitMs))
+				{
+					dwMilliseconds = static_cast<DWORD>(delay);
+					bWaitForTask = true;
+				}
 			}
 
 			lock.unlock();
 			const DWORD result = MsgWaitForMultipleObjects(1, &m_hNotifyEvent, FALSE, dwMilliseconds,QS_ALLINPUT);
 			lock.lock();
 
-			if (result == WAIT_TIMEOUT)
+			// 只有等待确实等到了任务时间点才推进定时队列；"空闲上限"到期时 tp 尚未到点，
+			// 不能推进（否则会提前触发任务）；bHasTask 为 false 时 tp 无意义。
+			if (result == WAIT_TIMEOUT && bWaitForTask)
 			{
 				m_timeQueue.advanceUntil(tp);
 			}
@@ -415,15 +429,34 @@ namespace sched
 			const std::wstring txtPath = base + L".txt";
 
 			{
-				std::wofstream out(txtPath, std::ios::binary);
-				out << L"eBox UI 卡死转储信息\n";
-				out << L"发生时间 : " << timestamp() << L"\n";
-				out << L"进程PID  : " << ::GetCurrentProcessId() << L"\n";
-				out << L"UI线程ID : " << g_uiThreadId.load(std::memory_order_relaxed) << L"\n";
-				out << L"最后操作 : " << lastOpText() << L"\n";
-				out << L"转储文件 : " << dmpPath << L"\n";
-				out << L"\n";
-				out << L"请把本 .txt 与同名的 .dmp 一起发给开发者，即可定位卡死位置。\n";
+				std::wstring text = std::format(
+					L"eBox UI 卡死转储信息\n"
+					L"发生时间 : {}\n"
+					L"进程PID  : {}\n"
+					L"UI线程ID : {}\n"
+					L"最后操作 : {}\n"
+					L"转储文件 : {}\n"
+					L"\n"
+					L"请把本 .txt 与同名的 .dmp 一起发给开发者，即可定位卡死位置。\n",
+					timestamp(), ::GetCurrentProcessId(),
+					g_uiThreadId.load(std::memory_order_relaxed), lastOpText(), dmpPath);
+
+				// 必须转成 UTF-8 再用窄流写：原来用 wofstream + std::ios::binary，
+				// 中文字符转码失败，整份 .txt 只剩下 "????"，无法用于排查。
+				std::string utf8;
+				if (const int len = ::WideCharToMultiByte(CP_UTF8, 0, text.data(),
+				                                          static_cast<int>(text.size()),
+				                                          nullptr, 0, nullptr, nullptr);
+				    len > 0)
+				{
+					utf8.resize(static_cast<std::size_t>(len));
+					::WideCharToMultiByte(CP_UTF8, 0, text.data(), static_cast<int>(text.size()),
+					                      utf8.data(), len, nullptr, nullptr);
+				}
+
+				std::ofstream out(txtPath, std::ios::binary);
+				// 写 UTF-8 BOM，保证记事本等工具不会按本地编码误读
+				out << "\xEF\xBB\xBF" << utf8;
 				out.close();
 			}
 

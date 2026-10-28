@@ -44,6 +44,9 @@ namespace
 
 	// 见下方实现：执行上次挂起的环境数据目录迁移（须在 MainApp 构造前调用）
 	void run_pending_data_dir_migration();
+
+	// 见下方实现：启动时静默把数据目录/程序目录加入 Defender 排除项（只成功执行一次）
+	void ensure_defender_exclusions_async();
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
@@ -87,6 +90,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 		ui::g_main_wnd = &mainWnd;
 
 		mainWnd.show(app.cmdShow());
+
+		// 静默把数据目录/程序目录加入 Defender 排除项：每次启动都要写 DLL 并注入子进程，
+		// 目录未排除时会触发实时扫描，明显拖慢启动（曾观测到 20 秒以上的空档）。
+		ensure_defender_exclusions_async();
 
 		// 联网授权：启动后台心跳线程（作废/过期/强制下线即时生效）。
 		// 纯离线激活码不受影响（服务器未登记，心跳返回 offline 后自动停止）。
@@ -2645,7 +2652,8 @@ namespace
 	}
 
 	// 把 eBox 的数据/程序目录加入 Windows Defender 排除项（需管理员权限）
-	bool add_defender_exclusions()
+	// allowElevation = true：当前未提权时通过 UAC 提权执行；false：只用现有权限执行，不弹 UAC
+	bool add_defender_exclusions(bool allowElevation = true)
 	{
 		namespace fs = std::filesystem;
 		const auto quote = [](const std::wstring& s)
@@ -2697,7 +2705,10 @@ namespace
 			script);
 		SHELLEXECUTEINFOW siw{sizeof(siw)};
 		siw.fMask = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC;
-		siw.lpVerb = L"runas";
+		if (allowElevation)
+		{
+			siw.lpVerb = L"runas";
+		}
 		siw.lpFile = L"powershell.exe";
 		siw.lpParameters = params.c_str();
 		siw.nShow = SW_HIDE;
@@ -2710,6 +2721,42 @@ namespace
 		GetExitCodeProcess(siw.hProcess, &exitCode);
 		CloseHandle(siw.hProcess);
 		return exitCode == 0;
+	}
+
+	// 是否已成功加过排除项（成功一次后不再重复执行 PowerShell）
+	constexpr wchar_t REG_VALUE_DEFENDER_EXCLUDED[] = L"DefenderExcluded";
+
+	// 启动时静默加入 Defender 排除项：后台线程执行，不阻塞启动、不打扰用户。
+	// eBox 通常以管理员身份运行，无需 UAC；未提权则直接跳过（留给"手动处理"流程提示用户）。
+	void ensure_defender_exclusions_async()
+	{
+		if (read_reg_value(REG_VALUE_DEFENDER_EXCLUDED) == L"1")
+		{
+			return;
+		}
+		std::thread{[]()
+		{
+			HANDLE token = nullptr;
+			bool elevated = false;
+			if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+			{
+				TOKEN_ELEVATION elevation{};
+				DWORD size = sizeof(elevation);
+				if (GetTokenInformation(token, TokenElevation, &elevation, size, &size))
+				{
+					elevated = elevation.TokenIsElevated != 0;
+				}
+				CloseHandle(token);
+			}
+			if (!elevated)
+			{
+				return;
+			}
+			if (add_defender_exclusions(false))
+			{
+				write_reg_value(REG_VALUE_DEFENDER_EXCLUDED, L"1");
+			}
+		}}.detach();
 	}
 
 	// 告知用户写入被拦截，并尝试自动放行。返回 true 表示已尝试加入信任区

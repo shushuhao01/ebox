@@ -93,11 +93,13 @@ namespace hook_cache
 	inline void set_proc_fetcher(ProcFetcher f) { g_procFetcher = f; }
 
 	// 后台刷新循环: 仅在 TTL 过期时拉取; 拉取失败保留旧数据(首查时短暂放行)
+	// 注意: 首轮必须先拉取再 Sleep。应用(如豆包/Chromium)的单实例检测发生在新进程
+	// 启动的头几十毫秒内, 若先 Sleep 200ms 则此时集合为空、window_other() 一律放行,
+	// 新实例就会看到"其他环境"已存在的窗口并退出(实测: 结束进程后重新启动只剩一个)。
 	inline void refresh_loop()
 	{
 		for (;;)
 		{
-			::Sleep(kRefreshIntervalMs);
 			const ULONGLONG now = ::GetTickCount64();
 
 			// 窗口集合
@@ -133,6 +135,8 @@ namespace hook_cache
 					}
 				}
 			}
+
+			::Sleep(kRefreshIntervalMs);
 		}
 	}
 
@@ -162,6 +166,14 @@ namespace hook_cache
 		const bool hit = (wnd_set().find(hwnd) != wnd_set().end());
 		ReleaseSRWLockShared(&g_wndLock);
 		return hit;
+	}
+
+	// 进程集合是否已经完成过至少一次拉取。
+	// 应用(Chromium 系)的单实例检测发生在新进程启动的头几十毫秒, 此时后台线程
+	// 可能还没完成首轮 RPC, 集合为空会让 process_other() 一律返回 false。
+	inline bool proc_cache_ready()
+	{
+		return g_procLoadedAt.load(std::memory_order_acquire) != 0;
 	}
 
 	// 查询 pid 是否属于其他环境(只读本地集合, 永不阻塞)

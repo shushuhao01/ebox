@@ -112,7 +112,6 @@ namespace ui
 		std::unique_ptr<Button> m_btnRename;
 		std::unique_ptr<Button> m_btnClose;
 		EViewMode m_viewMode{EViewMode::Card};
-		UniqueComPtr<IDWriteTextFormat> m_pListIconFormat;
 		UniqueComPtr<IDWriteTextLayout> m_pNameLayout;
 		float m_nameAreaWidth{0.f};
 		bool m_bNameOverflow{false};

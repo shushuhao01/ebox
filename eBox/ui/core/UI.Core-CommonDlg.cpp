@@ -140,158 +140,17 @@ namespace ui
 	}
 }
 
-namespace
-{
-	constexpr wchar_t INPUT_DLG_CLASS[] = L"eBoxInputDialog";
-	constexpr int INPUT_EDIT_ID = 1001;
-	constexpr int INPUT_OK_ID = IDOK;
-	constexpr int INPUT_CANCEL_ID = IDCANCEL;
-
-	struct InputDialogData
-	{
-		std::wstring initial;
-		std::wstring result;
-		HWND hEdit{nullptr};
-		HWND hOk{nullptr};
-		HWND hCancel{nullptr};
-		int dpi{96};
-		bool done{false};
-		bool cancelled{true};
-	};
-
-	LRESULT CALLBACK input_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
-	{
-		auto* data = reinterpret_cast<InputDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-		switch (msg)
-		{
-		case WM_CREATE:
-		{
-			auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
-			data = static_cast<InputDialogData*>(cs->lpCreateParams);
-			SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
-
-			data->dpi = ui::dlg_dpi(hwnd);
-			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
-			data->hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", data->initial.c_str(),
-			                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-			                              S(16), S(20), S(344), S(26), hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_EDIT_ID)),
-			                              GetModuleHandleW(nullptr), nullptr);
-			data->hOk = CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			                            S(192), S(64), S(78), S(32), hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_OK_ID)),
-			                            GetModuleHandleW(nullptr), nullptr);
-			data->hCancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-			                                S(282), S(64), S(78), S(32), hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_CANCEL_ID)),
-			                                GetModuleHandleW(nullptr), nullptr);
-			return 0;
-		}
-		case WM_DPICHANGED:
-		{
-			data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
-			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
-			SetWindowPos(data->hEdit, nullptr, S(16), S(20), S(344), S(26), SWP_NOZORDER | SWP_NOACTIVATE);
-			SetWindowPos(data->hOk, nullptr, S(192), S(64), S(78), S(32), SWP_NOZORDER | SWP_NOACTIVATE);
-			SetWindowPos(data->hCancel, nullptr, S(282), S(64), S(78), S(32), SWP_NOZORDER | SWP_NOACTIVATE);
-			InvalidateRect(hwnd, nullptr, TRUE);
-			return 0;
-		}
-		case WM_COMMAND:
-			if (LOWORD(wParam) == INPUT_OK_ID)
-			{
-				// 必须在销毁窗口前读取输入框文本，否则 hEdit 已失效
-				wchar_t buf[512]{};
-				GetWindowTextW(data->hEdit, buf, 512);
-				data->result = buf;
-				data->cancelled = false;
-				DestroyWindow(hwnd);
-				return 0;
-			}
-			if (LOWORD(wParam) == INPUT_CANCEL_ID)
-			{
-				data->cancelled = true;
-				DestroyWindow(hwnd);
-				return 0;
-			}
-			return 0;
-		case WM_CLOSE:
-			data->cancelled = true;
-			DestroyWindow(hwnd);
-			return 0;
-		case WM_DESTROY:
-			data->done = true;
-			return 0;
-		default:
-			break;
-		}
-		return DefWindowProcW(hwnd, msg, wParam, lParam);
-	}
-}
-
 namespace ui
 {
+	namespace
+	{
+		// 现代化文本输入弹窗（内容全部 GDI 自绘，实现在本文件的绘制工具之后）
+		std::optional<std::wstring> show_input_dialog(HWND owner, std::wstring_view title, std::wstring_view initial);
+	}
+
 	std::optional<std::wstring> input_text(const WindowBase* owner, std::wstring_view title, std::wstring_view initial)
 	{
-		static const bool classRegistered = []()
-		{
-			WNDCLASSEXW wc = {sizeof(wc)};
-			wc.lpfnWndProc = input_dlg_proc;
-			wc.hInstance = GetModuleHandleW(nullptr);
-			wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
-			wc.hbrBackground = reinterpret_cast<HBRUSH>((COLOR_WINDOW + 1));
-			wc.lpszClassName = INPUT_DLG_CLASS;
-			return RegisterClassExW(&wc) != 0;
-		}();
-		(void)classRegistered;
-
-		InputDialogData data;
-		data.initial = initial;
-
-		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		const SIZE clientSize = dlg_client_size(hOwner, 380, 170);
-		const HWND hDlg = CreateWindowExW(0, INPUT_DLG_CLASS, title.data(),
-		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
-		                                  GetModuleHandleW(nullptr), &data);
-		if (!hDlg)
-		{
-			return std::nullopt;
-		}
-		dlg_fit_client(hDlg, clientSize);
-		dlg_center_on(hDlg, hOwner);
-		ShowWindow(hDlg, SW_SHOW);
-		SetFocus(data.hEdit);
-		SendMessageW(data.hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
-
-		if (hOwner && IsWindow(hOwner))
-		{
-			EnableWindow(hOwner, FALSE);
-		}
-
-		MSG msg{};
-		while (!data.done && GetMessageW(&msg, nullptr, 0, 0))
-		{
-			if (IsDialogMessageW(hDlg, &msg))
-			{
-				continue;
-			}
-			TranslateMessage(&msg);
-			DispatchMessageW(&msg);
-		}
-
-		if (hOwner && IsWindow(hOwner))
-		{
-			EnableWindow(hOwner, TRUE);
-			SetForegroundWindow(hOwner);
-		}
-
-		if (data.cancelled)
-		{
-			return std::nullopt;
-		}
-		if (data.result.empty())
-		{
-			return std::nullopt;
-		}
-		return data.result;
+		return show_input_dialog(owner ? owner->nativeHandle() : nullptr, title, initial);
 	}
 
 	// 通用"选择可执行文件"系统对话框（父窗口句柄版本，供 select_file 与应用选择器共用）
@@ -882,6 +741,461 @@ namespace ui
 			SetBkMode(hdc, TRANSPARENT);
 			SetTextColor(hdc, danger ? CLEAN_DANGER : ((primary || success) ? RGB(0xff, 0xff, 0xff) : RGB(0x33, 0x3a, 0x45)));
 			DrawTextW(hdc, text, -1, const_cast<RECT*>(&rc), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+		}
+	}
+
+	// ---- 通用文本输入对话框（现代化渐变风格，供环境改名等处复用）----
+	namespace
+	{
+		constexpr wchar_t INPUT_DLG_CLASS[] = L"eBoxInputDialog";
+		constexpr int INPUT_TITLE_ID = 1000;
+		constexpr int INPUT_SUB_ID = 1001;
+		constexpr int INPUT_EDIT_ID = 1002;
+		constexpr int INPUT_COUNT_ID = 1003;
+		constexpr int INPUT_OK_ID = IDOK;
+		constexpr int INPUT_CANCEL_ID = IDCANCEL;
+		// 客户区设计尺寸（96 DPI 设计值，运行时一律经 ui::dlg_s 缩放）
+		constexpr int INPUT_DLG_WIDTH = 440;
+		constexpr int INPUT_DLG_HEIGHT = 224;
+		// 渐变背景的下边界：此线以下统一纯白，使"字符计数"等会变的文字可用不透明白底擦除
+		constexpr int INPUT_GRADIENT_BOTTOM = 126;
+
+		struct InputDialogData
+		{
+			HWND hwnd{nullptr};
+			HWND hTitle{nullptr};
+			HWND hSub{nullptr};
+			HWND hEdit{nullptr};
+			HWND hCount{nullptr};
+			HWND hOk{nullptr};
+			HWND hCancel{nullptr};
+			HFONT hFontTitle{nullptr};
+			HFONT hFontBody{nullptr};
+			HFONT hFontSmall{nullptr};
+			HFONT hFontHint{nullptr};
+			std::wstring title;
+			std::wstring initial;
+			std::wstring result;
+			int dpi{96};
+			bool editFocused{false}; // 输入框是否获得焦点（决定圆角面板的描边颜色）
+			bool done{false};
+			bool cancelled{true};
+		};
+
+		// 输入框白色圆角面板区域（WM_PAINT 绘制与鼠标命中判断共用）
+		RECT input_dlg_field_rect(int dpi)
+		{
+			return RECT{ui::dlg_s(24, dpi), ui::dlg_s(78, dpi),
+			            ui::dlg_s(INPUT_DLG_WIDTH - 24, dpi), ui::dlg_s(122, dpi)};
+		}
+
+		// 按窗口 DPI 重建字体（首次创建与跨屏 DPI 变化共用）
+		void input_dlg_create_fonts(InputDialogData& data)
+		{
+			if (data.hFontTitle)
+			{
+				DeleteObject(data.hFontTitle);
+			}
+			if (data.hFontBody)
+			{
+				DeleteObject(data.hFontBody);
+			}
+			if (data.hFontSmall)
+			{
+				DeleteObject(data.hFontSmall);
+			}
+			if (data.hFontHint)
+			{
+				DeleteObject(data.hFontHint);
+			}
+			const auto make = [dpi = data.dpi](int pt, int weight)
+			{
+				return CreateFontW(-MulDiv(pt, dpi, 72), 0, 0, 0, weight, FALSE, FALSE, FALSE,
+				                   DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                   CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			};
+			data.hFontTitle = make(16, FW_SEMIBOLD);
+			data.hFontBody = make(13, FW_NORMAL);
+			data.hFontSmall = make(12, FW_NORMAL);
+			data.hFontHint = make(10, FW_NORMAL);
+			if (data.hTitle)
+			{
+				SendMessageW(data.hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontTitle), TRUE);
+			}
+			if (data.hSub)
+			{
+				SendMessageW(data.hSub, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+			if (data.hEdit)
+			{
+				SendMessageW(data.hEdit, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontBody), TRUE);
+			}
+			if (data.hCount)
+			{
+				SendMessageW(data.hCount, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontHint), TRUE);
+			}
+			if (data.hOk)
+			{
+				SendMessageW(data.hOk, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+			if (data.hCancel)
+			{
+				SendMessageW(data.hCancel, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+		}
+
+		// 按当前 DPI 摆放子控件（WM_CREATE / WM_SIZE / WM_DPICHANGED 共用）
+		void input_dlg_layout(InputDialogData& data)
+		{
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			const auto place = [](HWND h, int x, int y, int w, int hgt)
+			{
+				if (h)
+				{
+					SetWindowPos(h, nullptr, x, y, w, hgt, SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+			};
+			place(data.hTitle, S(24), S(18), S(INPUT_DLG_WIDTH - 48), S(28));
+			place(data.hSub, S(24), S(48), S(INPUT_DLG_WIDTH - 48), S(20));
+			place(data.hEdit, S(36), S(87), S(INPUT_DLG_WIDTH - 72), S(26));
+			place(data.hCount, S(INPUT_DLG_WIDTH - 164), S(130), S(140), S(16));
+			place(data.hCancel, S(INPUT_DLG_WIDTH - 208), S(172), S(88), S(34));
+			place(data.hOk, S(INPUT_DLG_WIDTH - 112), S(172), S(88), S(34));
+		}
+
+		// 刷新右下角字符计数（随输入实时更新）
+		void input_dlg_update_count(InputDialogData& data)
+		{
+			if (!data.hCount)
+			{
+				return;
+			}
+			const int len = GetWindowTextLengthW(data.hEdit);
+			SetWindowTextW(data.hCount, std::format(L"{} 个字符", len).c_str());
+		}
+
+		LRESULT CALLBACK input_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
+		{
+			auto* data = reinterpret_cast<InputDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
+			switch (msg)
+			{
+			case WM_CREATE:
+			{
+				auto* cs = reinterpret_cast<CREATESTRUCTW*>(lParam);
+				data = static_cast<InputDialogData*>(cs->lpCreateParams);
+				data->hwnd = hwnd;
+				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
+
+				const HMODULE hInst = GetModuleHandleW(nullptr);
+				data->dpi = ui::dlg_dpi(hwnd);
+
+				data->hTitle = CreateWindowExW(0, L"STATIC", data->title.c_str(),
+				                               WS_CHILD | WS_VISIBLE | SS_LEFT,
+				                               0, 0, 0, 0, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_TITLE_ID)),
+				                               hInst, nullptr);
+				data->hSub = CreateWindowExW(0, L"STATIC", L"输入新的名称，仅在本机生效",
+				                             WS_CHILD | WS_VISIBLE | SS_LEFT,
+				                             0, 0, 0, 0, hwnd,
+				                             reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_SUB_ID)),
+				                             hInst, nullptr);
+				// 输入框：无自带边框，白色圆角面板由 WM_PAINT 绘制
+				data->hEdit = CreateWindowExW(0, L"EDIT", data->initial.c_str(),
+				                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+				                              0, 0, 0, 0, hwnd,
+				                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_EDIT_ID)),
+				                              hInst, nullptr);
+				data->hCount = CreateWindowExW(0, L"STATIC", L"",
+				                               WS_CHILD | WS_VISIBLE | SS_RIGHT,
+				                               0, 0, 0, 0, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_COUNT_ID)),
+				                               hInst, nullptr);
+
+				// 按钮：确定（主色实底）· 取消（描边）
+				data->hOk = CreateWindowExW(0, L"BUTTON", L"确定",
+				                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
+				                            0, 0, 0, 0, hwnd,
+				                            reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_OK_ID)),
+				                            hInst, nullptr);
+				data->hCancel = CreateWindowExW(0, L"BUTTON", L"取消",
+				                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                                0, 0, 0, 0, hwnd,
+				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_CANCEL_ID)),
+				                                hInst, nullptr);
+
+				input_dlg_create_fonts(*data);
+				input_dlg_layout(*data);
+				input_dlg_update_count(*data);
+				return 0;
+			}
+			case WM_DPICHANGED:
+				data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+				input_dlg_create_fonts(*data);
+				input_dlg_layout(*data);
+				InvalidateRect(hwnd, nullptr, TRUE);
+				return 0;
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					input_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
+			case WM_ERASEBKGND:
+				return 1; // 背景在 WM_PAINT 统一绘制，避免闪烁
+			case WM_PAINT:
+			{
+				PAINTSTRUCT ps{};
+				const HDC hdc = BeginPaint(hwnd, &ps);
+				const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
+				RECT rcClient{};
+				GetClientRect(hwnd, &rcClient);
+				// 顶部浅蓝 → 白垂直渐变，渐变线以下保持纯白（计数文字用不透明白底擦除）
+				const int gradBottom = S(INPUT_GRADIENT_BOTTOM);
+				RECT rcTop = rcClient;
+				rcTop.bottom = gradBottom;
+				fill_v_gradient(hdc, rcTop, RGB(0xef, 0xf6, 0xfe), RGB(0xff, 0xff, 0xff));
+				RECT rcBottom = rcClient;
+				rcBottom.top = gradBottom;
+				if (rcBottom.bottom > rcBottom.top)
+				{
+					FillRect(hdc, &rcBottom, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+				}
+				// 输入框白色圆角面板：聚焦时主题色加粗描边，未聚焦为浅灰细描边
+				const RECT rcField = input_dlg_field_rect(data->dpi);
+				draw_round_rect(hdc, rcField, S(8), RGB(0xff, 0xff, 0xff),
+				                data->editFocused ? CLEAN_ACCENT : CLEAN_BORDER,
+				                data->editFocused ? 2 : 1);
+				// 按钮行上方的细分隔线
+				{
+					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xed, 0xf1, 0xf7));
+					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
+					MoveToEx(hdc, S(24), S(158), nullptr);
+					LineTo(hdc, S(INPUT_DLG_WIDTH - 24), S(158));
+					SelectObject(hdc, hOldPen);
+					DeleteObject(hPen);
+				}
+				EndPaint(hwnd, &ps);
+				return 0;
+			}
+			case WM_CTLCOLOREDIT:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkMode(hdc, TRANSPARENT);
+				SetTextColor(hdc, CLEAN_TEXT);
+				return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+			}
+			case WM_CTLCOLORSTATIC:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				const HWND hWnd = reinterpret_cast<HWND>(lParam);
+				SetBkMode(hdc, TRANSPARENT);
+				SetTextColor(hdc, hWnd == data->hTitle ? CLEAN_TEXT : CLEAN_TEXT_SUB);
+				if (hWnd == data->hCount)
+				{
+					// 计数文字随输入实时变化：用不透明白底（该区域已在纯白底色上）擦除旧文字
+					SetBkMode(hdc, OPAQUE);
+					SetBkColor(hdc, RGB(0xff, 0xff, 0xff));
+					return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
+				}
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_CTLCOLORBTN:
+			{
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkMode(hdc, TRANSPARENT);
+				return reinterpret_cast<LRESULT>(GetStockObject(NULL_BRUSH));
+			}
+			case WM_SETCURSOR:
+				// 悬停在圆角面板（输入框可视范围）上显示文本光标
+				if (LOWORD(lParam) == HTCLIENT)
+				{
+					POINT pt{};
+					GetCursorPos(&pt);
+					ScreenToClient(hwnd, &pt);
+					const RECT rcField = input_dlg_field_rect(data->dpi);
+					if (PtInRect(&rcField, pt))
+					{
+						SetCursor(LoadCursorW(nullptr, IDC_IBEAM));
+						return TRUE;
+					}
+				}
+				break;
+			case WM_LBUTTONDOWN:
+			{
+				const POINTS pts = MAKEPOINTS(lParam);
+				const POINT pt{pts.x, pts.y};
+				const RECT rcField = input_dlg_field_rect(data->dpi);
+				if (PtInRect(&rcField, pt))
+				{
+					SetFocus(data->hEdit);
+					return 0;
+				}
+				break;
+			}
+			case WM_DRAWITEM:
+			{
+				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
+				const int id = dis->CtlID;
+				if (id == INPUT_OK_ID || id == INPUT_CANCEL_ID)
+				{
+					const bool primary = (id == INPUT_OK_ID);
+					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
+					const bool pressed = (dis->itemState & ODS_SELECTED) != 0;
+					wchar_t buf[32]{};
+					GetWindowTextW(dis->hwndItem, buf, 32);
+					// 先清底：按钮区域位于纯白背景上，圆角外的残留像素需擦除
+					FillRect(dis->hDC, &dis->rcItem, static_cast<HBRUSH>(GetStockObject(WHITE_BRUSH)));
+					draw_modern_dlg_button(dis->hDC, dis->rcItem, primary, hover, pressed, buf);
+					// 键盘焦点环：仅次要按钮绘制（主按钮本身已足够醒目）
+					if (!primary && (dis->itemState & ODS_FOCUS) != 0)
+					{
+						const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
+						RECT rcFocus = dis->rcItem;
+						InflateRect(&rcFocus, -S(4), -S(4));
+						HPEN hPen = CreatePen(PS_SOLID, 1, CLEAN_ACCENT_LIGHT);
+						HPEN hOldPen = static_cast<HPEN>(SelectObject(dis->hDC, hPen));
+						HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(dis->hDC, GetStockObject(NULL_BRUSH)));
+						RoundRect(dis->hDC, rcFocus.left, rcFocus.top, rcFocus.right, rcFocus.bottom,
+						          S(6) * 2, S(6) * 2);
+						SelectObject(dis->hDC, hOldBr);
+						SelectObject(dis->hDC, hOldPen);
+						DeleteObject(hPen);
+					}
+					return TRUE;
+				}
+				return FALSE;
+			}
+			case WM_COMMAND:
+			{
+				const int id = LOWORD(wParam);
+				const int code = HIWORD(wParam);
+				if (id == INPUT_EDIT_ID)
+				{
+					if (code == EN_CHANGE)
+					{
+						input_dlg_update_count(*data);
+					}
+					else if (code == EN_SETFOCUS || code == EN_KILLFOCUS)
+					{
+						data->editFocused = (code == EN_SETFOCUS);
+						const RECT rcField = input_dlg_field_rect(data->dpi);
+						InvalidateRect(hwnd, &rcField, FALSE);
+					}
+					return 0;
+				}
+				if (id == INPUT_OK_ID)
+				{
+					// 必须在销毁窗口前读取输入框文本，否则 hEdit 已失效
+					wchar_t buf[512]{};
+					GetWindowTextW(data->hEdit, buf, 512);
+					data->result = buf;
+					data->cancelled = false;
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				if (id == INPUT_CANCEL_ID)
+				{
+					data->cancelled = true;
+					DestroyWindow(hwnd);
+					return 0;
+				}
+				return 0;
+			}
+			case WM_CLOSE:
+				data->cancelled = true;
+				DestroyWindow(hwnd);
+				return 0;
+			case WM_DESTROY:
+				if (data->hFontTitle)
+				{
+					DeleteObject(data->hFontTitle);
+					data->hFontTitle = nullptr;
+				}
+				if (data->hFontBody)
+				{
+					DeleteObject(data->hFontBody);
+					data->hFontBody = nullptr;
+				}
+				if (data->hFontSmall)
+				{
+					DeleteObject(data->hFontSmall);
+					data->hFontSmall = nullptr;
+				}
+				if (data->hFontHint)
+				{
+					DeleteObject(data->hFontHint);
+					data->hFontHint = nullptr;
+				}
+				data->done = true;
+				return 0;
+			default:
+				break;
+			}
+			return DefWindowProcW(hwnd, msg, wParam, lParam);
+		}
+
+		std::optional<std::wstring> show_input_dialog(HWND owner, std::wstring_view title, std::wstring_view initial)
+		{
+			static const bool classRegistered = []()
+			{
+				WNDCLASSEXW wc = {sizeof(wc)};
+				wc.lpfnWndProc = input_dlg_proc;
+				wc.hInstance = GetModuleHandleW(nullptr);
+				wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+				wc.hbrBackground = nullptr; // 背景全部自绘，避免创建/改变尺寸时闪一帧系统底色
+				wc.lpszClassName = INPUT_DLG_CLASS;
+				return RegisterClassExW(&wc) != 0;
+			}();
+			(void)classRegistered;
+
+			InputDialogData data;
+			data.title = title;
+			data.initial = initial;
+
+			const SIZE clientSize = ui::dlg_client_size(owner, INPUT_DLG_WIDTH, INPUT_DLG_HEIGHT);
+			const HWND hDlg = CreateWindowExW(0, INPUT_DLG_CLASS, data.title.c_str(),
+			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
+			                                  0, 0, clientSize.cx, clientSize.cy, owner, nullptr,
+			                                  GetModuleHandleW(nullptr), &data);
+			if (hDlg == nullptr)
+			{
+				return std::nullopt;
+			}
+			ui::dlg_fit_client(hDlg, clientSize);
+			ui::dlg_center_on(hDlg, owner);
+			ShowWindow(hDlg, SW_SHOW);
+			SetFocus(data.hEdit);
+			SendMessageW(data.hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
+
+			if (owner != nullptr && IsWindow(owner))
+			{
+				EnableWindow(owner, FALSE);
+			}
+
+			MSG msg{};
+			while (!data.done && GetMessageW(&msg, nullptr, 0, 0) > 0)
+			{
+				if (IsDialogMessageW(hDlg, &msg))
+				{
+					continue;
+				}
+				TranslateMessage(&msg);
+				DispatchMessageW(&msg);
+			}
+
+			if (owner != nullptr && IsWindow(owner))
+			{
+				EnableWindow(owner, TRUE);
+				SetForegroundWindow(owner);
+			}
+
+			if (data.cancelled || data.result.empty())
+			{
+				return std::nullopt;
+			}
+			return data.result;
 		}
 	}
 

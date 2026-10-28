@@ -34,11 +34,25 @@ namespace biz
 
 		~Core()
 		{
-			// eBox 退出前保存并卸载所有已加载的环境注册表 hive，避免注册表数据丢失
-			for (const std::shared_ptr<Env>& env : m_envManager.getAllEnv())
+			// eBox 退出前保存并卸载所有已加载的环境注册表 hive，避免注册表数据丢失。
+			// RegSaveKeyW / RegUnLoadKeyW 是不可取消的内核同步操作，耗时随 hive 脏页
+			// 增长（多环境时逐个串行可达数十秒，表现为退出长时间无响应）。
+			// 各环境 hive 相互独立，按环境并行处理，总耗时从"累加"降为"最慢的一个"。
+			// 任务持有 shared_ptr，保存期间环境被删除也不会访问已释放对象。
+			const std::vector<std::shared_ptr<Env>> envs = m_envManager.getAllEnv();
+			std::vector<std::thread> workers;
+			workers.reserve(envs.size());
+			for (const std::shared_ptr<Env>& env : envs)
 			{
-				env->saveRegistryHive();
-				env->unloadRegistryHive();
+				workers.emplace_back([env]
+				{
+					env->saveRegistryHive();
+					env->unloadRegistryHive();
+				});
+			}
+			for (std::thread& worker : workers)
+			{
+				worker.join();
 			}
 			g_rpc_server.reset();
 		}

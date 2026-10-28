@@ -141,6 +141,59 @@ namespace hook
 		return hook_cache::window_other(reinterpret_cast<HWND>(hWnd));
 	}
 
+	// 消息窗(HWND_MESSAGE 的子窗口)不属于顶层窗口, 永远不在上面的顶层窗口集合里。
+	// Chromium 系应用(豆包/Chrome/Electron)的单实例检测正是
+	// FindWindowExW(HWND_MESSAGE, nullptr, L"Chrome_MessageWindow", ...)：
+	// 若只按窗口集合过滤, 新实例会找到"其他环境"已运行实例的消息窗, 判定为重复启动后退出
+	// (实测: 豆包首次可多开, 结束进程后再启动只剩一个)。
+	// 这里按窗口所属进程兜底判断: 进程属于其他环境则视为需要隔离。
+
+	// lpszClass 可能是原子(IS_INTRESOURCE)而不是字符串指针, 必须先判断再解引用,
+	// 否则会把原子当指针读取 → 访问违例(0xC0000005)。
+	bool is_chromium_message_window_class(LPCWSTR cls)
+	{
+		if (!cls || IS_INTRESOURCE(cls))
+		{
+			return false;
+		}
+		return _wcsicmp(cls, L"Chrome_MessageWindow") == 0;
+	}
+
+	bool is_chromium_message_window_class(LPCSTR cls)
+	{
+		if (!cls || IS_INTRESOURCE(cls))
+		{
+			return false;
+		}
+		return _stricmp(cls, "Chrome_MessageWindow") == 0;
+	}
+
+	// treat_cold_as_other: 仅在查找 Chromium 消息窗时置 true。
+	// 单实例检测就发生在新进程启动的头几十毫秒, 此时 hook_cache 的进程集合
+	// 往往还没完成首轮拉取; 若此时按"未命中"放行, 新实例会找到其他环境实例的
+	// 消息窗并静默退出(实测: 结束进程后再启动只剩一个)。所以集合未就绪时
+	// 对 Chromium 消息窗保守隔离。
+	bool is_message_window_of_other_env(HWND hWnd, bool treat_cold_as_other)
+	{
+		DWORD pid = 0;
+		::GetWindowThreadProcessId(hWnd, &pid);
+		if (pid == 0 || pid == ::GetCurrentProcessId())
+		{
+			return false;
+		}
+		if (treat_cold_as_other)
+		{
+			// 这里直接返回 true 不会走到 process_other(), 需显式启动刷新线程把集合拉起来,
+			// 否则该进程的集合会一直是空的(每轮都按"冷启动"隔离, 同环境多实例也会被放过)。
+			hook_cache::ensure_refresh_thread();
+			if (!hook_cache::proc_cache_ready())
+			{
+				return true;
+			}
+		}
+		return hook_cache::process_other(static_cast<ULONG_PTR>(pid));
+	}
+
 	// 供 hook_cache 使用的全量拉取回调: 返回"其他环境顶层窗口"集合(带与 get_all_toplevel_window_in_other_env 相同的过滤)
 	bool fetch_other_windows(std::unordered_set<HWND>& out)
 	{
@@ -552,6 +605,12 @@ namespace hook
 		}
 
 		HWND hWnd = Trampoline(hWndParent, hWndChildAfter, lpszClass, lpszWindow);
+		// 消息窗: 跳过属于其他环境的消息窗并继续向后找(不能直接返回 nullptr, 否则会漏掉本环境的窗口)
+		const bool chromeMsg = is_chromium_message_window_class(lpszClass);
+		while (hWnd && hWndParent == HWND_MESSAGE && is_message_window_of_other_env(hWnd, chromeMsg))
+		{
+			hWnd = Trampoline(hWndParent, hWnd, lpszClass, lpszWindow);
+		}
 		if (!hWnd || contains_toplevel_window_in_other_env(hWnd))
 		{
 			return nullptr;
@@ -568,6 +627,11 @@ namespace hook
 		}
 
 		HWND hWnd = Trampoline(hWndParent, hWndChildAfter, lpszClass, lpszWindow);
+		const bool chromeMsg = is_chromium_message_window_class(lpszClass);
+		while (hWnd && hWndParent == HWND_MESSAGE && is_message_window_of_other_env(hWnd, chromeMsg))
+		{
+			hWnd = Trampoline(hWndParent, hWnd, lpszClass, lpszWindow);
+		}
 		if (!hWnd || contains_toplevel_window_in_other_env(hWnd))
 		{
 			return nullptr;

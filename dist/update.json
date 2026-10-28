@@ -1,22 +1,25 @@
 {
-    "latestVersion": "v3.2.3",
-    "latestVersionCode": 30203,
+    "latestVersion": "v3.2.4",
+    "latestVersionCode": 30204,
     "releaseDate": "2026/10/28",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "cc517c72c172ea74776c5badfea9fcd7113318bd2a625403549318ab125a69e7",
-    "downloadSize": 3932160,
+    "downloadSha256": "100a15edffb76d731e0537e139c7dd5c56fd7a2e12ea9fc9c06bbfccd6bde3f7",
+    "downloadSize": 3914752,
     "changelog": [
-        "所有弹窗完成 DPI 适配：布局按所在显示器 DPI 缩放，高缩放/多屏下不再文字拥挤或控件过小",
-        "弹窗支持跨显示器拖拽后自动重排，并按屏幕工作区限制最大高度，矮屏下不再超出屏幕",
-        "环境卡片新增应用名称标识：同程序同色、常显（离线为灰色），宽度自适应，与运行时间水平对齐",
-        "标识名称取自「选择要启动的应用」列表的显示名（如 WXWork 显示为 企业微信），每张卡片只显示一个标识",
-        "启动选择器记忆上次选择的应用路径，重启后仍显示，点击清除后才隐藏",
-        "版本号更新至 v3.2.3"
+        "环境列表视图改为简约图标按钮（启动/改名/关闭），悬停才显色，主操作保留淡蓝底",
+        "列表视图环境名称超长时自动尾部省略，鼠标悬停即可查看完整名称",
+        "列表视图整行悬停底色更淡，减少视觉干扰",
+        "环境改名弹窗重做：现代简约风格，圆角输入框与扁平按钮，全量 DPI 自适应",
+        "修复豆包等 Chromium 系应用多开：隔离其他环境的消息窗，结束进程后再启动不再只剩一个",
+        "提升启动速度：启动时静默加入 Defender 排除项，注入文件改为内容比对避免重复写盘",
+        "结束多个进程或退出 eBox 时不再长时间未响应：关闭/强杀与注册表保存移到后台线程",
+        "修复看门狗误判 UI 卡死：事件循环空闲等待加心跳上限，不再产生假卡死记录",
+        "版本号更新至 v3.2.4"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.2.3/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.2.4/eBox.exe"
     ]
 }

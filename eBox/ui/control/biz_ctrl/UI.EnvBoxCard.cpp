@@ -29,6 +29,72 @@ namespace
 	// 离线（无进程）时标识改用运行时间文字的灰色，只有在线才显示程序专属色
 	const D2D1::ColorF BADGE_OFFLINE_COLOR = D2D1::ColorF(0x9e9e9e);
 
+	// 列表视图右侧的图标按钮：方形尺寸 / 间距 / 圆角（图标用矢量路径绘制，不依赖字体）
+	constexpr float LIST_BTN_SIZE = 26.f;
+	constexpr float LIST_BTN_GAP = 4.f;
+	constexpr float LIST_BTN_RADIUS = 7.f;
+	constexpr float LIST_BTN_GROUP_WIDTH = LIST_BTN_SIZE * 3.f + LIST_BTN_GAP * 2.f;
+	constexpr float LIST_NAME_LEFT = PADDING + 16.f;
+
+	enum class EListIcon
+	{
+		Play,
+		Pencil,
+		Close,
+	};
+
+	// 列表视图的按钮图标：矢量路径绘制（播放 / 铅笔 / 关闭），小尺寸下比符号字形更清晰
+	void draw_list_icon(const ui::RenderContext& renderCtx, EListIcon icon, const D2D1_COLOR_F& color)
+	{
+		const UniqueComPtr<ID2D1HwndRenderTarget>& renderTarget = renderCtx.renderTarget;
+		const UniqueComPtr<ID2D1SolidColorBrush>& solidBrush = renderCtx.brush;
+		solidBrush->SetColor(color);
+
+		if (icon == EListIcon::Close)
+		{
+			constexpr float lineWidth = 1.9f;
+			renderTarget->DrawLine(D2D1::Point2F(9.7f, 9.7f), D2D1::Point2F(16.3f, 16.3f), solidBrush, lineWidth);
+			renderTarget->DrawLine(D2D1::Point2F(16.3f, 9.7f), D2D1::Point2F(9.7f, 16.3f), solidBrush, lineWidth);
+			return;
+		}
+
+		ID2D1Factory* factory = nullptr;
+		renderTarget->GetFactory(&factory);
+		if (!factory)
+		{
+			return;
+		}
+		UniqueComPtr<ID2D1PathGeometry> path;
+		if (FAILED(factory->CreatePathGeometry(&path)))
+		{
+			return;
+		}
+		UniqueComPtr<ID2D1GeometrySink> sink;
+		if (FAILED(path->Open(&sink)))
+		{
+			return;
+		}
+
+		if (icon == EListIcon::Play)
+		{
+			sink->BeginFigure(D2D1::Point2F(10.6f, 8.8f), D2D1_FIGURE_BEGIN_FILLED);
+			sink->AddLine(D2D1::Point2F(17.8f, 13.f));
+			sink->AddLine(D2D1::Point2F(10.6f, 17.2f));
+		}
+		else
+		{
+			// 铅笔：笔杆（平行四边形）+ 左下笔尖，整体居中在 26x26 的按钮内
+			sink->BeginFigure(D2D1::Point2F(7.7f, 18.3f), D2D1_FIGURE_BEGIN_FILLED);
+			sink->AddLine(D2D1::Point2F(9.9f, 18.7f));
+			sink->AddLine(D2D1::Point2F(18.7f, 9.9f));
+			sink->AddLine(D2D1::Point2F(16.1f, 7.3f));
+			sink->AddLine(D2D1::Point2F(7.3f, 16.1f));
+		}
+		sink->EndFigure(D2D1_FIGURE_END_CLOSED);
+		sink->Close();
+		renderTarget->FillGeometry(path.get(), solidBrush);
+	}
+
 	std::wstring format_runtime(std::chrono::steady_clock::duration elapsed)
 	{
 		const auto totalSec = std::chrono::duration_cast<std::chrono::seconds>(elapsed).count();
@@ -222,7 +288,7 @@ namespace ui
 		bool inNameArea = false;
 		if (m_viewMode == EViewMode::List)
 		{
-			inNameArea = localX >= PADDING + 16.f && localX <= PADDING + 16.f + m_nameAreaWidth &&
+			inNameArea = localX >= LIST_NAME_LEFT && localX <= LIST_NAME_LEFT + m_nameAreaWidth &&
 				localY >= 0.f && localY <= s.height;
 		}
 		else
@@ -414,15 +480,56 @@ namespace ui
 
 			if (id == 1)
 			{
-				// 结束当前环境运行的所有进程（环境保留，可再次启动复用）
-				for (const DWORD pid : m_env->getAllProcessIds())
+				// 记录最后操作，供 UI 卡死 watchdog 转储时提示定位
+				sched::hang_watchdog_mark(L"环境卡片-结束进程");
+				// 结束当前环境运行的所有进程（环境保留，可再次启动复用）。
+				// 必须放在后台线程：Electron 类应用单环境常有 8~16 个进程，在 UI 线程
+				// （窗口过程内）逐个 TerminateProcess 时，win32k 要在内核里集中销毁这些
+				// 进程的全部窗口/GDI 对象，实测会把 UI 线程占住十几秒，系统因此判定
+				// "未响应"，清理完才自行恢复（与"删除环境"同一处理方式）。
+				// env 以 shared_ptr 保活，卡片先销毁也不影响结束流程继续。
+				std::thread([env = m_env]()
 				{
-					if (HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pid))
+					try
 					{
-						TerminateProcess(h, 1);
-						CloseHandle(h);
+						// 先请求正常关闭：应用自行退出时，窗口与子进程由它自己按序销毁，
+						// 不会把大量 win32k 清理集中到一次系统调用里。
+						for (void* wnd : env->getAllToplevelWindows())
+						{
+							::PostMessageW(static_cast<HWND>(wnd), WM_CLOSE, 0, 0);
+						}
+						for (int i = 0; i < 20 && env->getAllProcessesCount() > 0; ++i)
+						{
+							std::this_thread::sleep_for(std::chrono::milliseconds(100));
+						}
+
+						// 兜底：仍未退出（如把 WM_CLOSE 当最小化到托盘）则强杀。
+						// 分批并留间隔，避免一次性把大量窗口销毁压到同一时刻。
+						const auto terminateRemaining = [&env]()
+						{
+							std::size_t index = 0;
+							for (const DWORD pid : env->getAllProcessIds())
+							{
+								if (HANDLE h = ::OpenProcess(PROCESS_TERMINATE, FALSE, pid))
+								{
+									::TerminateProcess(h, 1);
+									::CloseHandle(h);
+								}
+								if (++index % 3 == 0)
+								{
+									std::this_thread::sleep_for(std::chrono::milliseconds(80));
+								}
+							}
+						};
+						terminateRemaining();
+						std::this_thread::sleep_for(std::chrono::milliseconds(400));
+						terminateRemaining();
 					}
-				}
+					catch (...)
+					{
+						// 防御：环境在结束过程中被删除等场景，吞掉异常避免终止进程
+					}
+				}).detach();
 			}
 			else if (id == 2)
 			{
@@ -483,20 +590,44 @@ namespace ui
 			m_asyncScope.spawn(coro::co_with_cancellation(resetToIdleLater(), m_stopSource.get_token()));
 		}
 
-		// 列表视图的图标字体（Segoe UI Symbol 支持 ▶ ✎ ×）
-		HRESULT hr = app().dWriteFactory()->CreateTextFormat(
-			L"Segoe UI Symbol",
-			nullptr,
-			DWRITE_FONT_WEIGHT_NORMAL,
-			DWRITE_FONT_STYLE_NORMAL,
-			DWRITE_FONT_STRETCH_NORMAL,
-			12.f,
-			L"",
-			&m_pListIconFormat);
-		if (FAILED(hr))
+		// 列表视图：按钮文字留空，图标用矢量路径绘制（随悬停/按下切换颜色）；
+		// 卡片视图保持原有文字按钮外观，回调直接返回不绘制
+		m_btnStart->setDrawCallback([this](const RenderContext& ctx, Button::EState state)
 		{
-			m_pListIconFormat.reset();
-		}
+			if (m_viewMode != EViewMode::List)
+			{
+				return;
+			}
+			D2D1::ColorF color = D2D1::ColorF(0x0078d4);
+			if (state == Button::EState::Hover) { color = D2D1::ColorF(0x0068bb); }
+			else if (state == Button::EState::Active) { color = D2D1::ColorF(0x005ba6); }
+			else if (state == Button::EState::Disabled) { color = D2D1::ColorF(0x9aa8b8); }
+			draw_list_icon(ctx, EListIcon::Play, color);
+		});
+		m_btnRename->setDrawCallback([this](const RenderContext& ctx, Button::EState state)
+		{
+			if (m_viewMode != EViewMode::List)
+			{
+				return;
+			}
+			D2D1::ColorF color = D2D1::ColorF(0x64748b);
+			if (state == Button::EState::Hover) { color = D2D1::ColorF(0x2f3a48); }
+			else if (state == Button::EState::Active) { color = D2D1::ColorF(0x1e2836); }
+			else if (state == Button::EState::Disabled) { color = D2D1::ColorF(0xa8b0ba); }
+			draw_list_icon(ctx, EListIcon::Pencil, color);
+		});
+		m_btnClose->setDrawCallback([this](const RenderContext& ctx, Button::EState state)
+		{
+			if (m_viewMode != EViewMode::List)
+			{
+				return;
+			}
+			D2D1::ColorF color = D2D1::ColorF(0x64748b);
+			if (state == Button::EState::Hover) { color = D2D1::ColorF(0xe03131); }
+			else if (state == Button::EState::Active) { color = D2D1::ColorF(0xc92a2a); }
+			else if (state == Button::EState::Disabled) { color = D2D1::ColorF(0xa8b0ba); }
+			draw_list_icon(ctx, EListIcon::Close, color);
+		});
 	}
 
 	void EnvBoxCard::setViewMode(EViewMode mode)
@@ -508,34 +639,70 @@ namespace ui
 		m_viewMode = mode;
 		const bool bList = (mode == EViewMode::List);
 		const auto& commonFormat = app().textFormat().pToolBtnFormat;
-		// 按钮文字/字体随视图模式切换：卡片=文字按钮，列表=图标按钮
-		m_btnStart->setText(bList ? L"▶" : L"启动");
-		m_btnRename->setText(bList ? L"✎" : L"改名");
-		m_btnClose->setText(bList ? L"×" : L"关闭");
-		m_btnStart->setTextFormat(bList ? m_pListIconFormat : commonFormat);
-		m_btnRename->setTextFormat(bList ? m_pListIconFormat : commonFormat);
-		m_btnClose->setTextFormat(bList ? m_pListIconFormat : commonFormat);
-		// 颜色始终保持与卡片视图一致（蓝启动/绿改名/红关闭），列表模式同样保留彩色底
-		m_btnStart->setBackgroundColor(D2D1::ColorF(0x0078d4), Button::EState::All);
-		m_btnRename->setBackgroundColor(D2D1::ColorF(0xe8f5e9), Button::EState::All);
-		m_btnRename->setBorderColor(D2D1::ColorF(0x4caf50), Button::EState::All);
-		m_btnClose->setBackgroundColor(D2D1::ColorF(0xffebee), Button::EState::All);
-		m_btnClose->setBorderColor(D2D1::ColorF(0xf44336), Button::EState::All);
+
 		if (bList)
 		{
-			// 列表模式：全部实底彩色，图标更清晰可见
-			m_btnStart->setBackgroundColor(D2D1::ColorF(0x0078d4), Button::EState::All);
+			// 列表视图：文字留空，只画图标；启动=浅蓝胶囊（主操作），改名/关闭=无底色灰图标，悬停才出色
+			m_btnStart->setText(L"");
+			m_btnRename->setText(L"");
+			m_btnClose->setText(L"");
+
+			m_btnStart->setRadius(LIST_BTN_RADIUS);
+			m_btnRename->setRadius(LIST_BTN_RADIUS);
+			m_btnClose->setRadius(LIST_BTN_RADIUS);
+
+			m_btnStart->setBackgroundColor(D2D1::ColorF(0xe8f2fd), Button::EState::Normal);
+			m_btnStart->setBackgroundColor(D2D1::ColorF(0xd8e9fb), Button::EState::Hover);
+			m_btnStart->setBackgroundColor(D2D1::ColorF(0xc8e0f9), Button::EState::Active);
+			m_btnStart->setBackgroundColor(D2D1::ColorF(0xf1f5f9), Button::EState::Disabled);
+
+			m_btnRename->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Normal);
+			m_btnRename->setBackgroundColor(D2D1::ColorF(0xeef2f7), Button::EState::Hover);
+			m_btnRename->setBackgroundColor(D2D1::ColorF(0xe2e8f0), Button::EState::Active);
+			m_btnRename->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Disabled);
+
+			m_btnClose->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Normal);
+			m_btnClose->setBackgroundColor(D2D1::ColorF(0xfdecec), Button::EState::Hover);
+			m_btnClose->setBackgroundColor(D2D1::ColorF(0xfadada), Button::EState::Active);
+			m_btnClose->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Disabled);
+
+			// 列表视图统一无描边，靠底色区分状态
+			m_btnStart->setBorderColor(D2D1::ColorF(0x000000, 0.f), Button::EState::All);
+			m_btnRename->setBorderColor(D2D1::ColorF(0x000000, 0.f), Button::EState::All);
+			m_btnClose->setBorderColor(D2D1::ColorF(0x000000, 0.f), Button::EState::All);
 		}
 		else
 		{
-			// 卡片模式：恢复各按钮原本的悬停/按下颜色与透明 Normal 底
+			// 卡片视图：恢复文字按钮与原来的底色 / 描边 / 圆角
+			m_btnStart->setText(L"启动");
+			m_btnRename->setText(L"改名");
+			m_btnClose->setText(L"关闭");
+			m_btnStart->setTextFormat(commonFormat);
+			m_btnRename->setTextFormat(commonFormat);
+			m_btnClose->setTextFormat(commonFormat);
+
+			m_btnStart->setRadius(4.f);
+			m_btnRename->setRadius(4.f);
+			m_btnClose->setRadius(4.f);
+
 			m_btnStart->setBackgroundColor(D2D1::ColorF(0x0078d4), Button::EState::Normal);
 			m_btnStart->setBackgroundColor(D2D1::ColorF(0x006cbd), Button::EState::Hover);
 			m_btnStart->setBackgroundColor(D2D1::ColorF(0x005a9e), Button::EState::Active);
+			m_btnStart->setBorderColor(D2D1::ColorF(0x000000, 0.f), Button::EState::All);
+
 			m_btnRename->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Normal);
+			m_btnRename->setBackgroundColor(D2D1::ColorF(0xe8f5e9), Button::EState::Hover);
+			m_btnRename->setBackgroundColor(D2D1::ColorF(0xe8f5e9), Button::EState::Active);
 			m_btnRename->setBorderColor(D2D1::ColorF(0xe0e0e0), Button::EState::Normal);
+			m_btnRename->setBorderColor(D2D1::ColorF(0x4caf50), Button::EState::Hover);
+			m_btnRename->setBorderColor(D2D1::ColorF(0x4caf50), Button::EState::Active);
+
 			m_btnClose->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Normal);
+			m_btnClose->setBackgroundColor(D2D1::ColorF(0xffebee), Button::EState::Hover);
+			m_btnClose->setBackgroundColor(D2D1::ColorF(0xffebee), Button::EState::Active);
 			m_btnClose->setBorderColor(D2D1::ColorF(0xe0e0e0), Button::EState::Normal);
+			m_btnClose->setBorderColor(D2D1::ColorF(0xf44336), Button::EState::Hover);
+			m_btnClose->setBorderColor(D2D1::ColorF(0xf44336), Button::EState::Active);
 		}
 		const auto [width, height] = size();
 		onResize(width, height);
@@ -546,18 +713,16 @@ namespace ui
 	{
 		if (m_viewMode == EViewMode::List)
 		{
-			// 列表模式：右侧三个小图标按钮横排（▶ ✎ ×）
-			constexpr float listBtnWidth = 24.f;
-			constexpr float listBtnHeight = 20.f;
-			constexpr float listBtnGap = 2.f;
-			const float btnY = (height - listBtnHeight) * 0.5f;
+			// 列表模式：右侧三个方形图标按钮横排，右对齐
+			const float btnY = std::round((height - LIST_BTN_SIZE) * 0.5f);
 			float right = width - PADDING;
-			m_btnClose->setBounds(D2D1::RectF(right - listBtnWidth, btnY, right, btnY + listBtnHeight));
-			right -= listBtnWidth + listBtnGap;
-			m_btnRename->setBounds(D2D1::RectF(right - listBtnWidth, btnY, right, btnY + listBtnHeight));
-			right -= listBtnWidth + listBtnGap;
-			m_btnStart->setBounds(D2D1::RectF(right - listBtnWidth, btnY, right, btnY + listBtnHeight));
-			m_nameAreaWidth = std::max(0.f, width - 2.f * PADDING - 3.f * 26.f - 8.f - 16.f);
+			m_btnClose->setBounds(D2D1::RectF(right - LIST_BTN_SIZE, btnY, right, btnY + LIST_BTN_SIZE));
+			right -= LIST_BTN_SIZE + LIST_BTN_GAP;
+			m_btnRename->setBounds(D2D1::RectF(right - LIST_BTN_SIZE, btnY, right, btnY + LIST_BTN_SIZE));
+			right -= LIST_BTN_SIZE + LIST_BTN_GAP;
+			m_btnStart->setBounds(D2D1::RectF(right - LIST_BTN_SIZE, btnY, right, btnY + LIST_BTN_SIZE));
+			// 名称可用宽度：从圆点右侧到按钮组左侧（留 8px 间隙），超出即尾部省略 + 悬浮提示
+			m_nameAreaWidth = std::max(0.f, width - LIST_NAME_LEFT - PADDING - LIST_BTN_GROUP_WIDTH - 8.f);
 			updateNameLayout();
 			return;
 		}
@@ -690,13 +855,31 @@ namespace ui
 			solidBrush->SetColor(D2D1::ColorF(0x0078d4, 1.f));
 			renderTarget->DrawRoundedRectangle(roundedRect, solidBrush, 2.0f);
 		}
-		else if (m_isHovered || m_isSelected || m_isBright)
+		else if (m_isSelected || m_isBright)
 		{
 			solidBrush->SetColor(D2D1::ColorF(0xf0f8ff));
 			renderTarget->FillRoundedRectangle(roundedRect, solidBrush);
 
 			solidBrush->SetColor(D2D1::ColorF(0x0078d4));
 			renderTarget->DrawRoundedRectangle(roundedRect, solidBrush);
+		}
+		else if (m_isHovered)
+		{
+			// 列表视图整行悬停用更淡的底色与描边，避免一行蓝框过于抢眼
+			if (m_viewMode == EViewMode::List)
+			{
+				solidBrush->SetColor(D2D1::ColorF(0xf7fafe));
+				renderTarget->FillRoundedRectangle(roundedRect, solidBrush);
+				solidBrush->SetColor(D2D1::ColorF(0xdbe8f7));
+				renderTarget->DrawRoundedRectangle(roundedRect, solidBrush);
+			}
+			else
+			{
+				solidBrush->SetColor(D2D1::ColorF(0xf0f8ff));
+				renderTarget->FillRoundedRectangle(roundedRect, solidBrush);
+				solidBrush->SetColor(D2D1::ColorF(0x0078d4));
+				renderTarget->DrawRoundedRectangle(roundedRect, solidBrush);
+			}
 		}
 		else
 		{
@@ -716,20 +899,19 @@ namespace ui
 			renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(PADDING + 5.f, cy), 4.f, 4.f), solidBrush);
 
 			// 名称垂直居中，与圆点/图标保持同一行（超宽时尾部省略）
-			constexpr float nameLineHeight = 22.f;
-			const float nameTop = (drawSize.height - nameLineHeight) * 0.5f;
+			const float nameTop = (drawSize.height - TITLE_HEIGHT) * 0.5f;
 			solidBrush->SetColor(D2D1::ColorF(0x333333));
 			if (m_pNameLayout)
 			{
-				renderTarget->DrawTextLayout(D2D1::Point2F(PADDING + 16.f, nameTop), m_pNameLayout, solidBrush);
+				renderTarget->DrawTextLayout(D2D1::Point2F(LIST_NAME_LEFT, nameTop), m_pNameLayout, solidBrush);
 			}
 			else
 			{
 				renderTarget->DrawTextW(m_name.c_str(),
 				                        static_cast<UINT32>(m_name.length()),
 				                        app().textFormat().pTitleFormat,
-				                        D2D1::RectF(PADDING + 16.f, nameTop,
-				                                    drawSize.width - PADDING - 3.f * 26.f - 8.f, nameTop + nameLineHeight),
+				                        D2D1::RectF(LIST_NAME_LEFT, nameTop,
+				                                    LIST_NAME_LEFT + m_nameAreaWidth, nameTop + TITLE_HEIGHT),
 				                        solidBrush);
 			}
 			m_btnStart->draw(renderCtx);
