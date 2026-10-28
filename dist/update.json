@@ -1,14 +1,18 @@
 {
     "latestVersion": "v3.2.5",
     "latestVersionCode": 30205,
-    "releaseDate": "2026/10/29",
+    "releaseDate": "2026/10/28",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
     "downloadSha256": "0f37a27f63acebe4b59828e05b580e2a7dd7553c3175b268f78db606a419dc6f",
     "downloadSize": 3910656,
     "changelog": [
+        "更新内容",
         "修复退出 eBox 时误杀宿主机原生应用：结束环境进程不再按进程名全局匹配，桌面原生启动的企业微信等应用不会再被一并结束",
         "结束环境进程改为按环境归属的 PID 与进程树逐级收敛，多开应用退出依旧清理干净、零残留",
-        "版本号更新至 v3.2.5"
+        "版本号更新至 v3.2.5",
+        "说明",
+        "更新时间：2026/10/29",
+        "版本号：v3.2.5 (30205)"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
