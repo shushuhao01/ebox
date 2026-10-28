@@ -63,6 +63,24 @@ namespace ui
 	private:
 		void initialize();
 		void updateNameLayout();
+		// 名称被截断时，指针落在名称区域则显示完整名称的悬浮提示（ownerX/ownerY 为宿主坐标）
+		void updateNameTooltip(float ownerX, float ownerY);
+		// 运行时间因标识挤占被省略时，指针落在运行时间行则显示完整运行时长的悬浮提示
+		void updateStatusTooltip(float ownerX, float ownerY);
+		// 依当前环境内的进程重建“运行时间行”前面的应用名标识（按程序名去重）
+		void rebuildAppBadges();
+
+		// 运行时间行前面的应用名标识：同一程序名稳定映射到同一颜色
+		struct AppBadge
+		{
+			std::wstring text;
+			float colorR{0.f};
+			float colorG{0.f};
+			float colorB{0.f};
+			float width{0.f};
+			float textHeight{0.f};
+			UniqueComPtr<IDWriteTextLayout> layout;
+		};
 
 	protected:
 		virtual void onResize(float width, float height) override;
@@ -106,6 +124,11 @@ namespace ui
 	private:
 		std::shared_ptr<biz::Env> m_env;
 		std::wstring m_name;
+		// 运行时间行前面的应用名标识（按程序名去重、顺序稳定）
+		std::vector<AppBadge> m_appBadges;
+		// 最近一次绘制出的运行时间文本；被省略时供悬浮提示显示完整时长
+		std::wstring m_runtimeText;
+		bool m_bRuntimeClipped{false};
 		std::size_t m_procCount{0};
 		std::wstring m_strProcCount{L"0"};
 		std::chrono::steady_clock::time_point m_startTime{};

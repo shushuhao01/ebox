@@ -21,6 +21,13 @@ namespace
 	constexpr float BTN_WIDTH = 36.f;
 	constexpr float BTN_HEIGHT = 20.f;
 	constexpr float BTN_GAP = 4.f;
+	// 运行时间行前面的应用名标识：高度 / 左右内边距 / 标识间距，以及给运行时间预留的最小宽度
+	constexpr float BADGE_HEIGHT = 15.f;
+	constexpr float BADGE_PAD_X = 4.f;
+	constexpr float BADGE_GAP = 4.f;
+	constexpr float RUNTIME_MIN_WIDTH = 56.f;
+	// 离线（无进程）时标识改用运行时间文字的灰色，只有在线才显示程序专属色
+	const D2D1::ColorF BADGE_OFFLINE_COLOR = D2D1::ColorF(0x9e9e9e);
 
 	std::wstring format_runtime(std::chrono::steady_clock::duration elapsed)
 	{
@@ -41,6 +48,81 @@ namespace
 		}
 		const auto totalDay = totalHour / 24;
 		return std::format(L"已运行 {} 天 {} 小时", totalDay, totalHour % 24);
+	}
+
+	// 程序全路径 → 文件名（去扩展名），作为标识文本与配色的基准
+	std::wstring program_stem(const std::wstring& fullPath)
+	{
+		const std::size_t slash = fullPath.find_last_of(L"\\/");
+		std::wstring name = (slash == std::wstring::npos) ? fullPath : fullPath.substr(slash + 1);
+		const std::size_t dot = name.find_last_of(L'.');
+		if (dot != std::wstring::npos && dot > 0)
+		{
+			name.resize(dot);
+		}
+		return name;
+	}
+
+	// 仅做 ASCII 小写化：保证同名不同大小写映射到同一颜色，且不受系统区域设置影响
+	std::wstring ascii_lower(std::wstring s)
+	{
+		for (auto& ch : s)
+		{
+			if (ch >= L'A' && ch <= L'Z')
+			{
+				ch = static_cast<wchar_t>(ch - L'A' + L'a');
+			}
+		}
+		return s;
+	}
+
+	// 标识最多 8 个“半角宽”：中文按 2 计、英文按 1 计，超出则从尾部截断
+	std::wstring truncate_badge_text(const std::wstring& name)
+	{
+		constexpr int MAX_UNITS = 8;
+		std::wstring out;
+		int units = 0;
+		for (const wchar_t ch : name)
+		{
+			const int w = (ch >= 0x2E80) ? 2 : 1;
+			if (units + w > MAX_UNITS)
+			{
+				break;
+			}
+			out.push_back(ch);
+			units += w;
+		}
+		return out;
+	}
+
+	// 程序名 → 稳定颜色（FNV-1a 取色相，固定饱和度/亮度）：同名同色、异名基本不撞色，白底可读
+	D2D1::ColorF badge_color_from_name(const std::wstring& key)
+	{
+		std::uint32_t hash = 2166136261u;
+		for (const wchar_t ch : key)
+		{
+			const auto code = static_cast<std::uint32_t>(ch);
+			hash = (hash ^ (code & 0xffu)) * 16777619u;
+			hash = (hash ^ (code >> 8)) * 16777619u;
+		}
+		// 色相限制在 30°~279°（橙/黄/绿/青/蓝），避开红色、品红、紫色等易被误认为异常的色相
+		const float hue = 30.f + static_cast<float>(hash % 250u);
+		constexpr float s = 0.62f;
+		constexpr float l = 0.40f;
+		const float c = (1.f - std::abs(2.f * l - 1.f)) * s;
+		const float hp = hue / 60.f;
+		const float x = c * (1.f - std::abs(std::fmod(hp, 2.f) - 1.f));
+		float r = 0.f;
+		float g = 0.f;
+		float b = 0.f;
+		if (hp < 1.f) { r = c; g = x; }
+		else if (hp < 2.f) { r = x; g = c; }
+		else if (hp < 3.f) { g = c; b = x; }
+		else if (hp < 4.f) { g = x; b = c; }
+		else if (hp < 5.f) { r = x; b = c; }
+		else { r = c; b = x; }
+		const float m = l - c / 2.f;
+		return D2D1::ColorF(r + m, g + m, b + m);
 	}
 }
 
@@ -83,6 +165,7 @@ namespace ui
 		{
 			m_asyncScope.spawn(coro::co_with_cancellation(tickFirstLaunch(), m_stopSource.get_token()));
 		}
+		rebuildAppBadges();
 		updateNameLayout();
 	}
 
@@ -94,20 +177,142 @@ namespace ui
 		{
 			return;
 		}
-		// 用实际文本布局测量宽度，判断名称是否超出可用区域（溢出时显示省略号并支持悬浮提示）
+		// 先用不限宽度的布局测量文本自然宽度，判断名称是否会碰到右侧按钮被截断
+		{
+			UniqueComPtr<IDWriteTextLayout> measureLayout;
+			if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(m_name.c_str(),
+			                                                      static_cast<UINT32>(m_name.size()),
+			                                                      app().textFormat().pTitleFormat,
+			                                                      std::numeric_limits<float>::max(),
+			                                                      TITLE_HEIGHT,
+			                                                      &measureLayout)))
+			{
+				DWRITE_TEXT_METRICS textMetrics{};
+				if (SUCCEEDED(measureLayout->GetMetrics(&textMetrics)))
+				{
+					m_bNameOverflow = textMetrics.width > m_nameAreaWidth;
+				}
+			}
+		}
+		// 再按可用宽度创建正式布局：单行不换行 + 尾部省略号，
+		// 避免长名称换行溢出压住状态行（布局级 trimming，不影响全局文本格式）
 		if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(m_name.c_str(),
 		                                                      static_cast<UINT32>(m_name.size()),
 		                                                      app().textFormat().pTitleFormat,
-		                                                      std::numeric_limits<float>::max(),
-		                                                      std::numeric_limits<float>::max(),
+		                                                      m_nameAreaWidth,
+		                                                      TITLE_HEIGHT,
 		                                                      &m_pNameLayout)))
 		{
-			DWRITE_TEXT_METRICS textMetrics{};
-			if (SUCCEEDED(m_pNameLayout->GetMetrics(&textMetrics)))
+			m_pNameLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+			constexpr DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER};
+			m_pNameLayout->SetTrimming(&trimming, app().textFormat().pTitleEllipsisTrimmingSign);
+		}
+	}
+
+	void EnvBoxCard::updateNameTooltip(float ownerX, float ownerY)
+	{
+		if (!m_bNameOverflow || m_name.empty())
+		{
+			return;
+		}
+		const auto& bounds = getBoundsInOwner();
+		const float localX = ownerX - bounds.left;
+		const float localY = ownerY - bounds.top;
+		const auto s = size();
+		bool inNameArea = false;
+		if (m_viewMode == EViewMode::List)
+		{
+			inNameArea = localX >= PADDING + 16.f && localX <= PADDING + 16.f + m_nameAreaWidth &&
+				localY >= 0.f && localY <= s.height;
+		}
+		else
+		{
+			inNameArea = localX >= PADDING && localX <= PADDING + m_nameAreaWidth &&
+				localY >= PADDING && localY <= PADDING + TITLE_HEIGHT;
+		}
+		if (inNameArea)
+		{
+			owner()->setTooltip(m_name, D2D1::Point2F(ownerX, ownerY));
+		}
+	}
+
+	void EnvBoxCard::updateStatusTooltip(float ownerX, float ownerY)
+	{
+		// 仅当运行时间因标识挤占被省略时提示，避免与“名称截断提示”争抢同一行/同一区域
+		if (m_viewMode != EViewMode::Card || !m_bRuntimeClipped || m_runtimeText.empty())
+		{
+			return;
+		}
+		const auto& bounds = getBoundsInOwner();
+		const float localX = ownerX - bounds.left;
+		const float localY = ownerY - bounds.top;
+		constexpr float runtimeTop = PADDING + TITLE_HEIGHT + LINE1_GAP + COUNT_HEIGHT + 2.f;
+		if (localX >= PADDING && localY >= runtimeTop && localY <= runtimeTop + COUNT_HEIGHT)
+		{
+			owner()->setTooltip(m_runtimeText, D2D1::Point2F(ownerX, ownerY));
+		}
+	}
+
+	void EnvBoxCard::rebuildAppBadges()
+	{
+		m_appBadges.clear();
+		if (!m_env)
+		{
+			return;
+		}
+
+		// 每张卡片只显示环境绑定的主应用一个标识：
+		// 进程列表里的辅助进程（crashpad 等）、输入法等子进程都不是用户选择的程序，
+		// 全部不参与标识生成，保证一张卡片只有一个正确的标识
+		const std::wstring appPath(m_env->getAppPath());
+		if (appPath.empty())
+		{
+			return;
+		}
+		const std::wstring stem = program_stem(appPath);
+		if (stem.empty())
+		{
+			return;
+		}
+		const std::wstring key = ascii_lower(stem);
+		// 标识文字与“选择要启动的应用”列表的应用名称保持一致（如 WXWork → 企业微信），
+		// 名称本身是英文的应用仍显示英文；解析不到时回退为 exe 文件名
+		std::wstring display = ui::resolve_app_display_name(appPath);
+		if (display.empty())
+		{
+			display = stem;
+		}
+
+		AppBadge badge;
+		badge.text = truncate_badge_text(display);
+		if (badge.text.empty())
+		{
+			return;
+		}
+		const D2D1::ColorF color = badge_color_from_name(key);
+		badge.colorR = color.r;
+		badge.colorG = color.g;
+		badge.colorB = color.b;
+
+		float textWidth = 0.f;
+		if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(badge.text.c_str(),
+		                                                      static_cast<UINT32>(badge.text.size()),
+		                                                      app().textFormat().pToolBtnFormat,
+		                                                      std::numeric_limits<float>::max(),
+		                                                      BADGE_HEIGHT,
+		                                                      &badge.layout)))
+		{
+			badge.layout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+			DWRITE_TEXT_METRICS metrics{};
+			if (SUCCEEDED(badge.layout->GetMetrics(&metrics)))
 			{
-				m_bNameOverflow = textMetrics.width > m_nameAreaWidth;
+				textWidth = metrics.width;
+				badge.textHeight = metrics.height;
 			}
 		}
+		// 宽度随文字自适应（左右各留内边距），不加粗
+		badge.width = textWidth + BADGE_PAD_X * 2.f;
+		m_appBadges.push_back(std::move(badge));
 	}
 
 	void EnvBoxCard::setBusyTemp()
@@ -352,6 +557,8 @@ namespace ui
 			m_btnRename->setBounds(D2D1::RectF(right - listBtnWidth, btnY, right, btnY + listBtnHeight));
 			right -= listBtnWidth + listBtnGap;
 			m_btnStart->setBounds(D2D1::RectF(right - listBtnWidth, btnY, right, btnY + listBtnHeight));
+			m_nameAreaWidth = std::max(0.f, width - 2.f * PADDING - 3.f * 26.f - 8.f - 16.f);
+			updateNameLayout();
 			return;
 		}
 
@@ -367,15 +574,8 @@ namespace ui
 		// constexpr float startBtnYPos = PADDING + TITLE_HEIGHT + LINE1_GAP + COUNT_HEIGHT + LINE2_GAP;
 		// m_btnStart->setBounds(D2D1::RectF(PADDING, startBtnYPos, PADDING + START_BTN_WIDTH, startBtnYPos + START_BTN_HEIGHT));
 
-		// 名称溢出检测的可用宽度（列表模式才有效，卡片模式不提示）
-		if (m_viewMode == EViewMode::List)
-		{
-			m_nameAreaWidth = std::max(0.f, width - 2.f * PADDING - 3.f * 26.f - 8.f - 16.f);
-		}
-		else
-		{
-			m_nameAreaWidth = 0.f;
-		}
+		// 卡片模式：名称区域到三个竖排按钮左侧（含 10px 间距），超出即尾部省略 + 悬浮提示
+		m_nameAreaWidth = std::max(0.f, width - 2.f * PADDING - BTN_WIDTH - 10.f);
 		updateNameLayout();
 	}
 
@@ -383,20 +583,8 @@ namespace ui
 	{
 		m_isHovered = true;
 		updateWholeWnd();
-
-		// 列表模式下名称溢出（碰到按钮被截断）时，鼠标悬浮在名称区域显示完整名称
-		if (m_viewMode == EViewMode::List && m_bNameOverflow)
-		{
-			const auto& bounds = getBoundsInOwner();
-			const float localX = e.point.x - bounds.left;
-			const float localY = e.point.y - bounds.top;
-			const auto s = size();
-			if (localX >= PADDING + 16.f && localX <= PADDING + 16.f + m_nameAreaWidth &&
-				localY >= 0.f && localY <= s.height)
-			{
-				owner()->setTooltip(m_name, e.point);
-			}
-		}
+		updateNameTooltip(e.point.x, e.point.y);
+		updateStatusTooltip(e.point.x, e.point.y);
 	}
 
 	void EnvBoxCard::onMouseLeave(const MouseEvent& e)
@@ -442,6 +630,10 @@ namespace ui
 	{
 		if (!m_pressing)
 		{
+			// 名称被截断时，鼠标移到名称区域就显示完整名称（不必先移出卡片再移入）
+			updateNameTooltip(e.point.x, e.point.y);
+			// 运行时间被省略时，移到运行时间行显示完整时长
+			updateStatusTooltip(e.point.x, e.point.y);
 			return;
 		}
 		const auto now = std::chrono::steady_clock::now();
@@ -523,16 +715,23 @@ namespace ui
 			solidBrush->SetColor(bOnline ? D2D1::ColorF(0x4caf50) : D2D1::ColorF(0xbdbdbd));
 			renderTarget->FillEllipse(D2D1::Ellipse(D2D1::Point2F(PADDING + 5.f, cy), 4.f, 4.f), solidBrush);
 
-			// 名称垂直居中，与圆点/图标保持同一行
+			// 名称垂直居中，与圆点/图标保持同一行（超宽时尾部省略）
 			constexpr float nameLineHeight = 22.f;
 			const float nameTop = (drawSize.height - nameLineHeight) * 0.5f;
 			solidBrush->SetColor(D2D1::ColorF(0x333333));
-			renderTarget->DrawTextW(m_name.c_str(),
-			                        static_cast<UINT32>(m_name.length()),
-			                        app().textFormat().pTitleFormat,
-			                        D2D1::RectF(PADDING + 16.f, nameTop,
-			                                    drawSize.width - PADDING - 3.f * 26.f - 8.f, nameTop + nameLineHeight),
-			                        solidBrush);
+			if (m_pNameLayout)
+			{
+				renderTarget->DrawTextLayout(D2D1::Point2F(PADDING + 16.f, nameTop), m_pNameLayout, solidBrush);
+			}
+			else
+			{
+				renderTarget->DrawTextW(m_name.c_str(),
+				                        static_cast<UINT32>(m_name.length()),
+				                        app().textFormat().pTitleFormat,
+				                        D2D1::RectF(PADDING + 16.f, nameTop,
+				                                    drawSize.width - PADDING - 3.f * 26.f - 8.f, nameTop + nameLineHeight),
+				                        solidBrush);
+			}
 			m_btnStart->draw(renderCtx);
 			m_btnRename->draw(renderCtx);
 			m_btnClose->draw(renderCtx);
@@ -540,12 +739,20 @@ namespace ui
 		}
 
 		solidBrush->SetColor(D2D1::ColorF(0x333333));
-		renderTarget->DrawTextW(m_name.c_str(),
-		                        static_cast<UINT32>(m_name.length()),
-		                        app().textFormat().pTitleFormat,
-		                        D2D1::RectF(PADDING, PADDING,
-		                                    drawSize.width - PADDING - BTN_WIDTH - 10.f, PADDING + TITLE_HEIGHT),
-		                        solidBrush);
+		if (m_pNameLayout)
+		{
+			// 单行 + 尾部省略：长名称到按钮前自动省略，不再换行压住状态行
+			renderTarget->DrawTextLayout(D2D1::Point2F(PADDING, PADDING), m_pNameLayout, solidBrush);
+		}
+		else
+		{
+			renderTarget->DrawTextW(m_name.c_str(),
+			                        static_cast<UINT32>(m_name.length()),
+			                        app().textFormat().pTitleFormat,
+			                        D2D1::RectF(PADDING, PADDING,
+			                                    drawSize.width - PADDING - BTN_WIDTH - 10.f, PADDING + TITLE_HEIGHT),
+			                        solidBrush);
+		}
 		m_btnStart->draw(renderCtx);
 		m_btnRename->draw(renderCtx);
 		m_btnClose->draw(renderCtx);
@@ -583,18 +790,101 @@ namespace ui
 		                                    drawSize.width - PADDING, countLabelTop + COUNT_HEIGHT),
 		                        solidBrush);
 
-		// 运行时间：灰色，显示在在线/离线下方
+		// 运行时间行：前面是各应用名标识（同程序同色），后面是“已运行 X 分钟”
+		m_bRuntimeClipped = false;
+		m_runtimeText.clear();
+		constexpr float runtimeTop = countLabelTop + COUNT_HEIGHT + 2.f;
+		const float rowRight = drawSize.width - PADDING - BTN_WIDTH - 10.f;
+
+		// 先量运行时间文本的自然行高：标识框以该行高为基准垂直居中，
+		// 保证标识与文本水平对齐；离线（无运行时间）时沿用同一基准
+		float runtimeTextWidth = 0.f;
+		float runtimeLineHeight = 16.f;
+		UniqueComPtr<IDWriteTextLayout> measureLayout;
 		if (bOnline && m_startTime.time_since_epoch().count() != 0)
 		{
-			const std::wstring runtimeText = format_runtime(std::chrono::steady_clock::now() - m_startTime);
-			constexpr float runtimeTop = countLabelTop + COUNT_HEIGHT + 2.f;
+			m_runtimeText = format_runtime(std::chrono::steady_clock::now() - m_startTime);
+			if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(m_runtimeText.c_str(),
+			                                                      static_cast<UINT32>(m_runtimeText.size()),
+			                                                      app().textFormat().pTipsFormat,
+			                                                      std::numeric_limits<float>::max(),
+			                                                      COUNT_HEIGHT,
+			                                                      &measureLayout)))
+			{
+				DWRITE_TEXT_METRICS metrics{};
+				if (SUCCEEDED(measureLayout->GetMetrics(&metrics)))
+				{
+					runtimeTextWidth = metrics.width;
+					runtimeLineHeight = metrics.height;
+				}
+			}
+		}
+
+		// 标识：常显示（离线也显示环境绑定的主应用），同色 1px 边框 + 10% 同色底 +
+		// 同色 11px 文字，宽度随文字自适应，不放粗
+		const float badgeTop = runtimeTop + (runtimeLineHeight - BADGE_HEIGHT) * 0.5f;
+		float x = PADDING;
+		for (const auto& badge : m_appBadges)
+		{
+			if (x + badge.width > rowRight)
+			{
+				break;
+			}
+			// 有运行时间时给它预留最小宽度：放不下就停止继续画标识
+			if (!m_runtimeText.empty() && x + badge.width + BADGE_GAP + RUNTIME_MIN_WIDTH > rowRight)
+			{
+				break;
+			}
+			// 在线时用程序专属色；离线无进程时与运行时间文字同色（灰），不显示彩色标识
+			const float badgeR = bOnline ? badge.colorR : BADGE_OFFLINE_COLOR.r;
+			const float badgeG = bOnline ? badge.colorG : BADGE_OFFLINE_COLOR.g;
+			const float badgeB = bOnline ? badge.colorB : BADGE_OFFLINE_COLOR.b;
+			const D2D1_ROUNDED_RECT badgeRect = D2D1::RoundedRect(
+				D2D1::RectF(x, badgeTop, x + badge.width, badgeTop + BADGE_HEIGHT), 3.f, 3.f);
+			solidBrush->SetColor(D2D1::ColorF(badgeR, badgeG, badgeB, 0.10f));
+			renderTarget->FillRoundedRectangle(badgeRect, solidBrush);
+			solidBrush->SetColor(D2D1::ColorF(badgeR, badgeG, badgeB));
+			renderTarget->DrawRoundedRectangle(badgeRect, solidBrush, 1.f);
+			if (badge.layout)
+			{
+				renderTarget->DrawTextLayout(D2D1::Point2F(x + BADGE_PAD_X,
+				                                           badgeTop + (BADGE_HEIGHT - badge.textHeight) * 0.5f),
+				                             badge.layout.get(), solidBrush);
+			}
+			x += badge.width + BADGE_GAP;
+		}
+
+		// 运行时间：剩余宽度不足时按字符尾部省略，悬停显示完整时长
+		if (!m_runtimeText.empty())
+		{
+			const float avail = std::max(1.f, rowRight - x);
+			m_bRuntimeClipped = runtimeTextWidth > avail;
 			solidBrush->SetColor(D2D1::ColorF(0x9e9e9e));
-			renderTarget->DrawTextW(runtimeText.c_str(),
-			                        static_cast<UINT32>(runtimeText.length()),
-			                        app().textFormat().pTipsFormat,
-			                        D2D1::RectF(PADDING, runtimeTop,
-			                                    drawSize.width - PADDING - BTN_WIDTH - 10.f, runtimeTop + COUNT_HEIGHT),
-			                        solidBrush);
+			const D2D1_RECT_F runtimeRect = D2D1::RectF(x, runtimeTop, rowRight, runtimeTop + COUNT_HEIGHT);
+			if (m_bRuntimeClipped)
+			{
+				UniqueComPtr<IDWriteTextLayout> clippedLayout;
+				if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(m_runtimeText.c_str(),
+				                                                      static_cast<UINT32>(m_runtimeText.size()),
+				                                                      app().textFormat().pTipsFormat,
+				                                                      avail,
+				                                                      COUNT_HEIGHT,
+				                                                      &clippedLayout)))
+				{
+					clippedLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP);
+					constexpr DWRITE_TRIMMING trimming{DWRITE_TRIMMING_GRANULARITY_CHARACTER};
+					clippedLayout->SetTrimming(&trimming, app().textFormat().pTipsEllipsisTrimmingSign);
+					renderTarget->DrawTextLayout(D2D1::Point2F(x, runtimeTop), clippedLayout.get(), solidBrush);
+				}
+			}
+			else
+			{
+				renderTarget->DrawTextW(m_runtimeText.c_str(),
+				                        static_cast<UINT32>(m_runtimeText.length()),
+				                        app().textFormat().pTipsFormat,
+				                        runtimeRect,
+				                        solidBrush);
+			}
 		}
 
 		// m_btnStart->draw(renderCtx);
@@ -899,6 +1189,8 @@ namespace ui
 		co_await sched::transfer_to(app().get_scheduler());
 		m_procCount = count;
 		m_strProcCount = std::format(L"{}", count);
+		// 右侧内容区新增/退出进程时，同步刷新运行时间行前面的应用名标识
+		rebuildAppBadges();
 
 		if (m_env)
 		{

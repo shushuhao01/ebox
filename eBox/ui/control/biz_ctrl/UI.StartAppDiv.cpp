@@ -60,43 +60,71 @@ namespace ui
 		m_btnStart->setBackgroundColor(D2D1::ColorF(0x005a9e), Button::EState::Active);
 		m_btnStart->setTextColor(D2D1::ColorF(D2D1::ColorF::White));
 		m_btnStart->setOnClick([this] { onBtnStartPressed(); });
+
+		// 恢复上次选择的应用路径：重启后路径栏仍常显上次的选择，
+		// 只有点击 x 清除（同时清除注册表记忆）后才不显示
+		const std::wstring last = ui::get_last_app_path();
+		if (!last.empty() && std::filesystem::exists(std::filesystem::path{last}))
+		{
+			m_strExePath = last;
+			// 此时控件宽度未知，先按一行文字高度占位；真实布局在首次 onResize 时按宽度重建
+			m_pathTextHeight = CLEAR_BTN_WIDTH;
+		}
 	}
 
 	void StartAppDiv::onResize(float width, float height)
 	{
+		// 首次拿到有效宽度（或宽度变化）时按实际宽度重建路径布局：
+		// 路径换行后的行高会改变路径区高度，需让宿主重新排版一次
+		if (width > 0.f && (width > m_layoutWidth + 0.5f || width < m_layoutWidth - 0.5f))
+		{
+			const float oldHeight = m_pathTextHeight;
+			rebuildPathLayout(width);
+			if (m_updateBoundsFunc && m_pathTextHeight != oldHeight)
+			{
+				m_updateBoundsFunc();
+				return;
+			}
+		}
+
 		const float clearBtnYPos = (PADDING * 2.f + m_pathTextHeight - CLEAR_BTN_HEIGHT) * 0.5f;
 		m_btnClear->setBounds(D2D1::RectF(width - CLEAR_BTN_WIDTH - PADDING, clearBtnYPos,
 		                                  width - PADDING, clearBtnYPos + CLEAR_BTN_HEIGHT));
 
 		const float startBtnYPos = getPathAreaHeight();
-		m_btnStart->setBounds(D2D1::RectF(0, startBtnYPos, width, height));
+		// 宿主初始给的高度可能是占位值，避免出现上下颠倒的按钮矩形
+		m_btnStart->setBounds(D2D1::RectF(0, startBtnYPos, width, std::max(height, startBtnYPos + 1.f)));
+	}
+
+	void StartAppDiv::rebuildPathLayout(float width)
+	{
+		m_pExePathTextLayout.reset();
+		m_layoutWidth = width;
+		if (m_strExePath.empty())
+		{
+			m_pathTextHeight = 0.f;
+			return;
+		}
+		m_pathTextHeight = CLEAR_BTN_WIDTH;
+		const float textWidth = std::max(1.f, width - PADDING * 2.f - CLEAR_BTN_WIDTH - GAP);
+		if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(m_strExePath.c_str(),
+			static_cast<UINT32>(m_strExePath.size()),
+			app().textFormat().pMainFormat,
+			textWidth, std::numeric_limits<float>::max(),
+			&m_pExePathTextLayout)))
+		{
+			m_pExePathTextLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_CHARACTER);
+			DWRITE_TEXT_METRICS textMetrics;
+			if (SUCCEEDED(m_pExePathTextLayout->GetMetrics(&textMetrics)))
+			{
+				m_pathTextHeight = textMetrics.height;
+			}
+		}
 	}
 
 	void StartAppDiv::updateBoundsWhenPathChanged()
 	{
-		if (m_strExePath.size())
-		{
-			m_pathTextHeight = CLEAR_BTN_WIDTH;
-			m_pExePathTextLayout.reset();
-			if (SUCCEEDED(app().dWriteFactory()->CreateTextLayout(m_strExePath.c_str(),
-				static_cast<UINT32>(m_strExePath.size()),
-				app().textFormat().pMainFormat,
-				size().width - PADDING * 2.f - CLEAR_BTN_WIDTH - GAP, std::numeric_limits<float>::max(),
-				&m_pExePathTextLayout)))
-			{
-				m_pExePathTextLayout->SetWordWrapping(DWRITE_WORD_WRAPPING_CHARACTER);
-				DWRITE_TEXT_METRICS textMetrics;
-				if (SUCCEEDED(m_pExePathTextLayout->GetMetrics(&textMetrics)))
-				{
-					m_pathTextHeight = textMetrics.height;
-				}
-			}
-		}
-		else
-		{
-			m_pathTextHeight = 0.f;
-			m_pExePathTextLayout.reset();
-		}
+		rebuildPathLayout(size().width);
 
 		if (m_updateBoundsFunc)
 		{

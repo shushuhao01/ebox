@@ -714,6 +714,11 @@ namespace ui
 	// 清除上次应用的记忆（配合应用选择器使用）
 	export void clear_last_app_path();
 
+	// 把 exe 完整路径解析为“选择要启动的应用”列表里展示的应用名称
+	// （如 WXWork.exe → 企业微信）；本身是英文名的应用保持英文，
+	// 解析不到时回退为 exe 文件名（去扩展名）。
+	export std::wstring resolve_app_display_name(std::wstring_view exePath);
+
 	// 选择要启动的应用对话框：扫描系统已安装应用（注册表/开始菜单/常见安装目录），
 	// 列表展示序号/名称/路径，分页选择；选择后记忆为"上次使用"并返回该 exe 路径，
 	// 取消/关闭返回 nullopt。内部保留"手动选择文件"入口。

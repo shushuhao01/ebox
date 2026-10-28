@@ -19,6 +19,127 @@ import "sys_defs.hpp";
 import MainApp;
 import biz.License;
 
+// ---- GDI 弹窗统一 DPI 缩放 ----
+// 所有自绘弹窗的布局尺寸一律按 96 DPI 的设计值书写，运行时再用 dlg_s() 换算成
+// 窗口所在显示器的实际像素，避免"字号随 DPI 放大、容器尺寸不变"造成的拥挤/过小。
+namespace ui
+{
+	int dlg_dpi(HWND hwnd)
+	{
+		const HDC hdc = GetDC(hwnd);
+		if (hdc != nullptr)
+		{
+			const int dpi = GetDeviceCaps(hdc, LOGPIXELSY);
+			ReleaseDC(hwnd, hdc);
+			if (dpi > 0)
+			{
+				return dpi;
+			}
+		}
+		return 96;
+	}
+
+	int dlg_s(int value, int dpi)
+	{
+		return MulDiv(value, dpi > 0 ? dpi : 96, 96);
+	}
+
+	// 弹窗所在显示器的工作区尺寸（限制弹窗最大尺寸，避免高缩放/矮屏下超出屏幕）
+	SIZE dlg_work_area(HWND owner)
+	{
+		const HWND hRef = (owner != nullptr && IsWindow(owner)) ? owner : GetForegroundWindow();
+		MONITORINFO mi{sizeof(MONITORINFO)};
+		const HMONITOR hMon = MonitorFromWindow(hRef, MONITOR_DEFAULTTONEAREST);
+		if (hMon != nullptr && GetMonitorInfoW(hMon, &mi))
+		{
+			return SIZE{mi.rcWork.right - mi.rcWork.left, mi.rcWork.bottom - mi.rcWork.top};
+		}
+		return SIZE{GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)};
+	}
+
+	// WM_DPICHANGED 公共处理：按系统建议矩形调整窗口，并返回窗口新的 DPI
+	int dlg_on_dpi_changed(HWND hwnd, LPARAM lParam)
+	{
+		const RECT* suggested = reinterpret_cast<const RECT*>(lParam);
+		if (suggested != nullptr)
+		{
+			SetWindowPos(hwnd, nullptr, suggested->left, suggested->top,
+			             suggested->right - suggested->left, suggested->bottom - suggested->top,
+			             SWP_NOZORDER | SWP_NOACTIVATE);
+		}
+		return dlg_dpi(hwnd);
+	}
+
+	// 按 DPI 缩放设计客户区尺寸，并以当前显示器工作区为上限（极端缩放/矮屏下不至于超出屏幕）
+	SIZE dlg_client_size(HWND owner, int clientW, int clientH)
+	{
+		const int dpi = dlg_dpi(owner);
+		const SIZE work = dlg_work_area(owner);
+		const int w = dlg_s(clientW, dpi);
+		const int h = dlg_s(clientH, dpi);
+		const int maxW = std::max(dlg_s(320, dpi), static_cast<int>(work.cx) - dlg_s(48, dpi));
+		const int maxH = std::max(dlg_s(240, dpi), static_cast<int>(work.cy) - dlg_s(48, dpi));
+		return SIZE{w > maxW ? maxW : w, h > maxH ? maxH : h};
+	}
+
+	// 把客户区精确校正为期望像素尺寸：非客户区由系统按窗口 DPI 缩放，
+	// 直接用系统度量估算会在高 DPI 下偏小，导致底部按钮被裁掉。
+	void dlg_fit_client(HWND hwnd, SIZE client)
+	{
+		RECT rcClient{};
+		RECT rcWnd{};
+		GetClientRect(hwnd, &rcClient);
+		GetWindowRect(hwnd, &rcWnd);
+		const int extraW = (rcWnd.right - rcWnd.left) - (rcClient.right - rcClient.left);
+		const int extraH = (rcWnd.bottom - rcWnd.top) - (rcClient.bottom - rcClient.top);
+		const int w = client.cx + extraW;
+		const int h = client.cy + extraH;
+		if (w != rcWnd.right - rcWnd.left || h != rcWnd.bottom - rcWnd.top)
+		{
+			SetWindowPos(hwnd, nullptr, 0, 0, w, h, SWP_NOZORDER | SWP_NOMOVE | SWP_NOACTIVATE);
+		}
+	}
+
+	// 相对 owner 居中，并保证窗口完整落在 owner 所在显示器的工作区内
+	void dlg_center_on(HWND hwnd, HWND owner)
+	{
+		RECT rc{};
+		RECT rcOwner{};
+		GetWindowRect(hwnd, &rc);
+		const int w = rc.right - rc.left;
+		const int h = rc.bottom - rc.top;
+		int x = 0;
+		int y = 0;
+		if (owner != nullptr && IsWindow(owner) && GetWindowRect(owner, &rcOwner))
+		{
+			x = rcOwner.left + (rcOwner.right - rcOwner.left - w) / 2;
+			y = rcOwner.top + (rcOwner.bottom - rcOwner.top - h) / 2;
+		}
+		MONITORINFO mi{sizeof(MONITORINFO)};
+		const HMONITOR hMon = MonitorFromWindow(owner != nullptr ? owner : hwnd, MONITOR_DEFAULTTONEAREST);
+		if (hMon != nullptr && GetMonitorInfoW(hMon, &mi))
+		{
+			if (x + w > mi.rcWork.right)
+			{
+				x = mi.rcWork.right - w;
+			}
+			if (y + h > mi.rcWork.bottom)
+			{
+				y = mi.rcWork.bottom - h;
+			}
+			if (x < mi.rcWork.left)
+			{
+				x = mi.rcWork.left;
+			}
+			if (y < mi.rcWork.top)
+			{
+				y = mi.rcWork.top;
+			}
+		}
+		SetWindowPos(hwnd, nullptr, x, y, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+	}
+}
+
 namespace
 {
 	constexpr wchar_t INPUT_DLG_CLASS[] = L"eBoxInputDialog";
@@ -31,6 +152,9 @@ namespace
 		std::wstring initial;
 		std::wstring result;
 		HWND hEdit{nullptr};
+		HWND hOk{nullptr};
+		HWND hCancel{nullptr};
+		int dpi{96};
 		bool done{false};
 		bool cancelled{true};
 	};
@@ -46,17 +170,28 @@ namespace
 			data = static_cast<InputDialogData*>(cs->lpCreateParams);
 			SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 
-			const HWND hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", data->initial.c_str(),
-			                                   WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-			                                   16, 20, 344, 26, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_EDIT_ID)),
-			                                   GetModuleHandleW(nullptr), nullptr);
-			data->hEdit = hEdit;
-			CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
-			                192, 64, 78, 32, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_OK_ID)),
-			                GetModuleHandleW(nullptr), nullptr);
-			CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
-			                282, 64, 78, 32, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_CANCEL_ID)),
-			                GetModuleHandleW(nullptr), nullptr);
+			data->dpi = ui::dlg_dpi(hwnd);
+			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
+			data->hEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", data->initial.c_str(),
+			                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
+			                              S(16), S(20), S(344), S(26), hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_EDIT_ID)),
+			                              GetModuleHandleW(nullptr), nullptr);
+			data->hOk = CreateWindowExW(0, L"BUTTON", L"确定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_DEFPUSHBUTTON,
+			                            S(192), S(64), S(78), S(32), hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_OK_ID)),
+			                            GetModuleHandleW(nullptr), nullptr);
+			data->hCancel = CreateWindowExW(0, L"BUTTON", L"取消", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_PUSHBUTTON,
+			                                S(282), S(64), S(78), S(32), hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INPUT_CANCEL_ID)),
+			                                GetModuleHandleW(nullptr), nullptr);
+			return 0;
+		}
+		case WM_DPICHANGED:
+		{
+			data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
+			SetWindowPos(data->hEdit, nullptr, S(16), S(20), S(344), S(26), SWP_NOZORDER | SWP_NOACTIVATE);
+			SetWindowPos(data->hOk, nullptr, S(192), S(64), S(78), S(32), SWP_NOZORDER | SWP_NOACTIVATE);
+			SetWindowPos(data->hCancel, nullptr, S(282), S(64), S(78), S(32), SWP_NOZORDER | SWP_NOACTIVATE);
+			InvalidateRect(hwnd, nullptr, TRUE);
 			return 0;
 		}
 		case WM_COMMAND:
@@ -111,25 +246,17 @@ namespace ui
 		data.initial = initial;
 
 		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		int x = 0;
-		int y = 0;
-		if (hOwner && IsWindow(hOwner))
-		{
-			RECT rc{};
-			GetWindowRect(hOwner, &rc);
-			constexpr int width = 380;
-			constexpr int height = 170;
-			x = rc.left + (rc.right - rc.left - width) / 2;
-			y = rc.top + (rc.bottom - rc.top - height) / 2;
-		}
+		const SIZE clientSize = dlg_client_size(hOwner, 380, 170);
 		const HWND hDlg = CreateWindowExW(0, INPUT_DLG_CLASS, title.data(),
 		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  x, y, 380, 170, hOwner, nullptr,
+		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return std::nullopt;
 		}
+		dlg_fit_client(hDlg, clientSize);
+		dlg_center_on(hDlg, hOwner);
 		ShowWindow(hDlg, SW_SHOW);
 		SetFocus(data.hEdit);
 		SendMessageW(data.hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
@@ -270,6 +397,7 @@ namespace ui
 			// 当前选中的选项下标（0=仅缓存 1=仅聊天记录 2=都清理）。
 			// BS_OWNERDRAW 按钮的 BM_SETCHECK/BM_GETCHECK 不可靠，故用成员变量维护。
 			int selectedRadio{0};
+			int dpi{96};
 			std::wstring envName;
 			bool done{false};
 			bool cancelled{true};
@@ -312,16 +440,17 @@ namespace ui
 		};
 
 		// 现代方形复选框单选（自绘）：选中项在方框内打勾并着色
-		void draw_modern_radio(HDC hdc, const RECT& rc, bool selected, bool hover, bool danger, LPCWSTR text)
+		void draw_modern_radio(HDC hdc, const RECT& rc, bool selected, bool hover, bool danger, LPCWSTR text, int dpi = 96)
 		{
+			const auto S = [dpi](int v) { return ui::dlg_s(v, dpi); };
 			// 选项整行背景（选中时极浅主色，未选中白色）
 			HBRUSH hBg = CreateSolidBrush(selected ? RGB(0xe3, 0xf2, 0xfd) : CLEAN_CARD);
 			FillRect(hdc, &rc, hBg);
 			DeleteObject(hBg);
 
 			// 方框（16x16）左侧垂直居中
-			const int boxSize = 16;
-			const int boxX = rc.left + 6;
+			const int boxSize = S(16);
+			const int boxX = rc.left + S(6);
 			const int boxY = (rc.top + rc.bottom - boxSize) / 2;
 
 			// 未选中：细描边方框；选中：主色实底方框 + 白色对勾
@@ -330,7 +459,7 @@ namespace ui
 			HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
 			HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(hdc, hBoxBg));
 			RECT boxRc{boxX, boxY, boxX + boxSize, boxY + boxSize};
-			RoundRect(hdc, boxRc.left, boxRc.top, boxRc.right, boxRc.bottom, 3, 3);
+			RoundRect(hdc, boxRc.left, boxRc.top, boxRc.right, boxRc.bottom, S(3), S(3));
 			SelectObject(hdc, hOldBr);
 			DeleteObject(hBoxBg);
 			SelectObject(hdc, hOldPen);
@@ -341,9 +470,9 @@ namespace ui
 			{
 				HPEN hCheckPen = CreatePen(PS_SOLID, 2, RGB(0xff, 0xff, 0xff));
 				HPEN hOldCheckPen = static_cast<HPEN>(SelectObject(hdc, hCheckPen));
-				const float cx0 = boxX + 3.5f, cy0 = boxY + 8.5f;
-				const float cx1 = boxX + 6.5f, cy1 = boxY + 11.5f;
-				const float cx2 = boxX + 12.5f, cy2 = boxY + 5.0f;
+				const float cx0 = static_cast<float>(boxX + S(3)), cy0 = static_cast<float>(boxY + S(9));
+				const float cx1 = static_cast<float>(boxX + S(7)), cy1 = static_cast<float>(boxY + S(12));
+				const float cx2 = static_cast<float>(boxX + S(13)), cy2 = static_cast<float>(boxY + S(5));
 				MoveToEx(hdc, static_cast<int>(cx0), static_cast<int>(cy0), nullptr);
 				LineTo(hdc, static_cast<int>(cx1), static_cast<int>(cy1));
 				LineTo(hdc, static_cast<int>(cx2), static_cast<int>(cy2));
@@ -354,8 +483,29 @@ namespace ui
 			SetBkMode(hdc, TRANSPARENT);
 			SetTextColor(hdc, danger ? CLEAN_DANGER : CLEAN_TEXT);
 			RECT textRc = rc;
-			textRc.left = boxX + boxSize + 8;
+			textRc.left = boxX + boxSize + S(8);
 			DrawTextW(hdc, text, -1, &textRc, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+		}
+
+		// 按当前 DPI 摆放清理弹窗的子控件（WM_CREATE 与 WM_DPICHANGED 共用）
+		void clean_dlg_layout(CleanDialogData& data)
+		{
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			const auto place = [](HWND h, int x, int y, int w, int hgt)
+			{
+				if (h)
+				{
+					SetWindowPos(h, nullptr, x, y, w, hgt, SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+			};
+			place(data.hTitle, S(24), S(18), S(CLEAN_DLG_WIDTH - 48), S(26));
+			for (int i = 0; i < 3; ++i)
+			{
+				place(data.hRadio[i], S(24), S(60 + i * 36), S(CLEAN_DLG_WIDTH - 48), S(30));
+			}
+			place(data.hDesc, S(24), S(172), S(CLEAN_DLG_WIDTH - 48), S(116));
+			place(data.hOk, S(CLEAN_DLG_WIDTH - 190), S(CLEAN_DLG_HEIGHT - 52), S(88), S(34));
+			place(data.hCancel, S(CLEAN_DLG_WIDTH - 96), S(CLEAN_DLG_HEIGHT - 52), S(72), S(34));
 		}
 
 		void clean_dlg_update_desc(CleanDialogData& data)
@@ -383,6 +533,7 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 
 				const HMODULE hInst = GetModuleHandleW(nullptr);
+				data->dpi = ui::dlg_dpi(hwnd);
 				// 字体：标题 16px Semibold，选项 13px，描述 11px（小字紧凑显示全部内容）
 				{
 					const HDC hdc = GetDC(hwnd);
@@ -406,7 +557,7 @@ namespace ui
 				// 标题文字（顶部大标题）
 				data->hTitle = CreateWindowExW(0, L"STATIC", L"清理环境数据",
 				                               WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                               24, 18, CLEAN_DLG_WIDTH - 48, 26, hwnd,
+				                               0, 0, 0, 0, hwnd,
 				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(1000)),
 				                               hInst, nullptr);
 				SendMessageW(data->hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontTitle), TRUE);
@@ -417,7 +568,7 @@ namespace ui
 				{
 					data->hRadio[i] = CreateWindowExW(0, L"BUTTON", labels[i].data(),
 					                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | (i == 0 ? WS_GROUP : 0),
-					                                  24, 60 + i * 36, CLEAN_DLG_WIDTH - 48, 30, hwnd,
+					                                  0, 0, 0, 0, hwnd,
 					                                  reinterpret_cast<HMENU>(static_cast<std::intptr_t>(CLEAN_RB_BASE_ID + i)),
 					                                  hInst, nullptr);
 					SendMessageW(data->hRadio[i], WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontBody), TRUE);
@@ -426,7 +577,7 @@ namespace ui
 				// 描述区（无边框，11px 小字，SS_LEFT 自动换行完整显示）
 				data->hDesc = CreateWindowExW(0, L"STATIC", L"",
 				                              WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                              24, 172, CLEAN_DLG_WIDTH - 48, 116, hwnd,
+				                              0, 0, 0, 0, hwnd,
 				                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(1007)),
 				                              hInst, nullptr);
 				SendMessageW(data->hDesc, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontDesc), TRUE);
@@ -434,20 +585,34 @@ namespace ui
 				// 按钮：确认（主色实底）/ 取消（描边）
 				data->hOk = CreateWindowExW(0, L"BUTTON", L"确认清理",
 				                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
-				                            CLEAN_DLG_WIDTH - 190, CLEAN_DLG_HEIGHT - 52, 88, 34, hwnd,
+				                            0, 0, 0, 0, hwnd,
 				                            reinterpret_cast<HMENU>(static_cast<std::intptr_t>(CLEAN_OK_ID)),
 				                            hInst, nullptr);
 				SendMessageW(data->hOk, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontBody), TRUE);
 				data->hCancel = CreateWindowExW(0, L"BUTTON", L"取消",
 				                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                                CLEAN_DLG_WIDTH - 96, CLEAN_DLG_HEIGHT - 52, 72, 34, hwnd,
+				                                0, 0, 0, 0, hwnd,
 				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(CLEAN_CANCEL_ID)),
 				                                hInst, nullptr);
 				SendMessageW(data->hCancel, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontBody), TRUE);
 
+				clean_dlg_layout(*data);
 				clean_dlg_update_desc(*data);
 				return 0;
 			}
+			case WM_DPICHANGED:
+				data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+				clean_dlg_layout(*data);
+				InvalidateRect(hwnd, nullptr, TRUE);
+				return 0;
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					clean_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_ERASEBKGND:
 				return 1; // 防止闪烁，背景在 WM_PAINT 统一绘制
 			case WM_PAINT:
@@ -499,7 +664,7 @@ namespace ui
 					// 文本从控件标题取
 					wchar_t buf[64]{};
 					GetWindowTextW(dis->hwndItem, buf, 64);
-					draw_modern_radio(dis->hDC, rc, selected, hover, danger, buf);
+					draw_modern_radio(dis->hDC, rc, selected, hover, danger, buf, data->dpi);
 					return TRUE;
 				}
 				if (id == CLEAN_OK_ID || id == CLEAN_CANCEL_ID)
@@ -515,7 +680,8 @@ namespace ui
 					HPEN hPen = CreatePen(PS_SOLID, 1, isOk ? CLEAN_ACCENT : CLEAN_BORDER);
 					HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(dis->hDC, hBtn));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(dis->hDC, hPen));
-					RoundRect(dis->hDC, rc.left, rc.top, rc.right, rc.bottom, 6, 6);
+					const int radius = ui::dlg_s(6, data->dpi);
+					RoundRect(dis->hDC, rc.left, rc.top, rc.right, rc.bottom, radius, radius);
 					SelectObject(dis->hDC, hOldBr);
 					DeleteObject(hBtn);
 					SelectObject(dis->hDC, hOldPen);
@@ -608,31 +774,21 @@ namespace ui
 		CleanDialogData data;
 		data.envName = envName;
 
-		// CreateWindowExW 的 nWidth/nHeight 是整个窗口（含标题栏/边框）尺寸，
-		// 客户区才是控件坐标的参照。为保证客户区达到设计高度（按钮不被裁剪），
-		// 创建时按标题栏+边框高度补偿。
-		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndWidth = CLEAN_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndHeight = CLEAN_DLG_HEIGHT + titleBarHeight;
-
+		// 客户区按 DPI 放大（设计值 480x360），窗口客户区在创建后再精确校正，
+		// 避免高 DPI 下标题栏变高、内容被裁掉。
 		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		int x = 0;
-		int y = 0;
-		if (hOwner && IsWindow(hOwner))
-		{
-			RECT rc{};
-			GetWindowRect(hOwner, &rc);
-			x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
-			y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
-		}
+		const SIZE clientSize = dlg_client_size(hOwner, CLEAN_DLG_WIDTH, CLEAN_DLG_HEIGHT);
+
 		const HWND hDlg = CreateWindowExW(0, CLEAN_DLG_CLASS, std::format(L"清理环境数据 - {}", envName).c_str(),
 		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return std::nullopt;
 		}
+		dlg_fit_client(hDlg, clientSize);
+		dlg_center_on(hDlg, hOwner);
 		ShowWindow(hDlg, SW_SHOW);
 		SetFocus(data.hRadio[0]);
 
@@ -777,6 +933,7 @@ namespace ui
 			RECT rcAgreeUA{};           // 用户协议链接命中区域
 			RECT rcAgreeConj{};         // 连词「和」显示区域
 			RECT rcAgreePA{};           // 隐私协议链接命中区域
+			int dpi{96};                // 窗口 DPI（布局与自绘坐标按此缩放）
 			std::shared_ptr<ActShared> actShared; // 与工作线程共享的激活结果块
 		};
 
@@ -795,10 +952,11 @@ namespace ui
 		constexpr wchar_t AGREE_CONJ[]    = L"和";
 
 		// 计算同意勾选框、用户协议链接、连词「和」、隐私协议链接的命中区域（随 DPI 计算文字宽度）
-		void activate_agree_rects(HWND hwnd, HFONT hFont, RECT& box, RECT& linkUA, RECT& conj, RECT& linkPA)
+		void activate_agree_rects(HWND hwnd, HFONT hFont, int dpi, RECT& box, RECT& linkUA, RECT& conj, RECT& linkPA)
 		{
-			box = RECT{AGREE_BOX_LEFT, AGREE_BOX_TOP,
-			           AGREE_BOX_LEFT + AGREE_BOX_SIZE, AGREE_BOX_TOP + AGREE_BOX_SIZE};
+			const auto S = [dpi](int v) { return ui::dlg_s(v, dpi); };
+			box = RECT{S(AGREE_BOX_LEFT), S(AGREE_BOX_TOP),
+			           S(AGREE_BOX_LEFT + AGREE_BOX_SIZE), S(AGREE_BOX_TOP + AGREE_BOX_SIZE)};
 			HDC hdc = GetDC(hwnd);
 			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, hFont));
 			SIZE lab{}; GetTextExtentPoint32W(hdc, AGREE_LABEL, static_cast<int>(wcslen(AGREE_LABEL)), &lab);
@@ -808,11 +966,11 @@ namespace ui
 			SelectObject(hdc, hOld);
 			ReleaseDC(hwnd, hdc);
 
-			const int top = box.top + 2;
-			const int labX = box.right + 10;
-			const int uaX = labX + lab.cx + 6;
-			const int cjX = uaX + ua.cx + 5;
-			const int paX = cjX + cj.cx + 5;
+			const int top = box.top + S(2);
+			const int labX = box.right + S(10);
+			const int uaX = labX + lab.cx + S(6);
+			const int cjX = uaX + ua.cx + S(5);
+			const int paX = cjX + cj.cx + S(5);
 			linkUA = RECT{uaX, top, uaX + ua.cx, top + ua.cy};
 			conj   = RECT{cjX, top, cjX + cj.cx, top + cj.cy};
 			linkPA = RECT{paX, top, paX + pa.cx, top + pa.cy};
@@ -1036,6 +1194,7 @@ namespace ui
 			HFONT hFontBody{nullptr};
 			HFONT hFontSub{nullptr};         // 副标题（更小字号）
 			int bodyLineHeight{0};           // 正文字体的单行高度（用于关键词标红的逐行排版）
+			int dpi{96};                     // 窗口 DPI（布局与自绘坐标按此缩放）
 			bool* pAgreed{nullptr};        // 同意后回写给激活弹窗的勾选状态
 			const wchar_t* title{nullptr}; // 弹窗标题（用户协议 / 隐私协议）
 			const wchar_t* text{nullptr};  // 要展示的富文本正文
@@ -1086,9 +1245,10 @@ namespace ui
 		int agreement_layout_body(HDC hdc, const AgreementDialogData* data,
 		                          const std::wstring& text, int startY, bool draw)
 		{
+			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
 			const int lineH = data->bodyLineHeight;
-			const int destX = AGREE_BODY_LEFT;
-			const int bodyW = AGREE_BODY_RIGHT - AGREE_BODY_LEFT;
+			const int destX = S(AGREE_BODY_LEFT);
+			const int bodyW = S(AGREE_BODY_RIGHT);
 			const std::vector<AgreementSeg> segs = agreement_split_keywords(text);
 			int x = destX;
 			int curY = startY;
@@ -1149,13 +1309,14 @@ namespace ui
 		int agreement_render(HDC hdc, const AgreementDialogData* data,
 		                     const std::vector<AgreementLine>& lines, int startY, bool draw)
 		{
-			const int bodyW = AGREE_BODY_RIGHT - AGREE_BODY_LEFT;
+			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
+			const int bodyW = S(AGREE_BODY_RIGHT) - S(AGREE_BODY_LEFT);
 			int y = startY;
 			for (const auto& blk : lines)
 			{
 				if (blk.text.empty())
 				{
-					y += AGREE_PARAGRAPH_GAP;
+					y += S(AGREE_PARAGRAPH_GAP);
 					continue;
 				}
 				if (blk.heading)
@@ -1168,17 +1329,17 @@ namespace ui
 					if (draw)
 					{
 						SetTextColor(hdc, AGREE_TITLE_COLOR);
-						RECT dr{AGREE_BODY_LEFT, y, AGREE_BODY_RIGHT, y + h};
+						RECT dr{S(AGREE_BODY_LEFT), y, S(AGREE_BODY_RIGHT), y + h};
 						DrawTextW(hdc, blk.text.c_str(), -1, &dr,
 						          DT_NOPREFIX | DT_LEFT | DT_SINGLELINE);
 					}
 					SelectObject(hdc, hOld);
-					y += h + AGREE_HEAD_SPACE;
+					y += h + S(AGREE_HEAD_SPACE);
 				}
 				else
 				{
 					HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontBody));
-					y += agreement_layout_body(hdc, data, blk.text, y, draw) + AGREE_LINE_GAP;
+					y += agreement_layout_body(hdc, data, blk.text, y, draw) + S(AGREE_LINE_GAP);
 					SelectObject(hdc, hOld);
 				}
 			}
@@ -1188,11 +1349,129 @@ namespace ui
 		// 在裁剪区域内自绘协议文本，并按滚动偏移上下移动
 		void agreement_draw_text(HDC hdc, const AgreementDialogData* data)
 		{
+			const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
 			const int save = SaveDC(hdc);
-			IntersectClipRect(hdc, AGREE_BODY_LEFT, AGREE_BODY_TOP, AGREE_BODY_RIGHT, AGREE_BODY_BOTTOM);
+			IntersectClipRect(hdc, S(AGREE_BODY_LEFT), S(AGREE_BODY_TOP), S(AGREE_BODY_RIGHT), S(AGREE_BODY_BOTTOM));
 			SetBkMode(hdc, TRANSPARENT);
-			agreement_render(hdc, data, data->lines, AGREE_BODY_TOP - data->scrollY, true);
+			agreement_render(hdc, data, data->lines, S(AGREE_BODY_TOP) - data->scrollY, true);
 			RestoreDC(hdc, save);
+		}
+
+		// 按窗口 DPI 重建协议弹窗字体（首次创建与跨屏 DPI 变化共用）
+		void agreement_dlg_create_fonts(AgreementDialogData& data)
+		{
+			if (data.hFontTitle)
+			{
+				DeleteObject(data.hFontTitle);
+				data.hFontTitle = nullptr;
+			}
+			if (data.hFontHead)
+			{
+				DeleteObject(data.hFontHead);
+				data.hFontHead = nullptr;
+			}
+			if (data.hFontBody)
+			{
+				DeleteObject(data.hFontBody);
+				data.hFontBody = nullptr;
+			}
+			if (data.hFontSub)
+			{
+				DeleteObject(data.hFontSub);
+				data.hFontSub = nullptr;
+			}
+
+			const int titleSize = -MulDiv(17, data.dpi, 72);
+			const int headSize = -MulDiv(14, data.dpi, 72);
+			const int bodySize = -MulDiv(12, data.dpi, 72);
+			const int subSize = -MulDiv(11, data.dpi, 72);
+			data.hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data.hFontHead = CreateFontW(headSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data.hFontBody = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+			data.hFontSub = CreateFontW(subSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                            DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                            CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
+
+			// 取正文字体的单行高度（逐行排版标红时使用，保证内容高度测量与绘制一致）
+			HDC hMeasure = GetDC(data.hwnd);
+			if (hMeasure)
+			{
+				HFONT hOldBody = static_cast<HFONT>(SelectObject(hMeasure, data.hFontBody));
+				TEXTMETRICW tm{};
+				GetTextMetricsW(hMeasure, &tm);
+				data.bodyLineHeight = tm.tmHeight;
+				SelectObject(hMeasure, hOldBody);
+				ReleaseDC(data.hwnd, hMeasure);
+			}
+
+			if (data.hTitle)
+			{
+				SendMessageW(data.hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontTitle), TRUE);
+			}
+			if (data.hSub)
+			{
+				SendMessageW(data.hSub, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSub), TRUE);
+			}
+			if (data.hClose)
+			{
+				SendMessageW(data.hClose, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontBody), TRUE);
+			}
+		}
+
+		// 按窗口 DPI 摆放子控件（首次创建与跨屏 DPI 变化共用）
+		void agreement_dlg_layout(AgreementDialogData& data)
+		{
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			if (data.hTitle)
+			{
+				SetWindowPos(data.hTitle, nullptr, S(28), S(22), S(AGREEMENT_DLG_WIDTH - 56), S(30),
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hSub)
+			{
+				SetWindowPos(data.hSub, nullptr, S(28), S(56), S(AGREEMENT_DLG_WIDTH - 56), S(20),
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hClose)
+			{
+				SetWindowPos(data.hClose, nullptr,
+				             S(AGREEMENT_DLG_WIDTH - 172), S(AGREEMENT_DLG_HEIGHT - 46), S(148), S(36),
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+		}
+
+		// 重建字体 → 重测正文高度 → 重排子控件 → 夹紧滚动偏移
+		void agreement_dlg_recalc(AgreementDialogData& data)
+		{
+			agreement_dlg_create_fonts(data);
+			if (data.text)
+			{
+				data.lines = build_agreement_lines(data.text);
+			}
+			HDC hMeasure = GetDC(data.hwnd);
+			if (hMeasure)
+			{
+				data.contentHeight = agreement_render(hMeasure, &data, data.lines, 0, false);
+				ReleaseDC(data.hwnd, hMeasure);
+			}
+			agreement_dlg_layout(data);
+
+			const int bodyH = ui::dlg_s(AGREE_BODY_BOTTOM - AGREE_BODY_TOP, data.dpi);
+			const int maxScroll = data.contentHeight > bodyH ? data.contentHeight - bodyH : 0;
+			if (data.scrollY > maxScroll)
+			{
+				data.scrollY = maxScroll;
+			}
+			if (data.scrollY < 0)
+			{
+				data.scrollY = 0;
+			}
 		}
 
 		LRESULT CALLBACK agreement_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1208,70 +1487,57 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 
 				const HINSTANCE hInst = GetModuleHandleW(nullptr);
-			const HDC hdc = GetDC(hwnd);
-			const int titleSize = -MulDiv(17, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-			const int headSize = -MulDiv(14, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-			const int bodySize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-			const int subSize = -MulDiv(11, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-			ReleaseDC(hwnd, hdc);
-			data->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-			                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-			                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-			data->hFontHead = CreateFontW(headSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-			data->hFontBody = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-			data->hFontSub = CreateFontW(subSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Microsoft YaHei");
-			// 取正文字体的单行高度（逐行排版标红时使用，保证内容高度测量与绘制一致）
-			{
-				HDC hMeasure = GetDC(hwnd);
-				HFONT hOldBody = static_cast<HFONT>(SelectObject(hMeasure, data->hFontBody));
-				TEXTMETRICW tm{};
-				GetTextMetricsW(hMeasure, &tm);
-				data->bodyLineHeight = tm.tmHeight;
-				SelectObject(hMeasure, hOldBody);
-				ReleaseDC(hwnd, hMeasure);
-			}
+				data->dpi = ui::dlg_dpi(hwnd);
 
 				data->hTitle = CreateWindowExW(0, L"STATIC", data->title ? data->title : L"用户协议",
 				                               WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                               28, 22, AGREEMENT_DLG_WIDTH - 56, 30, hwnd,
+				                               0, 0, 0, 0, hwnd,
 				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3010)),
 				                               hInst, nullptr);
-				SendMessageW(data->hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontTitle), TRUE);
 				data->hSub = CreateWindowExW(0, L"STATIC", L"请仔细阅读以下内容，同意后勾选“我已阅读并同意”即可继续激活",
 				                             WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                             28, 56, AGREEMENT_DLG_WIDTH - 56, 20, hwnd,
+				                             0, 0, 0, 0, hwnd,
 				                             reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3011)),
 				                             hInst, nullptr);
-				SendMessageW(data->hSub, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSub), TRUE);
 
 				// 正文：改为自绘滚动文本，完全移除系统 EDIT 控件
 				// （多行只读 EDIT 在滚动时因主题/自定义背景刷 + ClearType 会产生严重的重影与文字折叠）
-				if (data->text)
-				{
-					data->lines = build_agreement_lines(data->text);
-					const HDC hMeasure = GetDC(hwnd);
-					data->contentHeight = agreement_render(hMeasure, data, data->lines, 0, false);
-					ReleaseDC(hwnd, hMeasure);
-				}
-
 				data->hClose = CreateWindowExW(0, L"BUTTON", L"我已知晓并同意",
 				                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                               AGREEMENT_DLG_WIDTH - 172, AGREEMENT_DLG_HEIGHT - 46, 148, 36, hwnd,
+				                               0, 0, 0, 0, hwnd,
 				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(AGREEMENT_CLOSE_ID)),
 				                               hInst, nullptr);
-				SendMessageW(data->hClose, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontBody), TRUE);
+
+				agreement_dlg_recalc(*data);
 				return 0;
 			}
+			case WM_DPICHANGED:
+			{
+				if (data)
+				{
+					data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					agreement_dlg_recalc(*data);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					agreement_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_ERASEBKGND:
 				return 1;
 			case WM_PAINT:
 			{
+				if (!data)
+				{
+					break;
+				}
+				const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
 				PAINTSTRUCT ps{};
 				HDC hdc = BeginPaint(hwnd, &ps);
 				RECT rc{}; GetClientRect(hwnd, &rc);
@@ -1283,9 +1549,9 @@ namespace ui
 				// 标题与正文分隔线 + 正文与操作区底部分隔线
 				HPEN hLine = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
 				HPEN hPrevLine = static_cast<HPEN>(SelectObject(hdc, hLine));
-				MoveToEx(hdc, 24, 82, nullptr); LineTo(hdc, rc.right - 24, 82);
-				MoveToEx(hdc, 24, AGREEMENT_DLG_HEIGHT - 52, nullptr);
-				LineTo(hdc, rc.right - 24, AGREEMENT_DLG_HEIGHT - 52);
+				MoveToEx(hdc, S(24), S(82), nullptr); LineTo(hdc, rc.right - S(24), S(82));
+				MoveToEx(hdc, S(24), S(AGREEMENT_DLG_HEIGHT - 52), nullptr);
+				LineTo(hdc, rc.right - S(24), S(AGREEMENT_DLG_HEIGHT - 52));
 				SelectObject(hdc, hPrevLine); // 还原为 hLine
 				SelectObject(hdc, hOldPen);   // 还原为原始画笔
 				DeleteObject(hLine);
@@ -1298,21 +1564,23 @@ namespace ui
 				}
 
 				// 自绘滚动条（仅在内容超过可视区时显示）
-				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int bodyTop = S(AGREE_BODY_TOP);
+				const int bodyBottom = S(AGREE_BODY_BOTTOM);
+				const int bodyH = bodyBottom - bodyTop;
 				if (data->contentHeight > bodyH)
 				{
 					const int maxScroll = data->contentHeight - bodyH;
 					// 轨道背景
-					RECT track{AGREE_SB_LEFT, AGREE_BODY_TOP, AGREE_SB_LEFT + AGREE_SB_WIDTH, AGREE_BODY_BOTTOM};
-					draw_round_rect(hdc, track, 4, RGB(0xec, 0xf1, 0xf8), RGB(0xe4, 0xea, 0xf2), 1);
+					RECT track{S(AGREE_SB_LEFT), bodyTop, S(AGREE_SB_LEFT + AGREE_SB_WIDTH), bodyBottom};
+					draw_round_rect(hdc, track, S(4), RGB(0xec, 0xf1, 0xf8), RGB(0xe4, 0xea, 0xf2), 1);
 					// 滑块
 					const int trackH = bodyH;
-					const int thumbH = std::max(30, trackH * bodyH / data->contentHeight);
+					const int thumbH = std::max(S(30), trackH * bodyH / data->contentHeight);
 					const int maxTop = trackH - thumbH;
 					int thumbTop = track.top + (maxTop > 0 ? (trackH - thumbH) * data->scrollY / maxScroll : 0);
 					if (thumbTop < track.top) thumbTop = track.top;
 					RECT thumb{track.left, thumbTop, track.right, thumbTop + thumbH};
-					draw_round_rect(hdc, thumb, 4, RGB(0x9c, 0xb8, 0xd8), RGB(0x9c, 0xb8, 0xd8), 0);
+					draw_round_rect(hdc, thumb, S(4), RGB(0x9c, 0xb8, 0xd8), RGB(0x9c, 0xb8, 0xd8), 0);
 				}
 				EndPaint(hwnd, &ps);
 				return 0;
@@ -1377,12 +1645,12 @@ namespace ui
 				return 0;
 			case WM_MOUSEWHEEL:
 			{
-				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int bodyH = ui::dlg_s(AGREE_BODY_BOTTOM - AGREE_BODY_TOP, data->dpi);
 				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
 				if (maxScroll > 0)
 				{
 					const int delta = GET_WHEEL_DELTA_WPARAM(wParam);
-					const int value = data->scrollY - delta / WHEEL_DELTA * AGREE_SCROLL_STEP;
+					const int value = data->scrollY - delta / WHEEL_DELTA * ui::dlg_s(AGREE_SCROLL_STEP, data->dpi);
 					data->scrollY = value < 0 ? 0 : (value > maxScroll ? maxScroll : value);
 					InvalidateRect(hwnd, nullptr, TRUE);
 				}
@@ -1390,7 +1658,7 @@ namespace ui
 			}
 			case WM_KEYDOWN:
 			{
-				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int bodyH = ui::dlg_s(AGREE_BODY_BOTTOM - AGREE_BODY_TOP, data->dpi);
 				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
 				if (maxScroll > 0)
 				{
@@ -1398,10 +1666,10 @@ namespace ui
 					switch (LOWORD(wParam))
 					{
 					case VK_UP:
-						v -= AGREE_SCROLL_STEP;
+						v -= ui::dlg_s(AGREE_SCROLL_STEP, data->dpi);
 						break;
 					case VK_DOWN:
-						v += AGREE_SCROLL_STEP;
+						v += ui::dlg_s(AGREE_SCROLL_STEP, data->dpi);
 						break;
 					case VK_PRIOR:
 						v -= bodyH;
@@ -1426,16 +1694,20 @@ namespace ui
 			case WM_LBUTTONDOWN:
 			{
 				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-				const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+				const int bodyTop = ui::dlg_s(AGREE_BODY_TOP, data->dpi);
+				const int bodyBottom = ui::dlg_s(AGREE_BODY_BOTTOM, data->dpi);
+				const int sbLeft = ui::dlg_s(AGREE_SB_LEFT, data->dpi);
+				const int sbRight = ui::dlg_s(AGREE_SB_LEFT + AGREE_SB_WIDTH, data->dpi);
+				const int bodyH = bodyBottom - bodyTop;
 				const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
-				if (maxScroll > 0 && pt.x >= AGREE_SB_LEFT && pt.x <= AGREE_SB_LEFT + AGREE_SB_WIDTH &&
-				    pt.y >= AGREE_BODY_TOP && pt.y <= AGREE_BODY_BOTTOM)
+				if (maxScroll > 0 && pt.x >= sbLeft && pt.x <= sbRight &&
+				    pt.y >= bodyTop && pt.y <= bodyBottom)
 				{
 					const int trackH = bodyH;
-					const int thumbH = std::max(30, trackH * bodyH / data->contentHeight);
+					const int thumbH = std::max(ui::dlg_s(30, data->dpi), trackH * bodyH / data->contentHeight);
 					const int maxTop = trackH - thumbH;
-					int curTop = AGREE_BODY_TOP + (maxTop > 0 ? (trackH - thumbH) * data->scrollY / maxScroll : 0);
-					if (curTop < AGREE_BODY_TOP) curTop = AGREE_BODY_TOP;
+					int curTop = bodyTop + (maxTop > 0 ? (trackH - thumbH) * data->scrollY / maxScroll : 0);
+					if (curTop < bodyTop) curTop = bodyTop;
 					if (pt.y >= curTop && pt.y <= curTop + thumbH)
 					{
 						// 按住滑块拖动
@@ -1464,17 +1736,18 @@ namespace ui
 				if (data->scrollDragging)
 				{
 					const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
-					const int bodyH = AGREE_BODY_BOTTOM - AGREE_BODY_TOP;
+					const int bodyTop = ui::dlg_s(AGREE_BODY_TOP, data->dpi);
+					const int bodyH = ui::dlg_s(AGREE_BODY_BOTTOM - AGREE_BODY_TOP, data->dpi);
 					const int maxScroll = data->contentHeight > bodyH ? data->contentHeight - bodyH : 0;
 					const int trackH = bodyH;
-					const int thumbH = std::max(30, trackH * bodyH / data->contentHeight);
+					const int thumbH = std::max(ui::dlg_s(30, data->dpi), trackH * bodyH / data->contentHeight);
 					const int maxTop = trackH - thumbH;
-					if (maxTop > 0)
+					if (maxTop > 0 && maxScroll > 0)
 					{
 						int newThumbTop = pt.y - data->dragGrabY;
-						if (newThumbTop < AGREE_BODY_TOP) newThumbTop = AGREE_BODY_TOP;
-						if (newThumbTop > AGREE_BODY_TOP + maxTop) newThumbTop = AGREE_BODY_TOP + maxTop;
-						data->scrollY = (newThumbTop - AGREE_BODY_TOP) * maxScroll / maxTop;
+						if (newThumbTop < bodyTop) newThumbTop = bodyTop;
+						if (newThumbTop > bodyTop + maxTop) newThumbTop = bodyTop + maxTop;
+						data->scrollY = (newThumbTop - bodyTop) * maxScroll / maxTop;
 						InvalidateRect(hwnd, nullptr, TRUE);
 					}
 				}
@@ -1537,27 +1810,18 @@ namespace ui
 			data.pAgreed = pAgreed;
 			data.title = title;
 			data.text = text;
-			const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-			const int dlgWndWidth = AGREEMENT_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-			const int dlgWndHeight = AGREEMENT_DLG_HEIGHT + titleBarHeight;
+			const SIZE clientSize = ui::dlg_client_size(hOwner, AGREEMENT_DLG_WIDTH, AGREEMENT_DLG_HEIGHT);
 
-			int x = 0;
-			int y = 0;
-			if (hOwner && IsWindow(hOwner))
-			{
-				RECT rc{};
-				GetWindowRect(hOwner, &rc);
-				x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
-				y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
-			}
 			const HWND hDlg = CreateWindowExW(0, AGREEMENT_DLG_CLASS, (title ? title : L"用户协议"),
 			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN,
-			                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+			                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 			                                  GetModuleHandleW(nullptr), &data);
 			if (!hDlg)
 			{
 				return;
 			}
+			ui::dlg_fit_client(hDlg, clientSize);
+			ui::dlg_center_on(hDlg, hOwner);
 			ShowWindow(hDlg, SW_SHOW);
 			UpdateWindow(hDlg);
 			SetFocus(hDlg); // 让弹窗接收鼠标滚轮与键盘方向键
@@ -1605,6 +1869,93 @@ namespace ui
 			InvalidateRect(data.hError, nullptr, TRUE);
 		}
 
+		// 按窗口 DPI 重建字体（首次创建与跨屏 DPI 变化共用）
+		void activate_dlg_create_fonts(ActivateDialogData& data)
+		{
+			if (data.hFontTitle)
+			{
+				DeleteObject(data.hFontTitle);
+			}
+			if (data.hFontBody)
+			{
+				DeleteObject(data.hFontBody);
+			}
+			if (data.hFontSmall)
+			{
+				DeleteObject(data.hFontSmall);
+			}
+			if (data.hFontHint)
+			{
+				DeleteObject(data.hFontHint);
+			}
+			const int titleSize = -MulDiv(19, data.dpi, 72);
+			const int bodySize = -MulDiv(14, data.dpi, 72);
+			const int smallSize = -MulDiv(12, data.dpi, 72);
+			const int hintSize = -MulDiv(9, data.dpi, 72);
+			data.hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontBody = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontSmall = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontHint = CreateFontW(hintSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			if (data.hTitle)
+			{
+				SendMessageW(data.hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontTitle), TRUE);
+			}
+			if (data.hSub)
+			{
+				SendMessageW(data.hSub, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+			if (data.hEdit)
+			{
+				SendMessageW(data.hEdit, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontBody), TRUE);
+			}
+			if (data.hError)
+			{
+				SendMessageW(data.hError, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontHint), TRUE);
+			}
+			if (data.hBuy)
+			{
+				SendMessageW(data.hBuy, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+			if (data.hOk)
+			{
+				SendMessageW(data.hOk, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+			if (data.hCancel)
+			{
+				SendMessageW(data.hCancel, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+		}
+
+		// 按当前 DPI 摆放激活弹窗的子控件（WM_CREATE 与 WM_DPICHANGED 共用）
+		void activate_dlg_layout(ActivateDialogData& data)
+		{
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			const auto place = [](HWND h, int x, int y, int w, int hgt)
+			{
+				if (h)
+				{
+					SetWindowPos(h, nullptr, x, y, w, hgt, SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+			};
+			place(data.hTitle, S(58), S(22), S(ACT_DLG_WIDTH - 90), S(30));
+			place(data.hSub, S(58), S(56), S(ACT_DLG_WIDTH - 90), S(20));
+			place(data.hEdit, S(40), S(102), S(ACT_DLG_WIDTH - 80), S(38));
+			place(data.hError, S(40), S(150), S(ACT_DLG_WIDTH - 80), S(28));
+			place(data.hBuy, S(24), S(ACT_DLG_HEIGHT - 56), S(100), S(38));
+			place(data.hOk, S(ACT_DLG_WIDTH - 200), S(ACT_DLG_HEIGHT - 56), S(110), S(38));
+			place(data.hCancel, S(ACT_DLG_WIDTH - 88), S(ACT_DLG_HEIGHT - 56), S(74), S(38));
+			activate_agree_rects(data.hwnd, data.hFontHint, data.dpi, data.rcAgreeBox, data.rcAgreeUA,
+			                     data.rcAgreeConj, data.rcAgreePA);
+		}
+
 		LRESULT CALLBACK activate_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
 			auto* data = reinterpret_cast<ActivateDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -1618,91 +1969,79 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 
 				const HMODULE hInst = GetModuleHandleW(nullptr);
-				{
-					const HDC hdc = GetDC(hwnd);
-					const int titleSize = -MulDiv(19, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int bodySize = -MulDiv(14, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int smallSize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int hintSize = -MulDiv(9, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					ReleaseDC(hwnd, hdc);
-					data->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-					                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontBody = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontSmall = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontHint = CreateFontW(hintSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				}
+				data->dpi = ui::dlg_dpi(hwnd);
 
 				data->hTitle = CreateWindowExW(0, L"STATIC", L"软件激活",
 				                               WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                               58, 22, ACT_DLG_WIDTH - 90, 30, hwnd,
+				                               0, 0, 0, 0, hwnd,
 				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3000)),
 				                               hInst, nullptr);
-				SendMessageW(data->hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontTitle), TRUE);
 
 				data->hSub = CreateWindowExW(0, L"STATIC", L"请输入激活码激活本软件",
 				                             WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                             58, 56, ACT_DLG_WIDTH - 90, 20, hwnd,
+				                             0, 0, 0, 0, hwnd,
 				                             reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3004)),
 				                             hInst, nullptr);
-				SendMessageW(data->hSub, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
 
 				// 输入框：无自带边框（圆角面板由 WM_PAINT 绘制），白底深色文字
 				data->hEdit = CreateWindowExW(0, L"EDIT", L"",
 				                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-				                              40, 102, ACT_DLG_WIDTH - 80, 38, hwnd,
+				                              0, 0, 0, 0, hwnd,
 				                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(ACT_EDIT_ID)),
 				                              hInst, nullptr);
-				SendMessageW(data->hEdit, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontBody), TRUE);
 
 				// 提示行：贴近输入框下方；默认灰色提示词，激活失败时切换红色错误提示（互斥显示）
 				data->hError = CreateWindowExW(0, L"STATIC", ACT_HINT_TEXT.data(),
 				                               WS_CHILD | WS_VISIBLE | SS_LEFT,
-				                               40, 150, ACT_DLG_WIDTH - 80, 28, hwnd,
+				                               0, 0, 0, 0, hwnd,
 				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(3005)),
 				                               hInst, nullptr);
-				SendMessageW(data->hError, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontHint), TRUE);
 				// 提示行用不透明底刷：切换灰色提示词/红色错误提示时先清底，保证只显示当前提示词
 				data->hHintBg = CreateSolidBrush(RGB(0xf7, 0xfa, 0xfe));
 
 				// 按钮行：购买激活码（左）· 激 活 · 取 消（右）
 				data->hBuy = CreateWindowExW(0, L"BUTTON", L"购买激活码",
 				                             WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                             24, ACT_DLG_HEIGHT - 56, 100, 38, hwnd,
+				                             0, 0, 0, 0, hwnd,
 				                             reinterpret_cast<HMENU>(static_cast<std::intptr_t>(ACT_BUY_ID)),
 				                             hInst, nullptr);
-				SendMessageW(data->hBuy, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
 				data->hOk = CreateWindowExW(0, L"BUTTON", L"激  活",
 				                            WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
-				                            ACT_DLG_WIDTH - 200, ACT_DLG_HEIGHT - 56, 110, 38, hwnd,
+				                            0, 0, 0, 0, hwnd,
 				                            reinterpret_cast<HMENU>(static_cast<std::intptr_t>(ACT_OK_ID)),
 				                            hInst, nullptr);
-				SendMessageW(data->hOk, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
 				data->hCancel = CreateWindowExW(0, L"BUTTON", L"取  消",
 				                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                                ACT_DLG_WIDTH - 88, ACT_DLG_HEIGHT - 56, 74, 38, hwnd,
+				                                0, 0, 0, 0, hwnd,
 				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(ACT_CANCEL_ID)),
 				                                hInst, nullptr);
-				SendMessageW(data->hCancel, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
 
-				// 缓存同意勾选框、用户协议链接、连词「和」与隐私协议链接的命中区域（供绘制与鼠标命中共用）
-				// 字号与「激活码作者签发…」提示行一致（hFontHint），避免协议行字号突兀
-				activate_agree_rects(hwnd, data->hFontHint, data->rcAgreeBox, data->rcAgreeUA,
-				                     data->rcAgreeConj, data->rcAgreePA);
+				// 统一布置子控件并缓存协议行命中区域（随 DPI 缩放）
+				activate_dlg_create_fonts(*data);
+				activate_dlg_layout(*data);
 				return 0;
 			}
+			case WM_DPICHANGED:
+				data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+				activate_dlg_create_fonts(*data);
+				activate_dlg_layout(*data);
+				InvalidateRect(hwnd, nullptr, TRUE);
+				return 0;
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					activate_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_ERASEBKGND:
 				return 1;
 			case WM_PAINT:
 			{
 				PAINTSTRUCT ps{};
 				HDC hdc = BeginPaint(hwnd, &ps);
+				const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
 				RECT rcClient{};
 				GetClientRect(hwnd, &rcClient);
 				// 背景：浅蓝 → 白 垂直渐变
@@ -1713,11 +2052,11 @@ namespace ui
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
 					HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(hdc, GetStockObject(NULL_BRUSH)));
 					// 锁梁（圆弧）
-					Ellipse(hdc, 30, 24, 44, 38);
+					Ellipse(hdc, S(30), S(24), S(44), S(38));
 					// 锁体（圆角矩形）
-					RoundRect(hdc, 26, 34, 48, 50, 3, 3);
+					RoundRect(hdc, S(26), S(34), S(48), S(50), S(3), S(3));
 					// 锁孔
-					Ellipse(hdc, 34, 39, 40, 45);
+					Ellipse(hdc, S(34), S(39), S(40), S(45));
 					SelectObject(hdc, hOldBr);
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
@@ -1726,15 +2065,15 @@ namespace ui
 				{
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					MoveToEx(hdc, 24, 82, nullptr);
-					LineTo(hdc, ACT_DLG_WIDTH - 24, 82);
+					MoveToEx(hdc, S(24), S(82), nullptr);
+					LineTo(hdc, S(ACT_DLG_WIDTH - 24), S(82));
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
 				// 输入框白色圆角面板 + 主题色边框
 				{
-					RECT rcInput{24, 92, ACT_DLG_WIDTH - 24, 144};
-					draw_round_rect(hdc, rcInput, 8, RGB(0xff, 0xff, 0xff), CLEAN_ACCENT, 1);
+					RECT rcInput{S(24), S(92), S(ACT_DLG_WIDTH - 24), S(144)};
+					draw_round_rect(hdc, rcInput, S(8), RGB(0xff, 0xff, 0xff), CLEAN_ACCENT, 1);
 				}
 
 				// 同意协议行：勾选框 + 「我已阅读并同意」 + 《用户协议》 + 和 + 《隐私协议》
@@ -1753,21 +2092,21 @@ namespace ui
 					RECT rc = rcBox;
 					const COLORREF fill = checked ? CLEAN_ACCENT : RGB(0xff, 0xff, 0xff);
 					const COLORREF border = checked ? CLEAN_ACCENT : (data->boxHover ? CLEAN_ACCENT_LIGHT : RGB(0xc3, 0xcc, 0xd8));
-					draw_round_rect(hdc, rc, 4, fill, border, checked ? 0 : 1);
+					draw_round_rect(hdc, rc, S(4), fill, border, checked ? 0 : 1);
 					if (checked)
 					{
 						HPEN hp = CreatePen(PS_SOLID, 2, RGB(0xff, 0xff, 0xff));
 						HPEN hpo = static_cast<HPEN>(SelectObject(hdc, hp));
-						MoveToEx(hdc, rc.left + 4, rc.top + 8, nullptr);
-						LineTo(hdc, rc.left + 7, rc.top + 12);
-						LineTo(hdc, rc.left + 13, rc.top + 5);
+						MoveToEx(hdc, rc.left + S(4), rc.top + S(8), nullptr);
+						LineTo(hdc, rc.left + S(7), rc.top + S(12));
+						LineTo(hdc, rc.left + S(13), rc.top + S(5));
 						SelectObject(hdc, hpo);
 						DeleteObject(hp);
 					}
 
 					// 标签「我已阅读并同意」（灰色）
 					{
-						RECT rcLabel{rcBox.right + 10, rcBox.top, rcUA.left - 4, rcBox.bottom};
+						RECT rcLabel{rcBox.right + S(10), rcBox.top, rcUA.left - S(4), rcBox.bottom};
 						SetTextColor(hdc, CLEAN_TEXT_SUB);
 						DrawTextW(hdc, AGREE_LABEL, -1, &rcLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
 					}
@@ -2070,28 +2409,18 @@ namespace ui
 		(void)classRegistered;
 
 		ActivateDialogData data;
-		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndWidth = ACT_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndHeight = ACT_DLG_HEIGHT + titleBarHeight;
-
 		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		int x = 0;
-		int y = 0;
-		if (hOwner && IsWindow(hOwner))
-		{
-			RECT rc{};
-			GetWindowRect(hOwner, &rc);
-			x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
-			y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
-		}
+		const SIZE clientSize = dlg_client_size(hOwner, ACT_DLG_WIDTH, ACT_DLG_HEIGHT);
 		const HWND hDlg = CreateWindowExW(0, ACTIVATE_DLG_CLASS, L"软件激活",
 		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return false;
 		}
+		dlg_fit_client(hDlg, clientSize);
+		dlg_center_on(hDlg, hOwner);
 		ShowWindow(hDlg, SW_SHOW);
 		SetFocus(data.hEdit);
 		SendMessageW(data.hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
@@ -2180,6 +2509,7 @@ namespace ui
 			HFONT hFontSmall{nullptr};
 			HBRUSH hStateBg{nullptr};    // 状态行不透明底刷：倒计时/复制切换文案时清底，防止旧文字残留重影
 			std::wstring code;
+			int dpi{96};
 			int remain{UNBIND_COUNTDOWN_SEC};
 			bool copied{false};
 			bool done{false};
@@ -2259,6 +2589,107 @@ namespace ui
 			return pressed == 100;
 		}
 
+		void unbind_success_dlg_create_fonts(UnbindSuccessData& d)
+		{
+			const auto release = [](HFONT& font)
+			{
+				if (font)
+				{
+					DeleteObject(font);
+					font = nullptr;
+				}
+			};
+			release(d.hFontTitle);
+			release(d.hFontCode);
+			release(d.hFontRemind);
+			release(d.hFontSmall);
+
+			d.hFontTitle = CreateFontW(-MulDiv(12, d.dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+				DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			d.hFontCode = CreateFontW(-MulDiv(10, d.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
+			d.hFontRemind = CreateFontW(-MulDiv(11, d.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			d.hFontSmall = CreateFontW(-MulDiv(10, d.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+			const HWND controls[] = {d.hTitle, d.hCode, d.hRemind, d.hNote, d.hState, d.hCopy, d.hOk};
+			const HFONT fonts[] = {d.hFontTitle, d.hFontCode, d.hFontRemind, d.hFontSmall,
+			                       d.hFontSmall, d.hFontSmall, d.hFontSmall};
+			for (int i = 0; i < static_cast<int>(sizeof(controls) / sizeof(controls[0])); ++i)
+			{
+				if (controls[i])
+				{
+					SendMessageW(controls[i], WM_SETFONT, reinterpret_cast<WPARAM>(fonts[i]), TRUE);
+				}
+			}
+		}
+
+		// 按窗口 DPI 摆放子控件，并按码框可用宽度重新折行换机码
+		void unbind_success_dlg_layout(UnbindSuccessData& d)
+		{
+			if (!d.hwnd)
+			{
+				return;
+			}
+			const auto S = [dpi = d.dpi](int value) { return ui::dlg_s(value, dpi); };
+			const int left = S(32);
+			const int width = S(UNBIND_W) - S(64);
+			const int right = left + width;
+
+			const auto place = [](HWND hCtrl, int x, int y, int w, int h)
+			{
+				if (hCtrl)
+				{
+					SetWindowPos(hCtrl, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+			};
+			place(d.hTitle, left, S(14), width, S(24));
+			place(d.hCode, left, S(40), width, S(100));
+			place(d.hRemind, left, S(156), width, S(22));
+			place(d.hNote, left, S(180), width, S(20));
+			place(d.hState, left, S(204), width, S(22));
+			const int btnW = S(216);
+			place(d.hCopy, left, S(234), btnW, S(44));
+			place(d.hOk, right - btnW, S(234), btnW, S(44));
+
+			// 换机码：按实际码字体测量单字符宽度，用码框可用宽度计算每行字符数，
+			// 使换机码横向铺满，且在高 DPI（PerMonitor）下也不会因字体变宽而溢出裁剪。
+			if (d.hCode)
+			{
+				int charsPerLine = 44;
+				const HDC hdc = GetDC(d.hwnd);
+				if (hdc)
+				{
+					const HGDIOBJ hOld = SelectObject(hdc, d.hFontCode);
+					SIZE sz{};
+					GetTextExtentPoint32W(hdc, L"W", 1, &sz);
+					SelectObject(hdc, hOld);
+					ReleaseDC(d.hwnd, hdc);
+					// 预留 8px 右余量，避免字体度量舍入误差导致最后一行溢出
+					const int usable = width - S(8);
+					if (sz.cx > 0)
+					{
+						charsPerLine = usable / sz.cx;
+						if (charsPerLine < 16)
+						{
+							charsPerLine = 16;
+						}
+					}
+				}
+				std::wstring codeText;
+				for (std::size_t i = 0; i < d.code.size(); i += static_cast<std::size_t>(charsPerLine))
+				{
+					if (!codeText.empty())
+					{
+						codeText += L"\r\n";
+					}
+					codeText += d.code.substr(i, static_cast<std::size_t>(charsPerLine));
+				}
+				SetWindowTextW(d.hCode, codeText.c_str());
+			}
+		}
+
 		LRESULT CALLBACK unbind_success_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
 			auto* d = reinterpret_cast<UnbindSuccessData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -2272,96 +2703,61 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(d));
 
 				const HMODULE hInst = GetModuleHandleW(nullptr);
-				{
-					const HDC hdc = GetDC(hwnd);
-					const int titleSize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int codeSize = -MulDiv(10, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int remindSize = -MulDiv(11, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int smallSize = -MulDiv(10, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					ReleaseDC(hwnd, hdc);
-					d->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					d->hFontCode = CreateFontW(codeSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, FIXED_PITCH, L"Consolas");
-					d->hFontRemind = CreateFontW(remindSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					d->hFontSmall = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-						DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				}
+				d->dpi = ui::dlg_dpi(hwnd);
 
 				d->hTitle = CreateWindowExW(0, L"STATIC", L"解绑成功！已生成换机激活码，已自动复制：",
-					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 14, 456, 24, hwnd,
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hwnd,
 					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_TITLE_ID)), hInst, nullptr);
-				SendMessageW(d->hTitle, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontTitle), TRUE);
 
-				// 换机码：静态文本（无输入框边框、可鼠标选区复制）。
-				// 动态按实际码字体测量单字符宽度，用码框可用宽度计算每行字符数，使换机码横向铺满，
-				// 且在高 DPI（PerMonitor）下也不会因字体变宽而溢出裁剪。
-				{
-					constexpr int kCodeLeft = 32;
-					constexpr int kCodeWidth = 456;
-					int charsPerLine = 44;
-					{
-						const HDC hdc = GetDC(hwnd);
-						const HGDIOBJ hOld = SelectObject(hdc, d->hFontCode);
-						SIZE sz{};
-						GetTextExtentPoint32W(hdc, L"W", 1, &sz);
-						SelectObject(hdc, hOld);
-						ReleaseDC(hwnd, hdc);
-						// 预留 8px 右余量，避免字体度量舍入误差导致最后一行溢出
-						const int usable = kCodeWidth - 8;
-						if (sz.cx > 0)
-						{
-							charsPerLine = usable / sz.cx;
-							if (charsPerLine < 16)
-							{
-								charsPerLine = 16;
-							}
-						}
-					}
-					std::wstring codeText;
-					for (std::size_t i = 0; i < d->code.size(); i += static_cast<std::size_t>(charsPerLine))
-					{
-						if (!codeText.empty())
-						{
-							codeText += L"\r\n";
-						}
-						codeText += d->code.substr(i, static_cast<std::size_t>(charsPerLine));
-					}
-					d->hCode = CreateWindowExW(0, L"STATIC", codeText.c_str(),
-						WS_CHILD | WS_VISIBLE | SS_LEFT | SS_EDITCONTROL | SS_NOPREFIX,
-						kCodeLeft, 40, kCodeWidth, 100, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_CODE_ID)), hInst, nullptr);
-					SendMessageW(d->hCode, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontCode), TRUE);
-				}
+				// 换机码：静态文本（无输入框边框、可鼠标选区复制），内容由布局函数按宽度折行填充
+				d->hCode = CreateWindowExW(0, L"STATIC", L"",
+					WS_CHILD | WS_VISIBLE | SS_LEFT | SS_EDITCONTROL | SS_NOPREFIX,
+					0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_CODE_ID)), hInst, nullptr);
 
 				d->hRemind = CreateWindowExW(0, L"STATIC", L"请在新电脑上粘贴此激活码完成激活，剩余时长将自动继承。",
-					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 156, 456, 22, hwnd,
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hwnd,
 					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_REMIND_ID)), hInst, nullptr);
-				SendMessageW(d->hRemind, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontRemind), TRUE);
 
 				d->hNote = CreateWindowExW(0, L"STATIC", L"本机将退出授权，应用即将关闭。",
-					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 180, 456, 20, hwnd,
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hwnd,
 					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_NOTE_ID)), hInst, nullptr);
-				SendMessageW(d->hNote, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
 
 				d->hState = CreateWindowExW(0, L"STATIC", L"请点击“一键复制新换机码”做好备份。",
-					WS_CHILD | WS_VISIBLE | SS_LEFT, 32, 204, 456, 22, hwnd,
+					WS_CHILD | WS_VISIBLE | SS_LEFT, 0, 0, 0, 0, hwnd,
 					reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_STATE_ID)), hInst, nullptr);
-				SendMessageW(d->hState, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
 				d->hStateBg = CreateSolidBrush(RGB(0xf4, 0xf7, 0xfb));
 
 				d->hCopy = CreateWindowExW(0, L"BUTTON", L"一键复制新换机码", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-					32, 234, 216, 44, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_COPY_ID)), hInst, nullptr);
-				SendMessageW(d->hCopy, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
+					0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_COPY_ID)), hInst, nullptr);
 
 				d->hOk = CreateWindowExW(0, L"BUTTON", L"确  定", WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-					272, 234, 216, 44, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_OK_ID)), hInst, nullptr);
-				SendMessageW(d->hOk, WM_SETFONT, reinterpret_cast<WPARAM>(d->hFontSmall), TRUE);
+					0, 0, 0, 0, hwnd, reinterpret_cast<HMENU>(static_cast<std::intptr_t>(UNBIND_OK_ID)), hInst, nullptr);
 
+				unbind_success_dlg_create_fonts(*d);
+				unbind_success_dlg_layout(*d);
 				unbind_success_refresh(*d, d->remain);
 				SetTimer(hwnd, 1, 1000, nullptr);
 				return 0;
 			}
+			case WM_DPICHANGED:
+			{
+				if (d)
+				{
+					d->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					unbind_success_dlg_create_fonts(*d);
+					unbind_success_dlg_layout(*d);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (d && d->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					unbind_success_dlg_layout(*d);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_TIMER:
 				if (wParam == 1 && d->remain > 0)
 				{
@@ -2382,10 +2778,11 @@ namespace ui
 				GetClientRect(hwnd, &rcClient);
 				fill_v_gradient(hdc, rcClient, RGB(0xff, 0xff, 0xff), RGB(0xf4, 0xf7, 0xfb));
 				{
+					const auto S = [dpi = d->dpi](int value) { return ui::dlg_s(value, dpi); };
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe6, 0xec, 0xf4));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					MoveToEx(hdc, 24, 148, nullptr);
-					LineTo(hdc, UNBIND_W - 24, 148);
+					MoveToEx(hdc, S(24), S(148), nullptr);
+					LineTo(hdc, rcClient.right - S(24), S(148));
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
@@ -2535,25 +2932,16 @@ namespace ui
 
 			UnbindSuccessData data;
 			data.code = newCode;
-			const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-			const int wndW = UNBIND_W + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-			const int wndH = UNBIND_H + titleBarHeight;
-			int x = 0;
-			int y = 0;
-			if (owner && IsWindow(owner))
-			{
-				RECT rc{};
-				GetWindowRect(owner, &rc);
-				x = rc.left + (rc.right - rc.left - wndW) / 2;
-				y = rc.top + (rc.bottom - rc.top - wndH) / 2;
-			}
+			const SIZE clientSize = ui::dlg_client_size(owner, UNBIND_W, UNBIND_H);
 			const HWND hDlg = CreateWindowExW(0, UNBIND_SUCCESS_CLASS, L"解绑本机 · 换机成功",
-				WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, wndW, wndH, owner, nullptr,
+				WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0, clientSize.cx, clientSize.cy, owner, nullptr,
 				GetModuleHandleW(nullptr), &data);
 			if (!hDlg)
 			{
 				return false;
 			}
+			ui::dlg_fit_client(hDlg, clientSize);
+			ui::dlg_center_on(hDlg, owner);
 			if (owner && IsWindow(owner))
 			{
 				EnableWindow(owner, FALSE);
@@ -2610,6 +2998,13 @@ namespace ui
 			HFONT hFontSmall{nullptr};
 			HFONT hFontHint{nullptr};
 			HWND hUnbind{nullptr};      // 解绑按钮（后台解绑期间禁用并改文案）
+			HWND hReactivate{nullptr};
+			HWND hBuy{nullptr};
+			HWND hService{nullptr};
+			HWND hClose{nullptr};
+			HWND hCopyCode{nullptr};
+			HWND hWebsite{nullptr};
+			int dpi{96};
 			bool done{false};
 			LicenseInfoResult result{LicenseInfoResult::None};
 			bool activated{false};
@@ -2622,6 +3017,85 @@ namespace ui
 			std::wstring fp;
 			std::wstring version;
 		};
+
+		void info_dlg_create_fonts(LicenseInfoDialogData& data)
+		{
+			auto release = [](HFONT& font)
+			{
+				if (font)
+				{
+					DeleteObject(font);
+					font = nullptr;
+				}
+			};
+			release(data.hFontTitle);
+			release(data.hFontBody);
+			release(data.hFontSmall);
+			release(data.hFontHint);
+			const int dpi = data.dpi > 0 ? data.dpi : 96;
+			data.hFontTitle = CreateFontW(-MulDiv(19, dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontBody = CreateFontW(-MulDiv(13, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontSmall = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontHint = CreateFontW(-MulDiv(10, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+		}
+
+		// 底部按钮行 + 卡片内解绑按钮 + 标题右侧按钮，全部按 dpi 与客户区宽度自适应摆放
+		void info_dlg_layout(LicenseInfoDialogData& data)
+		{
+			if (!data.hwnd)
+			{
+				return;
+			}
+			const auto S = [dpi = data.dpi](int value) { return ui::dlg_s(value, dpi); };
+			RECT client{};
+			GetClientRect(data.hwnd, &client);
+			const int width = client.right;
+			const int height = client.bottom;
+			const auto place = [](HWND control, int x, int y, int w, int h)
+			{
+				if (control)
+				{
+					SetWindowPos(control, nullptr, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+			};
+
+			// 底部按钮行：设计宽度按 472 总宽等比分配
+			const int designWidths[2][4] = {{120, 110, 96, 88}, {130, 120, 100, 64}};
+			const int* widths = designWidths[data.isBound ? 0 : 1];
+			const int left = S(24);
+			const int right = width - S(24);
+			const int gap = S(16);
+			const int totalDesign = 120 + 110 + 96 + 88;
+			const int avail = std::max(S(240), right - left - gap * 3);
+			const int btnHeight = S(38);
+			const int btnTop = height - S(16) - btnHeight;
+			const HWND btnRow[4] = {data.hReactivate, data.hBuy, data.hService, data.hClose};
+			int x = left;
+			for (int i = 0; i < 4; ++i)
+			{
+				const int w = i == 3 ? (right - x) : MulDiv(avail, widths[i], totalDesign);
+				place(btnRow[i], x, btnTop, std::max(S(48), w), btnHeight);
+				x += w + gap;
+			}
+
+			// 「解绑次数」行内按钮（贴卡片右下）
+			place(data.hUnbind, width - S(124), S(227), S(88), S(28));
+
+			// 标题右侧：复制激活码 / 访问官网
+			if (data.hCopyCode)
+			{
+				place(data.hCopyCode, width - S(140), S(24), S(116), S(28));
+			}
+			place(data.hWebsite, width - S(140), S(54), S(116), S(24));
+		}
 
 		LRESULT CALLBACK license_info_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
@@ -2645,73 +3119,68 @@ namespace ui
 				data->unbindMax = biz::license::unbindMaxPerMonth();
 
 				const HMODULE hInst = GetModuleHandleW(nullptr);
-				{
-					const HDC hdc = GetDC(hwnd);
-					const int titleSize = -MulDiv(19, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int bodySize = -MulDiv(13, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int smallSize = -MulDiv(11, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					const int hintSize = -MulDiv(10, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-					ReleaseDC(hwnd, hdc);
-					data->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-					                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontBody = CreateFontW(bodySize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontSmall = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontHint = CreateFontW(hintSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				}
+				data->dpi = ui::dlg_dpi(hwnd);
+				info_dlg_create_fonts(*data);
 
 				// 底部按钮行：重新激活/续期 · 购买激活码 · 联系客服 · 关闭（解绑按钮移到解绑次数行内）
-				auto createBtn = [&](int id, LPCWSTR text, int x, int w, bool defPush = false)
+				auto createBtn = [&](int id, LPCWSTR text, bool defPush = false) -> HWND
 				{
-					CreateWindowExW(0, L"BUTTON", text,
-					                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | (defPush ? BS_DEFPUSHBUTTON : 0),
-					                x, INFO_DLG_HEIGHT - 54, w, 38, hwnd,
-					                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(id)),
-					                hInst, nullptr);
+					return CreateWindowExW(0, L"BUTTON", text,
+					                       WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | (defPush ? BS_DEFPUSHBUTTON : 0),
+					                       0, 0, 0, 0, hwnd,
+					                       reinterpret_cast<HMENU>(static_cast<std::intptr_t>(id)),
+					                       hInst, nullptr);
 				};
+				data->hReactivate = createBtn(INFO_REACTIVATE_ID, L"重新激活/续期", true);
+				data->hBuy = createBtn(INFO_BUY_ID, L"购买激活码");
+				data->hService = createBtn(INFO_SERVICE_ID, L"联系客服");
+				data->hClose = createBtn(INFO_CLOSE_ID, L"关闭");
 				if (data->isBound)
 				{
-					createBtn(INFO_REACTIVATE_ID, L"重新激活/续期", 24, 120, true);
-					createBtn(INFO_BUY_ID, L"购买激活码", 160, 110);
-					createBtn(INFO_SERVICE_ID, L"联系客服", 290, 96);
-					createBtn(INFO_CLOSE_ID, L"关闭", 408, 88);
-					// 解绑按钮放在"解绑次数"行内（rowTop=230，与值文本等高）
+					// 解绑按钮放在"解绑次数"行内（与值文本等高）
 					data->hUnbind = CreateWindowExW(0, L"BUTTON", L"解绑本机",
-					                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-					                396, 229, 88, 28, hwnd,
-					                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_UNBIND_ID)),
-					                hInst, nullptr);
-				}
-				else
-				{
-					createBtn(INFO_REACTIVATE_ID, L"重新激活/续期", 24, 130, true);
-					createBtn(INFO_BUY_ID, L"购买激活码", 170, 120);
-					createBtn(INFO_SERVICE_ID, L"联系客服", 310, 100);
-					createBtn(INFO_CLOSE_ID, L"关闭", 432, 64);
+					                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+					                                0, 0, 0, 0, hwnd,
+					                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_UNBIND_ID)),
+					                                hInst, nullptr);
 				}
 				// 授权信息标题右侧：复制激活码按钮（仅已激活时可用）
 				if (data->activated)
 				{
-					CreateWindowExW(0, L"BUTTON", L"复制激活码",
-					                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-					                INFO_DLG_WIDTH - 140, 24, 116, 28, hwnd,
-					                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_COPY_CODE_ID)),
-					                hInst, nullptr);
+					data->hCopyCode = CreateWindowExW(0, L"BUTTON", L"复制激活码",
+					                                  WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+					                                  0, 0, 0, 0, hwnd,
+					                                  reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_COPY_CODE_ID)),
+					                                  hInst, nullptr);
 				}
 				// 复制激活码下方：访问官网按钮（浅色系，比复制激活码更低调）
-				CreateWindowExW(0, L"BUTTON", L"访问官网",
-				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                INFO_DLG_WIDTH - 140, 54, 116, 24, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_WEBSITE_ID)),
-				                hInst, nullptr);
+				data->hWebsite = CreateWindowExW(0, L"BUTTON", L"访问官网",
+				                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                                 0, 0, 0, 0, hwnd,
+				                                 reinterpret_cast<HMENU>(static_cast<std::intptr_t>(INFO_WEBSITE_ID)),
+				                                 hInst, nullptr);
+				info_dlg_layout(*data);
 				return 0;
 			}
+			case WM_DPICHANGED:
+			{
+				if (data)
+				{
+					data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					info_dlg_create_fonts(*data);
+					info_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					info_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_ERASEBKGND:
 				return 1;
 			case WM_PAINT:
@@ -2720,6 +3189,8 @@ namespace ui
 				HDC hdc = BeginPaint(hwnd, &ps);
 				RECT rcClient{};
 				GetClientRect(hwnd, &rcClient);
+				const auto S = [dpi = data->dpi](int value) { return ui::dlg_s(value, dpi); };
+				const int clientRight = rcClient.right;
 				// 背景：浅蓝 → 白 垂直渐变
 				fill_v_gradient(hdc, rcClient, RGB(0xee, 0xf5, 0xfe), RGB(0xff, 0xff, 0xff));
 
@@ -2728,13 +3199,13 @@ namespace ui
 					HBRUSH hCircle = CreateSolidBrush(CLEAN_ACCENT);
 					HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(hdc, hCircle));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, GetStockObject(NULL_PEN)));
-					Ellipse(hdc, 26, 22, 50, 46);
+					Ellipse(hdc, S(26), S(22), S(50), S(46));
 					SelectObject(hdc, hOldBr);
 					DeleteObject(hCircle);
 					SelectObject(hdc, hOldPen);
 					SetTextColor(hdc, RGB(0xff, 0xff, 0xff));
 					SetBkMode(hdc, TRANSPARENT);
-					RECT rcI{26, 24, 50, 44};
+					RECT rcI{S(26), S(24), S(50), S(44)};
 					DrawTextW(hdc, L"i", -1, &rcI, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 				}
 				// 标题
@@ -2742,7 +3213,7 @@ namespace ui
 					SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontTitle));
-					RECT rcTitle{58, 22, INFO_DLG_WIDTH - 24, 50};
+					RECT rcTitle{S(58), S(22), clientRight - S(24), S(50)};
 					DrawTextW(hdc, L"授权信息", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
@@ -2751,7 +3222,7 @@ namespace ui
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontSmall));
-					RECT rcSub{58, 52, INFO_DLG_WIDTH - 24, 72};
+					RECT rcSub{S(58), S(52), clientRight - S(24), S(72)};
 					DrawTextW(hdc, L"软件授权状态与续期入口", -1, &rcSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
@@ -2759,23 +3230,23 @@ namespace ui
 				{
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					MoveToEx(hdc, 24, 80, nullptr);
-					LineTo(hdc, INFO_DLG_WIDTH - 24, 80);
+					MoveToEx(hdc, S(24), S(80), nullptr);
+					LineTo(hdc, clientRight - S(24), S(80));
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
 				// 白色信息卡片（6 行信息）
 				{
-					RECT rcCard{24, 92, INFO_DLG_WIDTH - 24, 260};
-					draw_round_rect(hdc, rcCard, 10, RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
+					RECT rcCard{S(24), S(92), clientRight - S(24), S(260)};
+					draw_round_rect(hdc, rcCard, S(10), RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
 					// 行分隔线
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xf0, 0xf4, 0xf8));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
 					for (int row = 1; row < 6; ++row)
 					{
-						const int y = rcCard.top + 6 + row * 27;
-						MoveToEx(hdc, rcCard.left + 16, y, nullptr);
-						LineTo(hdc, rcCard.right - 16, y);
+						const int y = rcCard.top + S(6) + row * S(27);
+						MoveToEx(hdc, rcCard.left + S(16), y, nullptr);
+						LineTo(hdc, rcCard.right - S(16), y);
 					}
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
@@ -2818,10 +3289,10 @@ namespace ui
 					SetBkMode(hdc, TRANSPARENT);
 					for (int row = 0; row < 6; ++row)
 					{
-						const int rowTop = rcCard.top + 6 + row * 27;
+						const int rowTop = rcCard.top + S(6) + row * S(27);
 						// 标签（浅灰）
 						SetTextColor(hdc, CLEAN_TEXT_SUB);
-						RECT rcLabel{rcCard.left + 18, rowTop, rcCard.left + 140, rowTop + 24};
+						RECT rcLabel{rcCard.left + S(18), rowTop, rcCard.left + S(140), rowTop + S(24)};
 						DrawTextW(hdc, labels[row], -1, &rcLabel, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 						// 值（深色；激活状态/在线状态/解绑次数特殊着色）
 						if (row == 0)
@@ -2851,11 +3322,11 @@ namespace ui
 						{
 							SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
 						}
-						RECT rcValue{rcCard.left + 140, rowTop, rcCard.right - 18, rowTop + 24};
+						RECT rcValue{rcCard.left + S(140), rowTop, rcCard.right - S(18), rowTop + S(24)};
 						// 解绑次数行：行内有解绑按钮，值文本结尾避开按钮
 						if (row == 5 && data->isBound)
 						{
-							rcValue.right = 388;
+							rcValue.right = clientRight - S(132);
 						}
 						DrawTextW(hdc, values[row].c_str(), -1, &rcValue, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 					}
@@ -2866,7 +3337,7 @@ namespace ui
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontHint));
-					RECT rcHint{28, 272, INFO_DLG_WIDTH - 28, 292};
+					RECT rcHint{S(28), S(272), clientRight - S(28), S(292)};
 					DrawTextW(hdc, L"到期后无法启动环境和新增环境，可在界面内重新输入激活码续期", -1, &rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
@@ -2894,7 +3365,7 @@ namespace ui
 						// 访问官网：浅蓝色按钮（比"复制激活码"更低调，颜色不同）
 						const COLORREF fill = pressed ? RGB(0xd6, 0xe7, 0xf8) : (hover ? RGB(0xe4, 0xef, 0xfb) : RGB(0xf0, 0xf6, 0xfd));
 						const COLORREF border = hover ? RGB(0xa9, 0xc9, 0xea) : RGB(0xd0, 0xdf, 0xf0);
-						draw_round_rect(dis->hDC, dis->rcItem, 8, fill, border, 1);
+						draw_round_rect(dis->hDC, dis->rcItem, ui::dlg_s(8, data ? data->dpi : 96), fill, border, 1);
 						SetBkMode(dis->hDC, TRANSPARENT);
 						SetTextColor(dis->hDC, RGB(0x2f, 0x6b, 0xa8));
 						DrawTextW(dis->hDC, buf, -1, const_cast<RECT*>(&dis->rcItem), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -3058,28 +3529,18 @@ namespace ui
 		(void)classRegistered;
 
 		LicenseInfoDialogData data;
-		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndWidth = INFO_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndHeight = INFO_DLG_HEIGHT + titleBarHeight;
-
 		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		int x = 0;
-		int y = 0;
-		if (hOwner && IsWindow(hOwner))
-		{
-			RECT rc{};
-			GetWindowRect(hOwner, &rc);
-			x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
-			y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
-		}
+		const SIZE clientSize = ui::dlg_client_size(hOwner, INFO_DLG_WIDTH, INFO_DLG_HEIGHT);
 		const HWND hDlg = CreateWindowExW(0, LICENSE_INFO_CLASS, L"授权信息",
 		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return LicenseInfoResult::None;
 		}
+		ui::dlg_fit_client(hDlg, clientSize);
+		ui::dlg_center_on(hDlg, hOwner);
 		ShowWindow(hDlg, SW_SHOW);
 
 		if (hOwner && IsWindow(hOwner))
@@ -3239,6 +3700,10 @@ namespace ui
 		{
 			HWND hwnd{nullptr};
 			HWND hCatList{nullptr};       // 左侧大类列表
+			HWND hGuide{nullptr};         // 左侧"详细使用指南"
+			HWND hWebsite{nullptr};       // 底部"访问官网"
+			HWND hService{nullptr};       // 底部"联系客服"
+			HWND hClose{nullptr};         // 底部"关闭"
 			HFONT hFontTitle{nullptr};    // 弹窗标题（19px 半粗）
 			HFONT hFontSmall{nullptr};    // 副标题/底部提示（11px）
 			HFONT hFontList{nullptr};     // 左侧大类列表（12px）
@@ -3251,6 +3716,22 @@ namespace ui
 			bool draggingThumb{false};    // 拖动滚动条中
 			int dragStartY{0};
 			int dragStartScroll{0};
+			int dpi{96};
+			// 布局度量（按 dpi 与客户区尺寸计算，见 faq_dlg_layout）
+			int cardTop{0};
+			int cardBottom{0};
+			int panelX{0};
+			int panelY{0};
+			int panelW{0};
+			int panelH{0};
+			int padX{0};
+			int titleH{0};
+			int footerTop{0};
+			RECT rcList{};
+			RECT rcGuide{};
+			RECT rcWebsite{};
+			RECT rcService{};
+			RECT rcClose{};
 			bool done{false};
 		};
 
@@ -3279,9 +3760,9 @@ namespace ui
 			for (int i = 0; i < c.count; ++i)
 			{
 				// 与 faq_draw_panel 绘制内容区等宽，避免测量偏宽导致最后一行被裁剪
-				RECT rc{0, 0, FAQ_PANEL_W - FAQ_PAD_X * 2 - 12, 0};
+				RECT rc{0, 0, data->panelW - data->padX * 2 - ui::dlg_s(12, data->dpi), 0};
 				DrawTextW(hdc, c.entries[i].content, -1, &rc, DT_LEFT | DT_WORDBREAK | DT_CALCRECT);
-				data->contentH.push_back(rc.bottom - rc.top + 2);
+				data->contentH.push_back(rc.bottom - rc.top + ui::dlg_s(2, data->dpi));
 			}
 			SelectObject(hdc, hOld);
 			ReleaseDC(data->hwnd, hdc);
@@ -3290,13 +3771,14 @@ namespace ui
 		int faq_panel_total_height(const FaqDialogData* data)
 		{
 			const FaqCategory& c = FAQ_CATEGORIES[faq_current_category(data)];
+			const int gap = ui::dlg_s(10, data->dpi);
 			int total = 0;
 			for (int i = 0; i < c.count; ++i)
 			{
-				total += FAQ_TITLE_H + 1;
+				total += data->titleH + 1;
 				if (i == data->expandedIdx && static_cast<std::size_t>(i) < data->contentH.size())
 				{
-					total += data->contentH[static_cast<std::size_t>(i)] + 10;
+					total += data->contentH[static_cast<std::size_t>(i)] + gap;
 				}
 			}
 			return total;
@@ -3304,29 +3786,30 @@ namespace ui
 
 		int faq_panel_max_scroll(const FaqDialogData* data)
 		{
-			return std::max(faq_panel_total_height(data) - FAQ_PANEL_H, 0);
+			return std::max(faq_panel_total_height(data) - data->panelH, 0);
 		}
 
 		// 命中测试：点击坐标 → 问题索引（标题行内），-1 表示空白/内容区
 		int faq_panel_hit_test(const FaqDialogData* data, POINT pt)
 		{
-			if (pt.x < FAQ_PANEL_X || pt.x >= FAQ_PANEL_X + FAQ_PANEL_W ||
-			    pt.y < FAQ_PANEL_Y || pt.y >= FAQ_PANEL_Y + FAQ_PANEL_H)
+			if (pt.x < data->panelX || pt.x >= data->panelX + data->panelW ||
+			    pt.y < data->panelY || pt.y >= data->panelY + data->panelH)
 			{
 				return -1;
 			}
 			const FaqCategory& c = FAQ_CATEGORIES[faq_current_category(data)];
-			int y = FAQ_PANEL_Y + 6 - data->scrollOffset;
+			const int gap = ui::dlg_s(10, data->dpi);
+			int y = data->panelY + ui::dlg_s(6, data->dpi) - data->scrollOffset;
 			for (int i = 0; i < c.count; ++i)
 			{
-				if (pt.y >= y && pt.y < y + FAQ_TITLE_H)
+				if (pt.y >= y && pt.y < y + data->titleH)
 				{
 					return i;
 				}
-				y += FAQ_TITLE_H + 1;
+				y += data->titleH + 1;
 				if (i == data->expandedIdx && static_cast<std::size_t>(i) < data->contentH.size())
 				{
-					y += data->contentH[static_cast<std::size_t>(i)] + 10;
+					y += data->contentH[static_cast<std::size_t>(i)] + gap;
 				}
 			}
 			return -1;
@@ -3337,14 +3820,15 @@ namespace ui
 		{
 			const int total = faq_panel_total_height(data);
 			const int maxScroll = faq_panel_max_scroll(data);
-			if (total <= FAQ_PANEL_H)
+			if (total <= data->panelH)
 			{
 				return false;
 			}
-			const int thumbH = std::max(FAQ_PANEL_H * FAQ_PANEL_H / total, 20);
-			const int trackH = FAQ_PANEL_H - thumbH;
-			const int thumbY = FAQ_PANEL_Y + (trackH * data->scrollOffset / maxScroll);
-			rcOut = RECT{FAQ_PANEL_X + FAQ_PANEL_W - 6, thumbY, FAQ_PANEL_X + FAQ_PANEL_W - 2, thumbY + thumbH};
+			const auto S = [dpi = data->dpi](int value) { return ui::dlg_s(value, dpi); };
+			const int thumbH = std::max(data->panelH * data->panelH / total, S(20));
+			const int trackH = data->panelH - thumbH;
+			const int thumbY = data->panelY + (maxScroll > 0 ? trackH * data->scrollOffset / maxScroll : 0);
+			rcOut = RECT{data->panelX + data->panelW - S(6), thumbY, data->panelX + data->panelW - S(2), thumbY + thumbH};
 			return true;
 		}
 
@@ -3353,6 +3837,7 @@ namespace ui
 		{
 			constexpr wchar_t PREFIX[] = L"更多问题请查看";
 			constexpr wchar_t LINK[] = L"《eBox 使用手册》";
+			const auto S = [dpi = data->dpi](int value) { return ui::dlg_s(value, dpi); };
 			HDC hdc = GetDC(data->hwnd);
 			HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontSmall));
 			SIZE s1{};
@@ -3361,15 +3846,16 @@ namespace ui
 			GetTextExtentPoint32W(hdc, LINK, static_cast<int>(std::wcslen(LINK)), &s2);
 			SelectObject(hdc, hOld);
 			ReleaseDC(data->hwnd, hdc);
-			return RECT{28 + s1.cx, 490, 28 + s1.cx + s2.cx, 512};
+			return RECT{S(28) + s1.cx, data->footerTop + S(4), S(28) + s1.cx + s2.cx, data->footerTop + S(26)};
 		}
 
 		// 浅色系按钮：自定义填充/描边/文字色
 		void faq_draw_light_button(HDC hdc, const RECT& rc, bool hover, bool pressed, LPCWSTR text,
-		                           COLORREF fill, COLORREF hoverFill, COLORREF pressedFill, COLORREF border, COLORREF textColor)
+		                           COLORREF fill, COLORREF hoverFill, COLORREF pressedFill, COLORREF border, COLORREF textColor,
+		                           int radius = 8)
 		{
 			const COLORREF f = pressed ? pressedFill : (hover ? hoverFill : fill);
-			draw_round_rect(hdc, rc, 8, f, border, 1);
+			draw_round_rect(hdc, rc, radius, f, border, 1);
 			SetBkMode(hdc, TRANSPARENT);
 			SetTextColor(hdc, textColor);
 			DrawTextW(hdc, text, -1, const_cast<RECT*>(&rc), DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -3379,58 +3865,66 @@ namespace ui
 		void faq_draw_panel(HDC hdc, const FaqDialogData* data)
 		{
 			const FaqCategory& c = FAQ_CATEGORIES[faq_current_category(data)];
+			const auto S = [dpi = data->dpi](int value) { return ui::dlg_s(value, dpi); };
+			const int panelX = data->panelX;
+			const int panelY = data->panelY;
+			const int panelW = data->panelW;
+			const int panelH = data->panelH;
+			const int padX = data->padX;
+			const int titleH = data->titleH;
+			const int gap = S(10);
 
 			const int saved = SaveDC(hdc);
-			IntersectClipRect(hdc, FAQ_PANEL_X, FAQ_PANEL_Y, FAQ_PANEL_X + FAQ_PANEL_W, FAQ_PANEL_Y + FAQ_PANEL_H);
+			IntersectClipRect(hdc, panelX, panelY, panelX + panelW, panelY + panelH);
 
-			int y = FAQ_PANEL_Y + 6 - data->scrollOffset;
+			int y = panelY + S(6) - data->scrollOffset;
 			const COLORREF accent = RGB(0x00, 0x78, 0xd4);
 			for (int i = 0; i < c.count; ++i)
 			{
 				const FaqEntry& e = c.entries[i];
 				const bool expanded = (i == data->expandedIdx);
 				const int titleTop = y;
-				const int titleBottom = y + FAQ_TITLE_H;
+				const int titleBottom = y + titleH;
 
-				if (titleTop < FAQ_PANEL_Y + FAQ_PANEL_H && titleBottom > FAQ_PANEL_Y)
+				if (titleTop < panelY + panelH && titleBottom > panelY)
 				{
 					// 三角箭头（最右侧）：展开 ▾ / 收起 ▸
 					HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontQContent));
 					SetBkMode(hdc, TRANSPARENT);
 					SetTextColor(hdc, expanded ? accent : RGB(0x9a, 0xa3, 0xaf));
-					RECT rcArrow{FAQ_PANEL_X + FAQ_PANEL_W - FAQ_PAD_X - 18, titleTop, FAQ_PANEL_X + FAQ_PANEL_W - FAQ_PAD_X, titleBottom};
+					RECT rcArrow{panelX + panelW - padX - S(18), titleTop, panelX + panelW - padX, titleBottom};
 					DrawTextW(hdc, expanded ? L"▾" : L"▸", -1, &rcArrow, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 
 					// 标题：展开时主题蓝、收起时深色；半粗，字号更大
 					SelectObject(hdc, data->hFontQTitle);
 					SetTextColor(hdc, expanded ? accent : RGB(0x1f, 0x29, 0x37));
-					RECT rcTitle{FAQ_PANEL_X + FAQ_PAD_X, titleTop, FAQ_PANEL_X + FAQ_PANEL_W - FAQ_PAD_X - 22, titleBottom};
+					RECT rcTitle{panelX + padX, titleTop, panelX + panelW - padX - S(22), titleBottom};
 					DrawTextW(hdc, e.title, -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 					SelectObject(hdc, hOld);
 
 					// 分割线（标题行下方）
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					MoveToEx(hdc, FAQ_PANEL_X + FAQ_PAD_X, y + FAQ_TITLE_H, nullptr);
-					LineTo(hdc, FAQ_PANEL_X + FAQ_PANEL_W - FAQ_PAD_X, y + FAQ_TITLE_H);
+					MoveToEx(hdc, panelX + padX, y + titleH, nullptr);
+					LineTo(hdc, panelX + panelW - padX, y + titleH);
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
-				y += FAQ_TITLE_H + 1;
+				y += titleH + 1;
 
 				if (expanded && static_cast<std::size_t>(i) < data->contentH.size())
 				{
 					const int contentH = data->contentH[static_cast<std::size_t>(i)];
-					if (y < FAQ_PANEL_Y + FAQ_PANEL_H)
+					if (y < panelY + panelH)
 					{
 						HFONT hOld = static_cast<HFONT>(SelectObject(hdc, data->hFontQContent));
 						SetBkMode(hdc, TRANSPARENT);
 						SetTextColor(hdc, RGB(0x5a, 0x64, 0x72));
-						RECT rcContent{FAQ_PANEL_X + FAQ_PAD_X + 6, y, FAQ_PANEL_X + FAQ_PANEL_W - FAQ_PAD_X - 6, y + contentH};
+						RECT rcContent{panelX + padX + S(6), y, panelX + panelW - padX - S(6), y + contentH};
 						DrawTextW(hdc, e.content, -1, &rcContent, DT_LEFT | DT_WORDBREAK);
 						SelectObject(hdc, hOld);
 					}
-					y += contentH + 10;
+					y += contentH + gap;
 				}
 			}
 
@@ -3443,7 +3937,7 @@ namespace ui
 				HBRUSH hBrush = CreateSolidBrush(RGB(0xcf, 0xd6, 0xe0));
 				HBRUSH hOldBr = static_cast<HBRUSH>(SelectObject(hdc, hBrush));
 				HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, GetStockObject(NULL_PEN)));
-				RoundRect(hdc, rcThumb.left, rcThumb.top, rcThumb.right, rcThumb.bottom, 4, 4);
+				RoundRect(hdc, rcThumb.left, rcThumb.top, rcThumb.right, rcThumb.bottom, S(4), S(4));
 				SelectObject(hdc, hOldBr);
 				SelectObject(hdc, hOldPen);
 				DeleteObject(hBrush);
@@ -3466,6 +3960,105 @@ namespace ui
 			}
 		}
 
+		void faq_dlg_create_fonts(FaqDialogData& data)
+		{
+			auto release = [](HFONT& font)
+			{
+				if (font)
+				{
+					DeleteObject(font);
+					font = nullptr;
+				}
+			};
+			release(data.hFontTitle);
+			release(data.hFontSmall);
+			release(data.hFontList);
+			release(data.hFontQTitle);
+			release(data.hFontQContent);
+			release(data.hFontLink);
+			const int dpi = data.dpi > 0 ? data.dpi : 96;
+			data.hFontTitle = CreateFontW(-MulDiv(19, dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontSmall = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontList = CreateFontW(-MulDiv(12, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontQTitle = CreateFontW(-MulDiv(13, dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontQContent = CreateFontW(-MulDiv(12, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                                 DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                                 CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontLink = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			if (data.hCatList)
+			{
+				SendMessageW(data.hCatList, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontList), TRUE);
+			}
+		}
+
+		// 全部子控件与自绘面板的度量按 dpi 与客户区尺寸计算
+		void faq_dlg_layout(FaqDialogData& data)
+		{
+			if (!data.hwnd)
+			{
+				return;
+			}
+			const auto S = [dpi = data.dpi](int value) { return ui::dlg_s(value, dpi); };
+			RECT client{};
+			GetClientRect(data.hwnd, &client);
+			const int width = client.right;
+			const int height = client.bottom;
+			const int left = S(24);
+			const int right = width - S(24);
+			const auto place = [](HWND control, const RECT& rc)
+			{
+				if (control)
+				{
+					SetWindowPos(control, nullptr, rc.left, rc.top, rc.right - rc.left, rc.bottom - rc.top,
+					             SWP_NOZORDER | SWP_NOACTIVATE);
+				}
+			};
+
+			// 左右白卡片区域
+			data.cardTop = S(92);
+			data.cardBottom = height - S(70);
+			const int catCardRight = left + S(186);
+
+			// 左侧大类列表 + 详细使用指南按钮（贴卡片底部）
+			data.rcList = RECT{left + S(6), data.cardTop + S(8), catCardRight - S(6), data.cardBottom - S(56)};
+			data.rcGuide = RECT{left + S(6), data.cardBottom - S(46), catCardRight - S(6), data.cardBottom - S(10)};
+			place(data.hCatList, data.rcList);
+
+			// 右侧问题面板
+			data.panelX = catCardRight + S(18);
+			data.panelW = std::max(S(160), right - S(6) - data.panelX);
+			data.panelY = data.cardTop + S(6);
+			data.panelH = std::max(S(120), data.cardBottom - S(8) - data.panelY);
+			data.padX = S(10);
+			data.titleH = S(30);
+
+			// 底部按钮行（右对齐）
+			const int btnH = S(36);
+			const int btnTop = height - S(18) - btnH;
+			data.footerTop = btnTop;
+			const int closeW = S(104);
+			const int sideW = S(96);
+			data.rcClose = RECT{right - closeW, btnTop, right, btnTop + btnH};
+			data.rcService = RECT{data.rcClose.left - S(12) - sideW, btnTop, data.rcClose.left - S(12), btnTop + btnH};
+			data.rcWebsite = RECT{data.rcService.left - S(12) - sideW, btnTop, data.rcService.left - S(12), btnTop + btnH};
+			place(data.hGuide, data.rcGuide);
+			place(data.hWebsite, data.rcWebsite);
+			place(data.hService, data.rcService);
+			place(data.hClose, data.rcClose);
+
+			data.scrollOffset = std::clamp(data.scrollOffset, 0, faq_panel_max_scroll(&data));
+		}
+
 		LRESULT CALLBACK faq_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
 			auto* data = reinterpret_cast<FaqDialogData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -3479,36 +4072,13 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 
 				const HMODULE hInst = GetModuleHandleW(nullptr);
-				const HDC hdc = GetDC(hwnd);
-				const int titleSize = -MulDiv(19, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-				const int smallSize = -MulDiv(11, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-				const int listSize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-				const int qTitleSize = -MulDiv(13, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-				const int qContentSize = -MulDiv(12, GetDeviceCaps(hdc, LOGPIXELSY), 72);
-				ReleaseDC(hwnd, hdc);
-				data->hFontTitle = CreateFontW(titleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontSmall = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontList = CreateFontW(listSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontQTitle = CreateFontW(qTitleSize, 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-				                                DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                                CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontQContent = CreateFontW(qContentSize, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                                  DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                                  CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontLink = CreateFontW(smallSize, 0, 0, 0, FW_NORMAL, FALSE, TRUE, FALSE,
-				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data->dpi = ui::dlg_dpi(hwnd);
+				faq_dlg_create_fonts(*data);
 
 				// 左侧大类列表（常见问题 / 妙用小技巧）
 				data->hCatList = CreateWindowExW(0, WC_LISTBOXW, L"",
 				                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
-				                                 30, 100, 174, 314, hwnd,
+				                                 0, 0, 0, 0, hwnd,
 				                                 reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_CAT_LIST_ID)), hInst, nullptr);
 				SendMessageW(data->hCatList, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontList), TRUE);
 				for (int c = 0; c < static_cast<int>(std::size(FAQ_CATEGORIES)); ++c)
@@ -3518,28 +4088,50 @@ namespace ui
 				SendMessageW(data->hCatList, LB_SETCURSEL, 0, 0);
 
 				// 左侧"详细使用指南"按钮：打开飞书文档
-				CreateWindowExW(0, L"BUTTON", L"详细使用指南",
-				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                30, 424, 174, 36, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_GUIDE_ID)), hInst, nullptr);
+				data->hGuide = CreateWindowExW(0, L"BUTTON", L"详细使用指南",
+				                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                               0, 0, 0, 0, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_GUIDE_ID)), hInst, nullptr);
 
 				// 底部"访问官网"按钮：打开官网首页
-				CreateWindowExW(0, L"BUTTON", L"访问官网",
-				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                412, 486, 96, 36, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_WEBSITE_ID)), hInst, nullptr);
+				data->hWebsite = CreateWindowExW(0, L"BUTTON", L"访问官网",
+				                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                                 0, 0, 0, 0, hwnd,
+				                                 reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_WEBSITE_ID)), hInst, nullptr);
 				// 底部"联系客服"按钮（与授权页同一微信客服链接）
-				CreateWindowExW(0, L"BUTTON", L"联系客服",
-				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
-				                524, 486, 96, 36, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_SERVICE_ID)), hInst, nullptr);
+				data->hService = CreateWindowExW(0, L"BUTTON", L"联系客服",
+				                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
+				                                 0, 0, 0, 0, hwnd,
+				                                 reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_SERVICE_ID)), hInst, nullptr);
 				// 底部"关闭"按钮
-				CreateWindowExW(0, L"BUTTON", L"关闭",
-				                WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
-				                632, 486, 104, 36, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_CLOSE_ID)), hInst, nullptr);
+				data->hClose = CreateWindowExW(0, L"BUTTON", L"关闭",
+				                               WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW | BS_DEFPUSHBUTTON,
+				                               0, 0, 0, 0, hwnd,
+				                               reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_CLOSE_ID)), hInst, nullptr);
+				faq_dlg_layout(*data);
 				return 0;
 			}
+			case WM_DPICHANGED:
+			{
+				if (data)
+				{
+					data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					faq_dlg_create_fonts(*data);
+					faq_dlg_layout(*data);
+					faq_measure_content(data);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					faq_dlg_layout(*data);
+					faq_measure_content(data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_ERASEBKGND:
 				return 1;
 			case WM_PAINT:
@@ -3548,6 +4140,8 @@ namespace ui
 				HDC hdc = BeginPaint(hwnd, &ps);
 				RECT rcClient{};
 				GetClientRect(hwnd, &rcClient);
+				const auto S = [dpi = data->dpi](int value) { return ui::dlg_s(value, dpi); };
+				const int clientRight = rcClient.right;
 				// 背景：浅蓝 → 白 垂直渐变
 				fill_v_gradient(hdc, rcClient, RGB(0xee, 0xf5, 0xfe), RGB(0xff, 0xff, 0xff));
 
@@ -3556,7 +4150,7 @@ namespace ui
 					SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontTitle));
-					RECT rcTitle{24, 22, FAQ_DLG_WIDTH - 24, 50};
+					RECT rcTitle{S(24), S(22), clientRight - S(24), S(50)};
 					DrawTextW(hdc, L"常见问题", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
@@ -3565,7 +4159,7 @@ namespace ui
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontSmall));
-					RECT rcSub{24, 52, FAQ_DLG_WIDTH - 24, 72};
+					RECT rcSub{S(24), S(52), clientRight - S(24), S(72)};
 					DrawTextW(hdc, L"使用帮助 · 常见问题 · 妙用小技巧", -1, &rcSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
@@ -3573,17 +4167,17 @@ namespace ui
 				{
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					MoveToEx(hdc, 24, 80, nullptr);
-					LineTo(hdc, FAQ_DLG_WIDTH - 24, 80);
+					MoveToEx(hdc, S(24), S(80), nullptr);
+					LineTo(hdc, clientRight - S(24), S(80));
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
 				// 左侧大类白卡片 + 右侧问题白卡片
 				{
-					RECT rcCatCard{24, 92, 210, 470};
-					draw_round_rect(hdc, rcCatCard, 10, RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
-					RECT rcEditCard{FAQ_PANEL_X - 6, 92, FAQ_PANEL_X + FAQ_PANEL_W + 6, 470};
-					draw_round_rect(hdc, rcEditCard, 10, RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
+					RECT rcCatCard{S(24), data->cardTop, S(24) + S(186), data->cardBottom};
+					draw_round_rect(hdc, rcCatCard, S(10), RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
+					RECT rcEditCard{data->panelX - S(6), data->cardTop, data->panelX + data->panelW + S(6), data->cardBottom};
+					draw_round_rect(hdc, rcEditCard, S(10), RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
 				}
 				// 右侧手风琴问题面板
 				faq_draw_panel(hdc, data);
@@ -3592,7 +4186,7 @@ namespace ui
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontSmall));
-					RECT rcPrefix{28, 490, 420, 512};
+					RECT rcPrefix{S(28), data->footerTop + S(4), S(420), data->footerTop + S(26)};
 					DrawTextW(hdc, L"更多问题请查看", -1, &rcPrefix, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, data->hFontLink);
 					SetTextColor(hdc, RGB(0x00, 0x78, 0xd4));
@@ -3600,7 +4194,7 @@ namespace ui
 					DrawTextW(hdc, L"《eBox 使用手册》", -1, &rcLink, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					SelectObject(hdc, data->hFontSmall);
-					const RECT rcTail = RECT{rcLink.right, 490, 420, 512};
+					const RECT rcTail = RECT{rcLink.right, data->footerTop + S(4), S(420) + rcLink.right, data->footerTop + S(26)};
 					DrawTextW(hdc, L" 或联系客服", -1, const_cast<RECT*>(&rcTail), DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
@@ -3631,21 +4225,21 @@ namespace ui
 						// 详细使用指南：浅色系（白底浅灰描边）
 						faq_draw_light_button(dis->hDC, dis->rcItem, hover, pressed, buf,
 						                      RGB(0xff, 0xff, 0xff), RGB(0xf2, 0xf6, 0xfb), RGB(0xe6, 0xee, 0xf7),
-						                      RGB(0xcf, 0xd8, 0xe3), RGB(0x3a, 0x46, 0x55));
+						                      RGB(0xcf, 0xd8, 0xe3), RGB(0x3a, 0x46, 0x55), ui::dlg_s(8, data->dpi));
 					}
 					else if (id == FAQ_WEBSITE_ID)
 					{
 						// 访问官网：浅蓝色按钮
 						faq_draw_light_button(dis->hDC, dis->rcItem, hover, pressed, buf,
 						                      RGB(0xec, 0xf4, 0xfd), RGB(0xdd, 0xec, 0xfb), RGB(0xcd, 0xe3, 0xf8),
-						                      RGB(0x9c, 0xc8, 0xee), RGB(0x0a, 0x6c, 0xbd));
+						                      RGB(0x9c, 0xc8, 0xee), RGB(0x0a, 0x6c, 0xbd), ui::dlg_s(8, data->dpi));
 					}
 					else if (id == FAQ_SERVICE_ID)
 					{
 						// 联系客服：浅绿色按钮
 						faq_draw_light_button(dis->hDC, dis->rcItem, hover, pressed, buf,
 						                      RGB(0xe8, 0xf7, 0xee), RGB(0xd7, 0xf0, 0xe2), RGB(0xc5, 0xe9, 0xd4),
-						                      RGB(0x8f, 0xd0, 0xac), RGB(0x18, 0x8a, 0x4f));
+						                      RGB(0x8f, 0xd0, 0xac), RGB(0x18, 0x8a, 0x4f), ui::dlg_s(8, data->dpi));
 					}
 					else
 					{
@@ -3767,8 +4361,8 @@ namespace ui
 					const int maxScroll = faq_panel_max_scroll(data);
 					if (maxScroll > 0)
 					{
-						const int thumbH = std::max(FAQ_PANEL_H * FAQ_PANEL_H / total, 20);
-						const int trackH = FAQ_PANEL_H - thumbH;
+						const int thumbH = std::max(data->panelH * data->panelH / total, ui::dlg_s(20, data->dpi));
+						const int trackH = data->panelH - thumbH;
 						const int newScroll = data->dragStartScroll +
 						                      (trackH > 0 ? (y - data->dragStartY) * maxScroll / trackH : 0);
 						data->scrollOffset = std::clamp(newScroll, 0, maxScroll);
@@ -3783,14 +4377,14 @@ namespace ui
 				{
 					const int delta = static_cast<int>(GET_WHEEL_DELTA_WPARAM(wParam));
 					// 平滑滚动：每格滚一屏约 1/4，并限制在有效范围内
-					const int step = std::max(24, FAQ_PANEL_H / 4);
+					const int step = std::max(ui::dlg_s(24, data->dpi), data->panelH / 4);
 					int newOffset = data->scrollOffset - (delta > 0 ? step : -step);
 					newOffset = std::clamp(newOffset, 0, maxScroll);
 					if (newOffset != data->scrollOffset)
 					{
 						data->scrollOffset = newOffset;
 						// 只重绘面板区域，避免整窗重绘造成抖动闪烁
-						RECT rcPanel{FAQ_PANEL_X, FAQ_PANEL_Y, FAQ_PANEL_X + FAQ_PANEL_W, FAQ_PANEL_Y + FAQ_PANEL_H};
+						RECT rcPanel{data->panelX, data->panelY, data->panelX + data->panelW, data->panelY + data->panelH};
 						InvalidateRect(hwnd, &rcPanel, FALSE);
 					}
 				}
@@ -3848,28 +4442,18 @@ namespace ui
 		(void)classRegistered;
 
 		FaqDialogData data;
-		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndWidth = FAQ_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndHeight = FAQ_DLG_HEIGHT + titleBarHeight;
-
 		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		int x = 0;
-		int y = 0;
-		if (hOwner && IsWindow(hOwner))
-		{
-			RECT rc{};
-			GetWindowRect(hOwner, &rc);
-			x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
-			y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
-		}
+		const SIZE clientSize = ui::dlg_client_size(hOwner, FAQ_DLG_WIDTH, FAQ_DLG_HEIGHT);
 		const HWND hDlg = CreateWindowExW(0, FAQ_DLG_CLASS, L"常见问题",
 		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return;
 		}
+		ui::dlg_fit_client(hDlg, clientSize);
+		ui::dlg_center_on(hDlg, hOwner);
 		ShowWindow(hDlg, SW_SHOW);
 		// 默认展示"常见问题"分类，展开第一条
 		faq_apply_category(&data, 0);
@@ -4777,25 +5361,31 @@ namespace ui
 			RegCloseKey(hKey);
 		}
 
-		int app_page_count(const std::vector<AppEntry>& apps)
+		int app_page_count(const std::vector<AppEntry>& apps, int pageSize)
 		{
-			return (static_cast<int>(apps.size()) + APP_PAGE_SIZE - 1) / APP_PAGE_SIZE;
+			if (pageSize < 1)
+			{
+				pageSize = 1;
+			}
+			return (static_cast<int>(apps.size()) + pageSize - 1) / pageSize;
 		}
 
-		RECT app_row_rect(int rowIndex)
+		RECT app_row_rect(int rowIndex, int dpi, int listRight)
 		{
-			const int top = APP_ROWS_TOP + rowIndex * APP_ROW_H;
-			return RECT{APP_LIST_LEFT, top, APP_LIST_RIGHT, top + APP_ROW_H};
+			const int top = ui::dlg_s(APP_ROWS_TOP + rowIndex * APP_ROW_H, dpi);
+			return RECT{ui::dlg_s(APP_LIST_LEFT, dpi), top, listRight, top + ui::dlg_s(APP_ROW_H, dpi)};
 		}
 
-		RECT app_pin_btn_rect(const RECT& row)
+		RECT app_pin_btn_rect(const RECT& row, int dpi)
 		{
-			return RECT{row.right - 116, row.top + 5, row.right - 60, row.bottom - 5};
+			return RECT{row.right - ui::dlg_s(116, dpi), row.top + ui::dlg_s(5, dpi),
+			            row.right - ui::dlg_s(60, dpi), row.bottom - ui::dlg_s(5, dpi)};
 		}
 
-		RECT app_select_btn_rect(const RECT& row)
+		RECT app_select_btn_rect(const RECT& row, int dpi)
 		{
-			return RECT{row.right - 56, row.top + 5, row.right - 4, row.bottom - 5};
+			return RECT{row.right - ui::dlg_s(56, dpi), row.top + ui::dlg_s(5, dpi),
+			            row.right - ui::dlg_s(4, dpi), row.bottom - ui::dlg_s(5, dpi)};
 		}
 
 		// 刷新动画：围绕圆心的 8 个圆点按 tick 依次点亮（0x0078d4 主题蓝 / 浅灰）
@@ -4829,6 +5419,8 @@ namespace ui
 			std::vector<AppEntry> allApps;   // 扫描到的完整列表（含排序/置顶）
 			std::vector<AppEntry> apps;      // 当前显示列表（受搜索过滤）
 			int page{0};
+			int pageSize{APP_PAGE_SIZE};     // 每页行数（按窗口高度自适应）
+			int dpi{96};                     // 窗口 DPI（布局与自绘坐标按此缩放）
 			bool refreshing{false};  // 正在刷新（显示动画）
 			int refreshTick{0};      // 动画帧计数
 			bool scanning{false};    // 后台扫描进行中（防重入）
@@ -4836,6 +5428,13 @@ namespace ui
 			std::wstring searchText; // 搜索关键字
 			HWND hSearch{nullptr};   // 搜索框
 			HWND hSearchHint{nullptr}; // 搜索框占位提示
+			HWND hRefresh{nullptr};
+			HWND hPrev{nullptr};
+			HWND hNext{nullptr};
+			HWND hManual{nullptr};
+			HWND hCancel{nullptr};
+			RECT rcRows{};           // 列表区（仅用于右边界与命中）
+			RECT rcSearchPanel{};    // 搜索框白色圆角面板
 			std::wstring result;
 			bool done{false};
 			bool cancelled{true};
@@ -4868,7 +5467,7 @@ namespace ui
 					}
 				}
 			}
-			const int pc = app_page_count(data.apps);
+			const int pc = app_page_count(data.apps, data.pageSize);
 			if (data.page >= pc)
 			{
 				data.page = std::max(0, pc - 1);
@@ -4908,6 +5507,160 @@ namespace ui
 			}).detach();
 		}
 
+		// 按窗口 DPI 重建选择器字体（首次创建与跨屏 DPI 变化共用）
+		void app_dlg_create_fonts(AppPickData& data)
+		{
+			if (data.hFontTitle)
+			{
+				DeleteObject(data.hFontTitle);
+				data.hFontTitle = nullptr;
+			}
+			if (data.hFontSmall)
+			{
+				DeleteObject(data.hFontSmall);
+				data.hFontSmall = nullptr;
+			}
+			if (data.hFontName)
+			{
+				DeleteObject(data.hFontName);
+				data.hFontName = nullptr;
+			}
+			if (data.hFontPath)
+			{
+				DeleteObject(data.hFontPath);
+				data.hFontPath = nullptr;
+			}
+
+			data.hFontTitle = CreateFontW(-MulDiv(19, data.dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontSmall = CreateFontW(-MulDiv(11, data.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontName = CreateFontW(-MulDiv(12, data.dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontPath = CreateFontW(-MulDiv(11, data.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+
+			if (data.hSearch)
+			{
+				SendMessageW(data.hSearch, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+			if (data.hSearchHint)
+			{
+				SendMessageW(data.hSearchHint, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontSmall), TRUE);
+			}
+		}
+
+		// 按窗口 DPI 与真实客户区摆放子控件，并按可用高度决定每页行数
+		void app_dlg_layout(AppPickData& data)
+		{
+			if (!data.hwnd)
+			{
+				return;
+			}
+			const auto S = [dpi = data.dpi](int v) { return ui::dlg_s(v, dpi); };
+			RECT rcClient{};
+			GetClientRect(data.hwnd, &rcClient);
+			const int W = rcClient.right;
+			const int H = rcClient.bottom;
+			const int margin = S(24);
+
+			// 搜索面板 + 刷新按钮：贴右对齐
+			const int refreshW = S(80);
+			const int refreshH = S(38);
+			const int refreshTop = S(76);
+			const int refreshLeft = W - margin - refreshW;
+			const int panelRight = refreshLeft - S(8);
+			int panelLeft = panelRight - S(270);
+			if (panelLeft < S(300))
+			{
+				panelLeft = S(300);
+			}
+			if (panelLeft > panelRight - S(120))
+			{
+				panelLeft = panelRight - S(120);
+			}
+			data.rcSearchPanel = RECT{panelLeft, S(76), panelRight, S(114)};
+			const RECT rcEdit{panelLeft + S(12), S(80), panelRight - S(12), S(110)};
+			if (data.hSearch)
+			{
+				SetWindowPos(data.hSearch, nullptr, rcEdit.left, rcEdit.top,
+				             rcEdit.right - rcEdit.left, rcEdit.bottom - rcEdit.top,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hSearchHint)
+			{
+				SetWindowPos(data.hSearchHint, nullptr, rcEdit.left, rcEdit.top,
+				             rcEdit.right - rcEdit.left, rcEdit.bottom - rcEdit.top,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hRefresh)
+			{
+				SetWindowPos(data.hRefresh, nullptr, refreshLeft, refreshTop, refreshW, refreshH,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+
+			// 列表区：底部按钮之上，行数按可用高度收缩（不低于 1 行）
+			const int rowsTop = S(APP_ROWS_TOP);
+			const int footerTop = H - S(64);
+			int rows = APP_PAGE_SIZE;
+			while (rows > 1 && rowsTop + rows * S(APP_ROW_H) > footerTop - S(10))
+			{
+				--rows;
+			}
+			data.pageSize = rows;
+			const int listRight = W - margin;
+			data.rcRows = RECT{S(APP_LIST_LEFT), rowsTop, listRight, rowsTop + rows * S(APP_ROW_H)};
+
+			// 底部按钮行：上一页 / 下一页 居左，手动选择 / 取消 贴右
+			const int btnH = S(APP_BTN_H);
+			const int navW = S(80);
+			const int prevLeft = margin;
+			const int cancelW = S(104);
+			const int manualW = S(132);
+			const int cancelLeft = W - margin - cancelW;
+			const int manualLeft = cancelLeft - margin - manualW;
+			int nextLeft = prevLeft + navW + S(112);
+			if (nextLeft + navW > manualLeft - S(12))
+			{
+				nextLeft = manualLeft - S(12) - navW;
+			}
+			if (nextLeft < prevLeft + navW + S(8))
+			{
+				nextLeft = prevLeft + navW + S(8);
+			}
+			if (data.hPrev)
+			{
+				SetWindowPos(data.hPrev, nullptr, prevLeft, footerTop, navW, btnH,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hNext)
+			{
+				SetWindowPos(data.hNext, nullptr, nextLeft, footerTop, navW, btnH,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hManual)
+			{
+				SetWindowPos(data.hManual, nullptr, manualLeft, footerTop, manualW, btnH,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+			if (data.hCancel)
+			{
+				SetWindowPos(data.hCancel, nullptr, cancelLeft, footerTop, cancelW, btnH,
+				             SWP_NOZORDER | SWP_NOACTIVATE);
+			}
+
+			// 每页行数变化后重新夹紧页码
+			const int pc = app_page_count(data.apps, data.pageSize);
+			if (data.page >= pc)
+			{
+				data.page = std::max(0, pc - 1);
+			}
+		}
+
 		LRESULT CALLBACK app_pick_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
 			auto* data = reinterpret_cast<AppPickData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -4921,57 +5674,69 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 
 				const HMODULE hInst = GetModuleHandleW(nullptr);
-				const HDC hdc = GetDC(hwnd);
-				const int dpiY = GetDeviceCaps(hdc, LOGPIXELSY);
-				ReleaseDC(hwnd, hdc);
-				data->hFontTitle = CreateFontW(-MulDiv(19, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontSmall = CreateFontW(-MulDiv(11, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontName = CreateFontW(-MulDiv(12, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontPath = CreateFontW(-MulDiv(11, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data->dpi = ui::dlg_dpi(hwnd);
 
 				// 综合搜索框：字段标题行上方、副标题之下，与刷新按钮贴右对齐；输入即过滤下方列表
 				data->hSearch = CreateWindowExW(0, L"EDIT", L"",
 				                                WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL,
-				                                330, 80, 250, 30, hwnd,
+				                                0, 0, 0, 0, hwnd,
 				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_SEARCH_ID)),
 				                                hInst, nullptr);
-				SendMessageW(data->hSearch, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
 				// 占位提示：覆盖在搜索框上（后创建=上层），禁用=不拦截点击；未输入时显示灰色提示
 				data->hSearchHint = CreateWindowExW(0, L"STATIC", L"搜索应用名称或路径…",
 				                                    WS_CHILD | WS_VISIBLE | WS_DISABLED | SS_LEFT,
-				                                    330, 80, 250, 30, hwnd,
+				                                    0, 0, 0, 0, hwnd,
 				                                    reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_SEARCH_HINT_ID)),
 				                                    hInst, nullptr);
-				SendMessageW(data->hSearchHint, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontSmall), TRUE);
 
 				constexpr DWORD btnStyle = WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW;
 				// 刷新按钮：紧挨搜索框右侧并排（贴右对齐），高度与搜索面板对齐（与搜索框同款白色圆角+主题描边）
-				CreateWindowExW(0, L"BUTTON", L"刷新",
-				                btnStyle, 596, 76, 80, 38, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_REFRESH_ID)), hInst, nullptr);
+				data->hRefresh = CreateWindowExW(0, L"BUTTON", L"刷新",
+				                                 btnStyle, 0, 0, 0, 0, hwnd,
+				                                 reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_REFRESH_ID)), hInst, nullptr);
 				// 底部：上一页 / 下一页 / 手动选择文件 / 取消
-				CreateWindowExW(0, L"BUTTON", L"上一页", btnStyle, 24, APP_BTN_Y, 80, APP_BTN_H, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_PREV_ID)), hInst, nullptr);
-				CreateWindowExW(0, L"BUTTON", L"下一页", btnStyle, 216, APP_BTN_Y, 80, APP_BTN_H, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_NEXT_ID)), hInst, nullptr);
-				CreateWindowExW(0, L"BUTTON", L"手动选择文件", btnStyle, 420, APP_BTN_Y, 132, APP_BTN_H, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_MANUAL_ID)), hInst, nullptr);
-				CreateWindowExW(0, L"BUTTON", L"取消", btnStyle, 572, APP_BTN_Y, 104, APP_BTN_H, hwnd,
-				                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_CANCEL_ID)), hInst, nullptr);
+				data->hPrev = CreateWindowExW(0, L"BUTTON", L"上一页", btnStyle, 0, 0, 0, 0, hwnd,
+				                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_PREV_ID)), hInst, nullptr);
+				data->hNext = CreateWindowExW(0, L"BUTTON", L"下一页", btnStyle, 0, 0, 0, 0, hwnd,
+				                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_NEXT_ID)), hInst, nullptr);
+				data->hManual = CreateWindowExW(0, L"BUTTON", L"手动选择文件", btnStyle, 0, 0, 0, 0, hwnd,
+				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_MANUAL_ID)), hInst, nullptr);
+				data->hCancel = CreateWindowExW(0, L"BUTTON", L"取消", btnStyle, 0, 0, 0, 0, hwnd,
+				                                reinterpret_cast<HMENU>(static_cast<std::intptr_t>(APP_CANCEL_ID)), hInst, nullptr);
+
+				app_dlg_create_fonts(*data);
+				app_dlg_layout(*data);
+				return 0;
+			}
+			case WM_DPICHANGED:
+			{
+				if (data)
+				{
+					data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					app_dlg_create_fonts(*data);
+					app_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+			{
+				if (data)
+				{
+					app_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
 				return 0;
 			}
 			case WM_ERASEBKGND:
 				return 1;
 			case WM_PAINT:
 			{
+				if (!data)
+				{
+					break;
+				}
+				const auto S = [dpi = data->dpi](int v) { return ui::dlg_s(v, dpi); };
 				PAINTSTRUCT ps{};
 				HDC hdc = BeginPaint(hwnd, &ps);
 				RECT rcClient{};
@@ -4980,43 +5745,51 @@ namespace ui
 
 				// 搜索框白色圆角面板（含主题色边框；EDIT 白底与之融合）；与刷新按钮贴右对齐，避开副标题
 				{
-					RECT rcSearch{318, 76, 588, 114};
-					draw_round_rect(hdc, rcSearch, 8, RGB(0xff, 0xff, 0xff), RGB(0x9c, 0xb8, 0xd8), 1);
+					RECT rcSearch = data->rcSearchPanel;
+					draw_round_rect(hdc, rcSearch, S(8), RGB(0xff, 0xff, 0xff), RGB(0x9c, 0xb8, 0xd8), 1);
 				}
 
 				// 标题 / 副标题
 				SetBkMode(hdc, TRANSPARENT);
 				SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
 				HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontTitle));
-				RECT rcTitle{24, 18, APP_DLG_WIDTH - 24, 48};
-				DrawTextW(hdc, L"选择要启动的应用", -1, &rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+				RECT rcTitle{S(24), S(18), rcClient.right - S(24), S(48)};
+				DrawTextW(hdc, L"选择要启动的应用", -1, &rcTitle,
+				          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 				SelectObject(hdc, data->hFontSmall);
 				SetTextColor(hdc, CLEAN_TEXT_SUB);
 				// 矩形给足全宽，避免高 DPI 下文字被截断
-				RECT rcSub{24, 48, APP_DLG_WIDTH - 24, 68};
-				DrawTextW(hdc, L"自动扫描已装应用，选择后默认启动", -1, &rcSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+				RECT rcSub{S(24), S(48), rcClient.right - S(24), S(68)};
+				DrawTextW(hdc, L"自动扫描已装应用，选择后默认启动", -1, &rcSub,
+				          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 				SelectObject(hdc, hOldFont);
 
 				// 表头
+				const int rowsTop = S(APP_ROWS_TOP);
+				const int headerBottom = rowsTop - S(4);
+				const int headerTop = headerBottom - S(28);
+				const int listLeft = S(APP_LIST_LEFT);
+				const int listRight = data->rcRows.right;
+				const RECT row0 = app_row_rect(0, data->dpi, listRight);
 				SelectObject(hdc, data->hFontSmall);
 				SetTextColor(hdc, RGB(0x8a, 0x91, 0x9c));
 				constexpr wchar_t COL_NO[] = L"序号";
 				constexpr wchar_t COL_NAME[] = L"应用名称";
 				constexpr wchar_t COL_PATH[] = L"所在路径";
 				constexpr wchar_t COL_OP[] = L"操作";
-				RECT rcNo{24, 122, 64, 150};
+				RECT rcNo{listLeft, headerTop, listLeft + S(44), headerBottom};
 				DrawTextW(hdc, COL_NO, -1, &rcNo, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-				RECT rcNameH{68, 122, 240, 150};
+				RECT rcNameH{row0.left + S(48), headerTop, row0.left + S(220), headerBottom};
 				DrawTextW(hdc, COL_NAME, -1, &rcNameH, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-				RECT rcPathH{244, 122, 548, 150};
+				RECT rcPathH{row0.left + S(224), headerTop, row0.right - S(124), headerBottom};
 				DrawTextW(hdc, COL_PATH, -1, &rcPathH, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-				RECT rcOp{556, 122, 676, 150};
+				RECT rcOp{row0.right - S(120), headerTop, row0.right, headerBottom};
 				DrawTextW(hdc, COL_OP, -1, &rcOp, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 				{
 					HPEN hPen = CreatePen(PS_SOLID, 1, RGB(0xe8, 0xee, 0xf6));
 					HPEN hOldPen = static_cast<HPEN>(SelectObject(hdc, hPen));
-					MoveToEx(hdc, 24, 150, nullptr);
-					LineTo(hdc, APP_LIST_RIGHT, 150);
+					MoveToEx(hdc, listLeft, headerBottom, nullptr);
+					LineTo(hdc, listRight, headerBottom);
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
@@ -5026,15 +5799,15 @@ namespace ui
 				{
 					SelectObject(hdc, data->hFontName);
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
-					RECT rcEmpty{24, APP_ROWS_TOP + 40, APP_LIST_RIGHT, APP_ROWS_TOP + 90};
+					RECT rcEmpty{listLeft, rowsTop + S(40), listRight, rowsTop + S(90)};
 					DrawTextW(hdc, data->scanning ? L"正在扫描系统应用…" : L"未扫描到可用应用，请点击右下角[手动选择文件]选择程序",
-					          -1, &rcEmpty, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					          -1, &rcEmpty, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 				}
 				else
 				{
-					const int pc = app_page_count(data->apps);
-					const int start = data->page * APP_PAGE_SIZE;
-					for (int i = 0; i < APP_PAGE_SIZE; ++i)
+					const int pc = app_page_count(data->apps, data->pageSize);
+					const int start = data->page * data->pageSize;
+					for (int i = 0; i < data->pageSize; ++i)
 					{
 						const int idx = start + i;
 						if (idx >= static_cast<int>(data->apps.size()))
@@ -5042,26 +5815,26 @@ namespace ui
 							break;
 						}
 						const AppEntry& e = data->apps[static_cast<std::size_t>(idx)];
-						const RECT row = app_row_rect(i);
+						const RECT row = app_row_rect(i, data->dpi, listRight);
 						// 序号
 						SelectObject(hdc, data->hFontSmall);
 						SetTextColor(hdc, CLEAN_TEXT_SUB);
 						const std::wstring no = std::to_wstring(idx + 1);
-						RECT rcNoCell{row.left, row.top, row.left + 44, row.bottom};
+						RECT rcNoCell{row.left, row.top, row.left + S(44), row.bottom};
 						DrawTextW(hdc, no.c_str(), -1, &rcNoCell, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 						// 名称
 						SelectObject(hdc, data->hFontName);
 						SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
-						RECT rcNameCell{row.left + 48, row.top, row.left + 220, row.bottom};
+						RECT rcNameCell{row.left + S(48), row.top, row.left + S(220), row.bottom};
 						DrawTextW(hdc, e.name.c_str(), -1, &rcNameCell, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 						// 路径
 						SelectObject(hdc, data->hFontPath);
 						SetTextColor(hdc, CLEAN_TEXT_SUB);
-						RECT rcPathCell{row.left + 224, row.top, row.right - 124, row.bottom};
+						RECT rcPathCell{row.left + S(224), row.top, row.right - S(124), row.bottom};
 						DrawTextW(hdc, e.path.c_str(), -1, &rcPathCell, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 						// 置顶按钮（最多置顶 3 个，置顶后常驻列表最前）
 						{
-							const RECT rcPin = app_pin_btn_rect(row);
+							const RECT rcPin = app_pin_btn_rect(row, data->dpi);
 							if (e.pinned)
 							{
 								faq_draw_light_button(hdc, rcPin, false, false, L"已置顶",
@@ -5076,7 +5849,7 @@ namespace ui
 							}
 						}
 						// 选择按钮（浅蓝描边 + 蓝字）
-						const RECT rcBtn = app_select_btn_rect(row);
+						const RECT rcBtn = app_select_btn_rect(row, data->dpi);
 						faq_draw_light_button(hdc, rcBtn, false, false, L"选择",
 						                      RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xf1, 0xfa), RGB(0xd0, 0xe4, 0xf7),
 						                      RGB(0x9c, 0xb8, 0xd8), RGB(0x00, 0x78, 0xd4));
@@ -5088,25 +5861,39 @@ namespace ui
 						SelectObject(hdc, hOldPen);
 						DeleteObject(hPen);
 					}
-					// 页码指示
+					// 页码指示：位于上一页/下一页按钮之间
 					SelectObject(hdc, data->hFontSmall);
 					SetTextColor(hdc, CLEAN_TEXT_SUB);
 					const std::wstring pageText = std::format(L"第 {} / {} 页", data->page + 1, pc);
-					RECT rcPage{104, APP_BTN_Y, 216, APP_BTN_Y + APP_BTN_H};
-					DrawTextW(hdc, pageText.c_str(), -1, &rcPage, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+					RECT rcPrevBtn{}, rcNextBtn{};
+					if (data->hPrev)
+					{
+						GetWindowRect(data->hPrev, &rcPrevBtn);
+						MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&rcPrevBtn), 2);
+					}
+					if (data->hNext)
+					{
+						GetWindowRect(data->hNext, &rcNextBtn);
+						MapWindowPoints(nullptr, hwnd, reinterpret_cast<POINT*>(&rcNextBtn), 2);
+					}
+					RECT rcPage{rcPrevBtn.right, rcPrevBtn.top, rcNextBtn.left, rcPrevBtn.bottom};
+					if (rcPage.right <= rcPage.left)
+					{
+						rcPage = RECT{listLeft, rcClient.bottom - S(64), listRight, rcClient.bottom - S(64) + S(32)};
+					}
+					DrawTextW(hdc, pageText.c_str(), -1, &rcPage, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 				}
 				// 刷新动画：列表区中央"正在刷新"指示（spinner 逐帧点亮 + 文案）
 				if (data->refreshing)
 				{
-					const RECT rcOverlay{APP_LIST_LEFT, APP_ROWS_TOP - 6, APP_LIST_RIGHT,
-					                     APP_ROWS_TOP + APP_PAGE_SIZE * APP_ROW_H + 6};
-					draw_round_rect(hdc, rcOverlay, 10, RGB(0xf5, 0xf9, 0xfe), RGB(0xdf, 0xed, 0xfb), 1);
-					const int cx = (rcOverlay.left + rcOverlay.right) / 2 - 70;
+					const RECT rcOverlay{listLeft, rowsTop - S(6), listRight, data->rcRows.bottom + S(6)};
+					draw_round_rect(hdc, rcOverlay, S(10), RGB(0xf5, 0xf9, 0xfe), RGB(0xdf, 0xed, 0xfb), 1);
+					const int cx = (rcOverlay.left + rcOverlay.right) / 2 - S(70);
 					const int cy = (rcOverlay.top + rcOverlay.bottom) / 2;
-					faq_draw_spinner(hdc, cx, cy, 12, data->refreshTick);
+					faq_draw_spinner(hdc, cx, cy, S(12), data->refreshTick);
 					SelectObject(hdc, data->hFontName);
 					SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
-					RECT rcTxt{cx + 30, cy - 18, rcOverlay.right - 60, cy + 18};
+					RECT rcTxt{cx + S(30), cy - S(18), rcOverlay.right - S(60), cy + S(18)};
 					DrawTextW(hdc, L"正在刷新应用列表…", -1, &rcTxt, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 				}
 				SelectObject(hdc, hOldFont);
@@ -5149,7 +5936,7 @@ namespace ui
 					if (id == APP_PREV_ID || id == APP_NEXT_ID)
 					{
 						// 上一页/下一页：浅色小按钮，到边界置灰
-						const int pc = app_page_count(data->apps);
+						const int pc = app_page_count(data->apps, data->pageSize);
 						const bool enabled = (id == APP_PREV_ID) ? (data->page > 0) : (data->page < pc - 1);
 						faq_draw_light_button(dis->hDC, dis->rcItem, hover && enabled, pressed && enabled, buf,
 						                      RGB(0xff, 0xff, 0xff), RGB(0xf2, 0xf6, 0xfb), RGB(0xe6, 0xee, 0xf7),
@@ -5219,7 +6006,7 @@ namespace ui
 				}
 				if (id == APP_NEXT_ID)
 				{
-					if (data->page < app_page_count(data->apps) - 1)
+					if (data->page < app_page_count(data->apps, data->pageSize) - 1)
 					{
 						++data->page;
 						InvalidateRect(hwnd, nullptr, FALSE);
@@ -5262,19 +6049,21 @@ namespace ui
 			case WM_LBUTTONDOWN:
 			{
 				const POINT pt{static_cast<LONG>(LOWORD(lParam)), static_cast<LONG>(HIWORD(lParam))};
-				if (pt.y >= APP_ROWS_TOP && !data->apps.empty())
+				const int rowsTop = ui::dlg_s(APP_ROWS_TOP, data->dpi);
+				const int rowH = ui::dlg_s(APP_ROW_H, data->dpi);
+				if (pt.y >= rowsTop && !data->apps.empty())
 				{
-					const int rowIndex = (pt.y - APP_ROWS_TOP) / APP_ROW_H;
-					if (rowIndex >= 0 && rowIndex < APP_PAGE_SIZE)
+					const int rowIndex = (pt.y - rowsTop) / rowH;
+					if (rowIndex >= 0 && rowIndex < data->pageSize)
 					{
-						const int idx = data->page * APP_PAGE_SIZE + rowIndex;
+						const int idx = data->page * data->pageSize + rowIndex;
 						if (idx >= 0 && idx < static_cast<int>(data->apps.size()))
 						{
-							const RECT row = app_row_rect(rowIndex);
+							const RECT row = app_row_rect(rowIndex, data->dpi, data->rcRows.right);
 							AppEntry& e = data->apps[static_cast<std::size_t>(idx)];
 							// 置顶按钮：切换置顶状态（最多 3 个）。在完整列表上操作，
 							// 避免搜索过滤后丢置顶记忆；再重排序并重新应用搜索过滤
-							const RECT rcPin = app_pin_btn_rect(row);
+							const RECT rcPin = app_pin_btn_rect(row, data->dpi);
 							if (pt.x >= rcPin.left && pt.x <= rcPin.right && pt.y >= rcPin.top && pt.y <= rcPin.bottom)
 							{
 								const std::wstring key = to_lower(e.path);
@@ -5369,6 +6158,69 @@ namespace ui
 		save_last_app_path(L"");
 	}
 
+	// exe 路径（小写）→ 应用名称 的两级缓存，名称来源与“选择要启动的应用”列表一致：
+	// 1) 注册表卸载项 DisplayIcon 指向该 exe 的 DisplayName（如 WXWork → 企业微信）
+	// 2) 开始菜单/桌面快捷方式文件名（如 豆包.lnk → D:\RJ\Doubao\Doubao.exe）
+	// 两者均按需扫描一次并缓存，避免环境卡片每次重建标识都重新扫描系统。
+	namespace
+	{
+		const std::unordered_map<std::wstring, std::wstring>& registry_app_names()
+		{
+			static const std::unordered_map<std::wstring, std::wstring> map = []()
+			{
+				std::vector<AppEntry> apps;
+				scan_registry_apps(apps);
+				std::unordered_map<std::wstring, std::wstring> names;
+				names.reserve(apps.size());
+				for (const auto& e : apps)
+				{
+					names.emplace(to_lower(e.path), e.name);
+				}
+				return names;
+			}();
+			return map;
+		}
+
+		const std::unordered_map<std::wstring, std::wstring>& shortcut_app_names()
+		{
+			static const std::unordered_map<std::wstring, std::wstring> map = []()
+			{
+				std::vector<AppEntry> apps;
+				scan_start_menu_lnk(apps);
+				std::unordered_map<std::wstring, std::wstring> names;
+				names.reserve(apps.size());
+				for (const auto& e : apps)
+				{
+					names.emplace(to_lower(e.path), e.name);
+				}
+				return names;
+			}();
+			return map;
+		}
+	}
+
+	std::wstring resolve_app_display_name(std::wstring_view exePath)
+	{
+		if (exePath.empty())
+		{
+			return {};
+		}
+		const std::wstring path(exePath);
+		const std::wstring key = to_lower(path);
+		// 注册表命中（如企业微信）直接返回，避免首次解析就去扫开始菜单
+		const auto& regNames = registry_app_names();
+		if (const auto it = regNames.find(key); it != regNames.end() && !it->second.empty())
+		{
+			return it->second;
+		}
+		const auto& lnkNames = shortcut_app_names();
+		if (const auto it = lnkNames.find(key); it != lnkNames.end() && !it->second.empty())
+		{
+			return it->second;
+		}
+		return std::filesystem::path{path}.stem().wstring();
+	}
+
 	std::optional<std::wstring> select_app_dialog(const WindowBase* owner)
 	{
 		static const bool classRegistered = []()
@@ -5385,28 +6237,18 @@ namespace ui
 
 		AppPickData data; // 列表由 app_start_scan 后台填充，弹窗立即可交互
 
-		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndWidth = APP_DLG_WIDTH + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int dlgWndHeight = APP_DLG_HEIGHT + titleBarHeight;
-
 		HWND hOwner = owner ? owner->nativeHandle() : nullptr;
-		int x = 0;
-		int y = 0;
-		if (hOwner && IsWindow(hOwner))
-		{
-			RECT rc{};
-			GetWindowRect(hOwner, &rc);
-			x = rc.left + (rc.right - rc.left - dlgWndWidth) / 2;
-			y = rc.top + (rc.bottom - rc.top - dlgWndHeight) / 2;
-		}
+		const SIZE clientSize = ui::dlg_client_size(hOwner, APP_DLG_WIDTH, APP_DLG_HEIGHT);
 		const HWND hDlg = CreateWindowExW(0, APP_DLG_CLASS, L"选择要启动的应用",
 		                                  WS_POPUP | WS_CAPTION | WS_SYSMENU,
-		                                  x, y, dlgWndWidth, dlgWndHeight, hOwner, nullptr,
+		                                  0, 0, clientSize.cx, clientSize.cy, hOwner, nullptr,
 		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return std::nullopt;
 		}
+		ui::dlg_fit_client(hDlg, clientSize);
+		ui::dlg_center_on(hDlg, hOwner);
 		ShowWindow(hDlg, SW_SHOW);
 		app_start_scan(hDlg, &data); // 后台扫描系统应用（spinner 提示加载中），UI 立即可交互
 
@@ -6323,6 +7165,68 @@ namespace ui
 				draw_modern_dlg_button(hdc, data.rcCancel, false, data.hoverBtn == 1, data.pressBtn == 1, L"取消");
 			}
 
+			void drive_dlg_create_fonts(DrivePickData& data)
+			{
+				if (data.hFontTitle)
+				{
+					DeleteObject(data.hFontTitle);
+					data.hFontTitle = nullptr;
+				}
+				if (data.hFontBold)
+				{
+					DeleteObject(data.hFontBold);
+					data.hFontBold = nullptr;
+				}
+				if (data.hFontBody)
+				{
+					DeleteObject(data.hFontBody);
+					data.hFontBody = nullptr;
+				}
+				if (data.hFontSmall)
+				{
+					DeleteObject(data.hFontSmall);
+					data.hFontSmall = nullptr;
+				}
+				data.hFontTitle = CreateFontW(-MulDiv(16, data.dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data.hFontBold = CreateFontW(-MulDiv(13, data.dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+				                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data.hFontBody = CreateFontW(-MulDiv(12, data.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+				data.hFontSmall = CreateFontW(-MulDiv(11, data.dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			}
+
+			void drive_dlg_layout(DrivePickData& data)
+			{
+				if (!data.hwnd)
+				{
+					return;
+				}
+				const auto S = [dpi = data.dpi](int value) { return ui::dlg_s(value, dpi); };
+				RECT client{};
+				GetClientRect(data.hwnd, &client);
+				data.rowHeight = data.rowHeightInit > 0 ? data.rowHeightInit : S(DRIVE_ROW_HEIGHT);
+				data.rowGap = S(DRIVE_ROW_GAP);
+				data.rcList.left = S(28);
+				data.rcList.right = client.right - S(28);
+				data.rcList.top = S(DRIVE_LIST_TOP);
+				data.rcList.bottom = client.bottom - S(DRIVE_FOOTER_HEIGHT);
+				const int listHeight = data.rcList.bottom - data.rcList.top;
+				data.visibleRows = std::max(1, (listHeight + data.rowGap) / (data.rowHeight + data.rowGap));
+
+				const int btnHeight = S(34);
+				const int btnTop = client.bottom - S(16) - btnHeight;
+				data.rcOk = {client.right - S(28) - S(128), btnTop, client.right - S(28), btnTop + btnHeight};
+				data.rcCancel = {data.rcOk.left - S(12) - S(88), btnTop, data.rcOk.left - S(12),
+				                 btnTop + btnHeight};
+				drive_ensure_visible(data, std::max(0, data.selected));
+			}
+
 			LRESULT CALLBACK drive_pick_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 			{
 				auto* data = reinterpret_cast<DrivePickData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -6335,47 +7239,32 @@ namespace ui
 					SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 					data->hwnd = hwnd;
 
-					HDC hdc = GetDC(hwnd);
-					data->dpi = GetDeviceCaps(hdc, LOGPIXELSY);
-					ReleaseDC(hwnd, hdc);
-					if (data->dpi <= 0)
-					{
-						data->dpi = 96;
-					}
-					const int dpiY = data->dpi;
-					data->hFontTitle = CreateFontW(-MulDiv(16, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-					                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontBold = CreateFontW(-MulDiv(13, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontBody = CreateFontW(-MulDiv(12, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-					data->hFontSmall = CreateFontW(-MulDiv(11, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-					                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-					                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-
-					const auto S = [dpiY](int value) { return MulDiv(value, dpiY, 96); };
-					RECT client{};
-					GetClientRect(hwnd, &client);
-					data->rowHeight = data->rowHeightInit > 0 ? data->rowHeightInit : S(DRIVE_ROW_HEIGHT);
-					data->rowGap = S(DRIVE_ROW_GAP);
-					data->rcList.left = S(28);
-					data->rcList.right = client.right - S(28);
-					data->rcList.top = S(DRIVE_LIST_TOP);
-					data->rcList.bottom = client.bottom - S(DRIVE_FOOTER_HEIGHT);
-					const int listHeight = data->rcList.bottom - data->rcList.top;
-					data->visibleRows = std::max(1, (listHeight + data->rowGap) / (data->rowHeight + data->rowGap));
-
-					const int btnHeight = S(34);
-					const int btnTop = client.bottom - S(16) - btnHeight;
-					data->rcOk = {client.right - S(28) - S(128), btnTop, client.right - S(28), btnTop + btnHeight};
-					data->rcCancel = {data->rcOk.left - S(12) - S(88), btnTop, data->rcOk.left - S(12),
-					                  btnTop + btnHeight};
-					drive_ensure_visible(*data, std::max(0, data->selected));
+					data->dpi = ui::dlg_dpi(hwnd);
+					drive_dlg_create_fonts(*data);
+					drive_dlg_layout(*data);
 					return 0;
 				}
+				case WM_DPICHANGED:
+				{
+					if (data)
+					{
+						data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+						// 行高按新 DPI 重算（创建期为适配矮屏压过的行高不再沿用）
+						data->rowHeightInit = 0;
+						drive_dlg_create_fonts(*data);
+						drive_dlg_layout(*data);
+						InvalidateRect(hwnd, nullptr, TRUE);
+					}
+					return 0;
+				}
+				case WM_SIZE:
+					// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+					if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+					{
+						drive_dlg_layout(*data);
+						InvalidateRect(hwnd, nullptr, FALSE);
+					}
+					return 0;
 				case WM_ERASEBKGND:
 					return 1;
 				case WM_PAINT:
@@ -6566,16 +7455,9 @@ namespace ui
 				}
 			}
 
-			HDC screenDc = GetDC(nullptr);
-			int dpi = GetDeviceCaps(screenDc, LOGPIXELSY);
-			ReleaseDC(nullptr, screenDc);
-			if (dpi <= 0)
-			{
-				dpi = 96;
-			}
-			const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
+			const int dpi = ui::dlg_dpi(parent);
+			const auto S = [dpi](int value) { return ui::dlg_s(value, dpi); };
 
-			const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
 			// 可见行数：最多 4 行。屏幕矮时先等比压缩行高（不低于 DRIVE_ROW_HEIGHT_MIN），
 			// 压到下限仍放不下才减少行数，但优先保住 DRIVE_MIN_VISIBLE_ROWS 行 ——
 			// 避免矮分辨率下只露出 1 个盘、D 盘必须滚动才能看到。
@@ -6584,10 +7466,10 @@ namespace ui
 			const int fixedPx = S(DRIVE_LIST_TOP) + S(DRIVE_FOOTER_HEIGHT);
 			const int minRowPx = S(DRIVE_ROW_HEIGHT_MIN);
 			int rowHeightPx = S(DRIVE_ROW_HEIGHT);
-			RECT workArea{};
-			if (SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0))
+			const SIZE workArea = ui::dlg_work_area(parent);
+			if (workArea.cy > 0)
 			{
-				const int maxClient = workArea.bottom - workArea.top - S(24) - titleBarHeight;
+				const int maxClient = workArea.cy - S(48);
 				while (displayRows > 1 &&
 				       fixedPx + displayRows * rowHeightPx + (displayRows - 1) * rowGapPx > maxClient)
 				{
@@ -6611,35 +7493,18 @@ namespace ui
 			// 实像素逐项相加：MulDiv 舍入会让 listHeight 比整行所需少 1~2px，导致 visibleRows 少算一行
 			const int dlgHeight = fixedPx + displayRows * rowHeightPx + (displayRows - 1) * rowGapPx;
 			data.rowHeightInit = rowHeightPx;
-			const int wndWidth = dlgWidth + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-			const int wndHeight = dlgHeight + titleBarHeight;
 
-			int x = 0;
-			int y = 0;
-			if (parent && IsWindow(parent))
-			{
-				RECT rc{};
-				GetWindowRect(parent, &rc);
-				x = rc.left + (rc.right - rc.left - wndWidth) / 2;
-				y = rc.top + (rc.bottom - rc.top - wndHeight) / 2;
-				if (y < workArea.top + S(8))
-				{
-					y = workArea.top + S(8);
-				}
-			}
-			else
-			{
-				x = (GetSystemMetrics(SM_CXSCREEN) - wndWidth) / 2;
-				y = (GetSystemMetrics(SM_CYSCREEN) - wndHeight) / 2;
-			}
-
+			const SIZE clientSize{dlgWidth, dlgHeight};
 			const HWND hDlg = CreateWindowExW(0, DRIVE_DLG_CLASS, L"选择数据存放的磁盘",
-			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, wndWidth, wndHeight,
+			                                  WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0,
+			                                  clientSize.cx, clientSize.cy,
 			                                  parent, nullptr, GetModuleHandleW(nullptr), &data);
 			if (!hDlg)
 			{
 				return false;
 			}
+			ui::dlg_fit_client(hDlg, clientSize);
+			ui::dlg_center_on(hDlg, parent);
 			ShowWindow(hDlg, SW_SHOW);
 			UpdateWindow(hDlg);
 			SetFocus(hDlg);
@@ -7026,6 +7891,57 @@ namespace ui
 			}
 		}
 
+		void settings_dlg_create_fonts(SettingsDlgData& data)
+		{
+			auto release = [](HFONT& font)
+			{
+				if (font)
+				{
+					DeleteObject(font);
+					font = nullptr;
+				}
+			};
+			release(data.hFontTitle);
+			release(data.hFontBold);
+			release(data.hFontBody);
+			release(data.hFontSmall);
+			const int dpi = data.dpi > 0 ? data.dpi : 96;
+			data.hFontTitle = CreateFontW(-MulDiv(18, dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontBold = CreateFontW(-MulDiv(13, dpi, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontBody = CreateFontW(-MulDiv(12, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                             DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                             CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+			data.hFontSmall = CreateFontW(-MulDiv(11, dpi, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
+			                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
+			                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
+		}
+
+		void settings_dlg_layout(SettingsDlgData& data)
+		{
+			if (!data.hwnd)
+			{
+				return;
+			}
+			const auto S = [dpi = data.dpi](int value) { return ui::dlg_s(value, dpi); };
+			RECT client{};
+			GetClientRect(data.hwnd, &client);
+			data.itemHeight = S(SETTINGS_ITEM_HEIGHT);
+			data.itemGap = S(SETTINGS_ITEM_GAP);
+			data.rcList.left = S(SETTINGS_MARGIN);
+			data.rcList.right = client.right - S(SETTINGS_MARGIN);
+			data.rcList.top = S(SETTINGS_LIST_TOP);
+			data.rcList.bottom = client.bottom - S(SETTINGS_FOOTER_HEIGHT) - S(4);
+
+			const int btnHeight = S(34);
+			const int btnTop = client.bottom - S(18) - btnHeight;
+			data.rcClose = RECT{client.right - S(SETTINGS_MARGIN) - S(92), btnTop,
+			                    client.right - S(SETTINGS_MARGIN), btnTop + btnHeight};
+		}
+
 		LRESULT CALLBACK settings_dlg_proc(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam)
 		{
 			auto* data = reinterpret_cast<SettingsDlgData*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
@@ -7038,43 +7954,30 @@ namespace ui
 				SetWindowLongPtrW(hwnd, GWLP_USERDATA, reinterpret_cast<LONG_PTR>(data));
 				data->hwnd = hwnd;
 
-				HDC hdc = GetDC(hwnd);
-				data->dpi = GetDeviceCaps(hdc, LOGPIXELSY);
-				ReleaseDC(hwnd, hdc);
-				if (data->dpi <= 0)
-				{
-					data->dpi = 96;
-				}
-				const int dpiY = data->dpi;
-				data->hFontTitle = CreateFontW(-MulDiv(18, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontBold = CreateFontW(-MulDiv(13, dpiY, 72), 0, 0, 0, FW_SEMIBOLD, FALSE, FALSE, FALSE,
-				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontBody = CreateFontW(-MulDiv(12, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                              DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                              CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-				data->hFontSmall = CreateFontW(-MulDiv(11, dpiY, 72), 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE,
-				                               DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-				                               CLEARTYPE_QUALITY, DEFAULT_PITCH, L"Segoe UI");
-
-				const auto S = [dpiY](int value) { return MulDiv(value, dpiY, 96); };
-				RECT client{};
-				GetClientRect(hwnd, &client);
-				data->itemHeight = S(SETTINGS_ITEM_HEIGHT);
-				data->itemGap = S(SETTINGS_ITEM_GAP);
-				data->rcList.left = S(SETTINGS_MARGIN);
-				data->rcList.right = client.right - S(SETTINGS_MARGIN);
-				data->rcList.top = S(SETTINGS_LIST_TOP);
-				data->rcList.bottom = client.bottom - S(SETTINGS_FOOTER_HEIGHT) - S(4);
-
-				const int btnHeight = S(34);
-				const int btnTop = client.bottom - S(18) - btnHeight;
-				data->rcClose = {client.right - S(SETTINGS_MARGIN) - S(92), btnTop,
-				                 client.right - S(SETTINGS_MARGIN), btnTop + btnHeight};
+				data->dpi = ui::dlg_dpi(hwnd);
+				settings_dlg_create_fonts(*data);
+				settings_dlg_layout(*data);
 				return 0;
 			}
+			case WM_DPICHANGED:
+			{
+				if (data)
+				{
+					data->dpi = ui::dlg_on_dpi_changed(hwnd, lParam);
+					settings_dlg_create_fonts(*data);
+					settings_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, TRUE);
+				}
+				return 0;
+			}
+			case WM_SIZE:
+				// 创建后校正客户区尺寸会触发 WM_SIZE，需按最终客户区重新摆放控件
+				if (data && data->hwnd && wParam != SIZE_MINIMIZED)
+				{
+					settings_dlg_layout(*data);
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
 			case WM_ERASEBKGND:
 				return 1;
 			case WM_PAINT:
@@ -7225,52 +8128,16 @@ namespace ui
 			data.items.push_back(std::move(item));
 		}
 
-		HDC screenDc = GetDC(nullptr);
-		int dpi = GetDeviceCaps(screenDc, LOGPIXELSY);
-		ReleaseDC(nullptr, screenDc);
-		if (dpi <= 0)
-		{
-			dpi = 96;
-		}
-		const auto S = [dpi](int value) { return MulDiv(value, dpi, 96); };
-
-		RECT workArea{};
-		SystemParametersInfoW(SPI_GETWORKAREA, 0, &workArea, 0);
-		int dlgWidth = S(SETTINGS_DLG_WIDTH);
-		int dlgHeight = S(SETTINGS_DLG_HEIGHT);
-		if (workArea.bottom > workArea.top)
-		{
-			dlgHeight = std::min(dlgHeight, static_cast<int>(workArea.bottom - workArea.top) - S(48));
-		}
-		const int titleBarHeight = GetSystemMetrics(SM_CYCAPTION) + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int wndWidth = dlgWidth + GetSystemMetrics(SM_CXFIXEDFRAME) * 2;
-		const int wndHeight = dlgHeight + titleBarHeight;
-
-		int x = 0;
-		int y = 0;
-		if (parent && IsWindow(parent))
-		{
-			RECT rc{};
-			GetWindowRect(parent, &rc);
-			x = rc.left + (rc.right - rc.left - wndWidth) / 2;
-			y = rc.top + (rc.bottom - rc.top - wndHeight) / 2;
-			if (y < workArea.top + S(8))
-			{
-				y = workArea.top + S(8);
-			}
-		}
-		else
-		{
-			x = (GetSystemMetrics(SM_CXSCREEN) - wndWidth) / 2;
-			y = (GetSystemMetrics(SM_CYSCREEN) - wndHeight) / 2;
-		}
-
-		const HWND hDlg = CreateWindowExW(0, SETTINGS_DLG_CLASS, L"设置", WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y,
-		                                  wndWidth, wndHeight, parent, nullptr, GetModuleHandleW(nullptr), &data);
+		const SIZE clientSize = ui::dlg_client_size(parent, SETTINGS_DLG_WIDTH, SETTINGS_DLG_HEIGHT);
+		const HWND hDlg = CreateWindowExW(0, SETTINGS_DLG_CLASS, L"设置", WS_POPUP | WS_CAPTION | WS_SYSMENU, 0, 0,
+		                                  clientSize.cx, clientSize.cy, parent, nullptr,
+		                                  GetModuleHandleW(nullptr), &data);
 		if (!hDlg)
 		{
 			return;
 		}
+		ui::dlg_fit_client(hDlg, clientSize);
+		ui::dlg_center_on(hDlg, parent);
 		ShowWindow(hDlg, SW_SHOW);
 		UpdateWindow(hDlg);
 		SetFocus(hDlg);
