@@ -1,25 +1,19 @@
 {
-    "latestVersion": "v3.2.4",
-    "latestVersionCode": 30204,
-    "releaseDate": "2026/10/28",
+    "latestVersion": "v3.2.5",
+    "latestVersionCode": 30205,
+    "releaseDate": "2026/10/29",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "100a15edffb76d731e0537e139c7dd5c56fd7a2e12ea9fc9c06bbfccd6bde3f7",
-    "downloadSize": 3914752,
+    "downloadSha256": "0f37a27f63acebe4b59828e05b580e2a7dd7553c3175b268f78db606a419dc6f",
+    "downloadSize": 3910656,
     "changelog": [
-        "环境列表视图改为简约图标按钮（启动/改名/关闭），悬停才显色，主操作保留淡蓝底",
-        "列表视图环境名称超长时自动尾部省略，鼠标悬停即可查看完整名称",
-        "列表视图整行悬停底色更淡，减少视觉干扰",
-        "环境改名弹窗重做：现代简约风格，圆角输入框与扁平按钮，全量 DPI 自适应",
-        "修复豆包等 Chromium 系应用多开：隔离其他环境的消息窗，结束进程后再启动不再只剩一个",
-        "提升启动速度：启动时静默加入 Defender 排除项，注入文件改为内容比对避免重复写盘",
-        "结束多个进程或退出 eBox 时不再长时间未响应：关闭/强杀与注册表保存移到后台线程",
-        "修复看门狗误判 UI 卡死：事件循环空闲等待加心跳上限，不再产生假卡死记录",
-        "版本号更新至 v3.2.4"
+        "修复退出 eBox 时误杀宿主机原生应用：结束环境进程不再按进程名全局匹配，桌面原生启动的企业微信等应用不会再被一并结束",
+        "结束环境进程改为按环境归属的 PID 与进程树逐级收敛，多开应用退出依旧清理干净、零残留",
+        "版本号更新至 v3.2.5"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.2.4/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.2.5/eBox.exe"
     ]
 }

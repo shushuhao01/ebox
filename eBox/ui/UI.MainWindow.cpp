@@ -955,34 +955,32 @@ namespace ui
 	{
 		const DWORD selfPid = GetCurrentProcessId();
 
-		// 多轮迭代终止：父进程被终止后子进程可能重新归属（reparent）甚至继续
-		// 派生新进程，单轮快照无法保证零残留。每轮重新快照、收集进程树，并按
-		// 已上报进程的 exe 文件名兜底匹配（解决 reparent 后树收集失效），
-		// 直到连续一轮没有任何进程被杀才结束。
-		for (int round = 0; round < 4; ++round)
+		// 累积识别出的环境进程 PID（含前几轮已被终止的父进程）。
+		// PROCESSENTRY32.th32ParentProcessID 记录的是进程创建时的父 PID，父进程退出后不会改变，
+		// 因此以累积集合作为进程树根，就能继续找到「父进程已死、看似被 reparent」的子孙进程，
+		// 不需要再按 exe 文件名做全局兜底 —— 那样会把宿主机同名的原生进程（如原生企业微信）一起杀掉。
+		std::set<DWORD> knownPids;
+		const auto seedKnownPids = [&knownPids, selfPid]()
 		{
-			// 1. 环境中通过 RPC 上报过的进程
-			std::vector<DWORD> pids = biz::env_mgr().getAllProcessIdsExclude(0);
-
-			// 2. 记录这些进程的 exe 文件名（完整路径取文件名，规避 32/64 位路径重定向差异）
-			std::set<std::wstring> envExeNames;
-			for (const DWORD pid : pids)
+			for (const DWORD pid : biz::env_mgr().getAllProcessIdsExclude(0))
 			{
-				if (HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid))
+				if (pid != selfPid)
 				{
-					wchar_t buf[MAX_PATH]{};
-					DWORD size = MAX_PATH;
-					if (QueryFullProcessImageNameW(h, 0, buf, &size) && size > 0)
-					{
-						envExeNames.emplace(std::filesystem::path{buf}.filename().native());
-					}
-					CloseHandle(h);
+					knownPids.insert(pid);
 				}
 			}
+		};
+		seedKnownPids();
 
-			// 3. 快照进程表：父子关系 + 每个进程的 exe 文件名
+		// 多轮迭代终止：父进程被终止后子进程仍可能继续派生新进程，单轮快照无法保证零残留。
+		// 每轮重新快照进程树、从累积 PID 集合向下收集，直到连续一轮没有任何进程被杀才结束。
+		for (int round = 0; round < 4 && !knownPids.empty(); ++round)
+		{
+			// 1. 本轮之前刚接入环境的进程
+			seedKnownPids();
+
+			// 2. 快照进程表：父子关系
 			std::unordered_map<DWORD, std::vector<DWORD>> parentToChildren;
-			std::unordered_map<DWORD, std::wstring> pidToExeName;
 			{
 				HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
 				if (snapshot != INVALID_HANDLE_VALUE)
@@ -993,7 +991,6 @@ namespace ui
 						do
 						{
 							parentToChildren[pe.th32ParentProcessID].push_back(pe.th32ProcessID);
-							pidToExeName.emplace(pe.th32ProcessID, pe.szExeFile);
 						}
 						while (Process32NextW(snapshot, &pe));
 					}
@@ -1001,32 +998,26 @@ namespace ui
 				}
 			}
 
-			// 4. 收集待杀列表：上报进程 + 进程树后代 + 同名 exe 兜底
-			std::vector<DWORD> allToKill = pids;
-			for (const DWORD pid : pids)
+			// 3. 收集待杀列表：累积 PID 集合 + 进程树后代
+			std::vector<DWORD> allToKill(knownPids.begin(), knownPids.end());
+			std::vector<DWORD> stack(knownPids.begin(), knownPids.end());
+			while (!stack.empty())
 			{
-				std::vector<DWORD> stack{pid};
-				while (!stack.empty())
+				const DWORD cur = stack.back();
+				stack.pop_back();
+				const auto it = parentToChildren.find(cur);
+				if (it == parentToChildren.end())
 				{
-					const DWORD cur = stack.back();
-					stack.pop_back();
-					const auto it = parentToChildren.find(cur);
-					if (it == parentToChildren.end())
-					{
-						continue;
-					}
-					for (const DWORD child : it->second)
+					continue;
+				}
+				for (const DWORD child : it->second)
+				{
+					// insert 返回 true 表示首次发现：既入待杀列表也入累积集合，供后续轮次继续向下追踪
+					if (knownPids.insert(child).second)
 					{
 						allToKill.push_back(child);
 						stack.push_back(child);
 					}
-				}
-			}
-			for (const auto& [pid, exeName] : pidToExeName)
-			{
-				if (envExeNames.contains(exeName))
-				{
-					allToKill.push_back(pid);
 				}
 			}
 			// 去重
@@ -1349,7 +1340,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.2.4   更新时间：2026/10/28   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.2.5   更新时间：2026/10/29   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",
