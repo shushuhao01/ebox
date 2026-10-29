@@ -198,7 +198,7 @@ public:
 	static constexpr std::wstring_view kUpdateUserAgent{L"eBox-Updater/2.8"};
 
 	// 授权相关外链（激活弹窗 / 授权信息弹窗的"购买激活码""联系客服"按钮点击跳转）
-	static constexpr std::wstring_view kBuyLicenseUrl{L"https://noepay.cn/"};            // 购买激活码
+	static constexpr std::wstring_view kBuyLicenseUrl{L"https://noepay.cn/c/uj7qda"};    // 购买激活码（渠道推广链接，便于商城后台统计）
 	static constexpr std::wstring_view kServiceUrl{L"https://work.weixin.qq.com/kfid/kfce45838d309351f53"};  // WX 客服
 	static constexpr std::wstring_view kWebsiteUrl{L"https://abc222.cn/c/rj86wk"};      // 官网（渠道推广链接：工具栏"官网"、常见问题"访问官网"、授权"访问官网"）
 
