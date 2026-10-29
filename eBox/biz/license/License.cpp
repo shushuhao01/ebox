@@ -21,7 +21,7 @@ namespace
 #ifdef LICENSE_GENERATOR
 	// 私钥 blob：BCRYPT_ECCPRIVATE_BLOB（dwMagic=BCRYPT_ECDSA_PRIVATE_P256_MAGIC, cbKey=32, X, Y, d）
 	// 【占位符：真实私钥仅离线保管，绝不入库】
-	// 需要本地发离线码时：从 License.cpp.private.bak 还原本节，发码完成后改回占位符再提交。
+	// 需要本地发离线码时：从离线私钥备份（*.private*.bak，已被 .gitignore 排除）还原本节，发码完成后改回占位符再提交。
 	// 占位数据 magic 非法，BCryptImportKeyPair 必然失败，signPayload 返回 false，不会产出无效码。
 	static constexpr BYTE kPrivateKeyBlob[] = {
 		0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC, 0xCC,
@@ -37,14 +37,36 @@ namespace
 #endif
 
 	// 公钥 blob：BCRYPT_ECCPUBLIC_BLOB
-	// 【密钥由 KeyGen genkey 生成后回填】
-	static constexpr BYTE kPublicKeyBlob[] = {
+	// 双公钥过渡期同时内置旧、新两把公钥，验签时任一通过即有效：
+	//   旧公钥：已签发的库存码、老用户激活码仍依赖它，旧码归零前不得移除
+	//   新公钥：密钥轮换后由授权平台用新私钥签发（与旧私钥无任何数学关系）
+	static constexpr BYTE kPublicKeyBlobOld[] = {
 		0x45, 0x43, 0x53, 0x31, 0x20, 0x00, 0x00, 0x00, 0x2A, 0x89, 0x13, 0xC4,
 		0x61, 0xD1, 0x44, 0xA1, 0x86, 0x59, 0xBB, 0xA9, 0x2F, 0xB7, 0x96, 0x2D,
 		0x38, 0x07, 0xF2, 0x43, 0xA7, 0xD2, 0xFC, 0x39, 0x52, 0xCB, 0x1D, 0x1A,
 		0x34, 0xAD, 0xC5, 0xA5, 0x81, 0x64, 0xBE, 0x69, 0x47, 0x23, 0xAE, 0xEA,
 		0xEA, 0x4D, 0xF5, 0x4F, 0xDF, 0x6E, 0xFF, 0x09, 0x79, 0x4C, 0xCE, 0x71,
 		0x36, 0x87, 0x58, 0x44, 0xD1, 0x12, 0xED, 0x23, 0x41, 0x16, 0x12, 0xF6,
+	};
+	static constexpr BYTE kPublicKeyBlobNew[] = {
+		0x45, 0x43, 0x53, 0x31, 0x20, 0x00, 0x00, 0x00, 0x91, 0x57, 0x2C, 0x6E,
+		0xA6, 0x84, 0x29, 0xC8, 0x29, 0x12, 0xBA, 0xBD, 0xFA, 0x26, 0xA8, 0x0F,
+		0x3B, 0xD4, 0x48, 0x27, 0x8C, 0xA7, 0x48, 0xA4, 0x17, 0x28, 0x0B, 0x91,
+		0x8D, 0xC0, 0x50, 0x28, 0xBD, 0x0A, 0x1E, 0x80, 0x90, 0xD7, 0xA8, 0xE7,
+		0x1D, 0xAD, 0xDE, 0x55, 0x16, 0x76, 0xFC, 0xA1, 0x42, 0xC8, 0xD8, 0xA2,
+		0x44, 0xC9, 0xD1, 0x10, 0x2A, 0xE8, 0x56, 0x35, 0x36, 0xAF, 0x0C, 0x3C,
+	};
+
+	struct PublicKeyBlob
+	{
+		const BYTE* data;
+		std::size_t size;
+	};
+
+	// 可信公钥列表（验签顺序即表中顺序）
+	static constexpr PublicKeyBlob kPublicKeyBlobs[] = {
+		{kPublicKeyBlobOld, sizeof(kPublicKeyBlobOld)},
+		{kPublicKeyBlobNew, sizeof(kPublicKeyBlobNew)},
 	};
 
 	// 激活码 magic（2 字节）：0x42 0x4F（"BO"）
@@ -188,20 +210,34 @@ namespace
 	{
 		const std::vector<BYTE> hash = sha256(payload, payloadSize);
 		BCRYPT_ALG_HANDLE hAlg = nullptr;
-		BCRYPT_KEY_HANDLE hKey = nullptr;
-		bool ok = false;
-		if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDSA_P256_ALGORITHM, nullptr, 0) == 0)
+		if (BCryptOpenAlgorithmProvider(&hAlg, BCRYPT_ECDSA_P256_ALGORITHM, nullptr, 0) != 0)
 		{
+			return false;
+		}
+
+		// 双公钥过渡：逐把公钥尝试，任一验签通过即视为有效（旧码、新码并存）
+		bool ok = false;
+		for (const PublicKeyBlob& blob : kPublicKeyBlobs)
+		{
+			BCRYPT_KEY_HANDLE hKey = nullptr;
 			if (BCryptImportKeyPair(hAlg, nullptr, BCRYPT_ECCPUBLIC_BLOB, &hKey,
-			                        const_cast<BYTE*>(kPublicKeyBlob), sizeof(kPublicKeyBlob), 0) == 0)
+			                        const_cast<BYTE*>(blob.data), static_cast<ULONG>(blob.size), 0) == 0)
 			{
-				ok = (BCryptVerifySignature(hKey, nullptr,
-				                            const_cast<BYTE*>(hash.data()), static_cast<ULONG>(hash.size()),
-				                            const_cast<BYTE*>(signature), static_cast<ULONG>(signatureSize), 0) == 0);
+				if (BCryptVerifySignature(hKey, nullptr,
+				                          const_cast<BYTE*>(hash.data()), static_cast<ULONG>(hash.size()),
+				                          const_cast<BYTE*>(signature), static_cast<ULONG>(signatureSize), 0) == 0)
+				{
+					ok = true;
+				}
 				BCryptDestroyKey(hKey);
 			}
-			BCryptCloseAlgorithmProvider(hAlg, 0);
+			if (ok)
+			{
+				break;
+			}
 		}
+
+		BCryptCloseAlgorithmProvider(hAlg, 0);
 		return ok;
 	}
 

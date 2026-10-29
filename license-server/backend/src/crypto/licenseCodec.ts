@@ -22,9 +22,35 @@ const VERSION_MINOR_DURATION = 8; // 离线时长制（与客户端 KeyGen 同�
 const VERSION_MINOR_ONLINE = 9; // 在线时长制（面板生成，服务端登记托管）
 const VERSION_MINOR_LEGACY = 7; // 换机码（绝对到期）
 
-// 与客户端一致的 P-256 公钥（X/Y，公开信息，来自 eBox kPublicKeyBlob）
-const PUB_X = Buffer.from('2a8913c461d144a18659bba92fb7962d3807f243a7d2fc3952cb1d1a34adc5a5', 'hex');
-const PUB_Y = Buffer.from('8164be694723aeeaea4df54fdf6eff09794cce7136875844d112ed23411612f6', 'hex');
+// 与客户端一致的 P-256 公钥（X/Y，公开信息，来自 eBox kPublicKeyBlobs）
+// 双公钥过渡：验签时逐把尝试，任一通过即有效；旧码归零前不得删除旧公钥
+const PUB_OLD = {
+  x: Buffer.from('2a8913c461d144a18659bba92fb7962d3807f243a7d2fc3952cb1d1a34adc5a5', 'hex'),
+  y: Buffer.from('8164be694723aeeaea4df54fdf6eff09794cce7136875844d112ed23411612f6', 'hex'),
+};
+const PUB_NEW = {
+  x: Buffer.from('91572c6ea68429c82912babdfa26a80f3bd448278ca748a417280b918dc05028', 'hex'),
+  y: Buffer.from('bd0a1e8090d7a8e71dadde551676fca142c8d8a244c9d1102ae8563536af0c3c', 'hex'),
+};
+const PUBLIC_KEYS = [PUB_OLD, PUB_NEW];
+
+// 发码签名所用私钥配套的公钥：过渡期（.env 仍配旧 d）固定为旧公钥，
+// P4 切换 LICENSE_PRIVATE_KEY_D 时同步改为 PUB_NEW
+const SIGNING_PUB = PUB_OLD;
+
+function toPublicKeyObject(pub: { x: Buffer; y: Buffer }): crypto.KeyObject {
+  return crypto.createPublicKey({
+    key: {
+      kty: 'EC',
+      crv: 'P-256',
+      x: pub.x.toString('base64url'),
+      y: pub.y.toString('base64url'),
+    },
+    format: 'jwk',
+  });
+}
+
+const PUBLIC_KEY_OBJECTS = PUBLIC_KEYS.map(toPublicKeyObject);
 
 const BASE32_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 
@@ -105,20 +131,17 @@ export function decodeAndVerify(code: string): ParsedLicense | null {
   // 与客户端 BCryptVerifySignature 完全兼容。
   // 注意：不能用 crypto.verify(null, hash)——null 模式会把传入的 32 字节摘要当作"消息"再次哈希，
   // 导致只对自己二次哈希签名自洽、无法验证标准签名（历史线上问题根因）。
-  const publicKey = crypto.createPublicKey({
-    key: {
-      kty: 'EC',
-      crv: 'P-256',
-      x: PUB_X.toString('base64url'),
-      y: PUB_Y.toString('base64url'),
-    },
-    format: 'jwk',
-  });
+  // 双公钥过渡：逐把公钥尝试，任一通过即有效。
   let ok = false;
-  try {
-    ok = crypto.verify('sha256', payload, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature);
-  } catch {
-    ok = false;
+  for (const publicKey of PUBLIC_KEY_OBJECTS) {
+    try {
+      if (crypto.verify('sha256', payload, { key: publicKey, dsaEncoding: 'ieee-p1363' }, signature)) {
+        ok = true;
+        break;
+      }
+    } catch {
+      // 该公钥验签异常，继续尝试下一把
+    }
   }
   if (!ok) return null;
 
@@ -141,7 +164,7 @@ export function decodeAndVerify(code: string): ParsedLicense | null {
   };
 }
 
-// 私钥对象（懒加载）：用 env 中的 d 标量 + 内置公钥 X/Y 构造
+// 私钥对象（懒加载）：用 env 中的 d 标量 + 配套公钥 X/Y 构造
 let privateKeyCache: crypto.KeyObject | null = null;
 
 function getPrivateKey(): crypto.KeyObject | null {
@@ -153,8 +176,8 @@ function getPrivateKey(): crypto.KeyObject | null {
           kty: 'EC',
           crv: 'P-256',
           d: Buffer.from(env.privateKeyD, 'hex').toString('base64url'),
-          x: PUB_X.toString('base64url'),
-          y: PUB_Y.toString('base64url'),
+          x: SIGNING_PUB.x.toString('base64url'),
+          y: SIGNING_PUB.y.toString('base64url'),
         },
         format: 'jwk',
       });
