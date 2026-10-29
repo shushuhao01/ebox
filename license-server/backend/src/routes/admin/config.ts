@@ -16,6 +16,7 @@ import {
   type NoticeDraft,
 } from '../../services/ConfigService';
 import { writeOperationLog, cleanExpiredData } from '../../services/LogService';
+import { onlineCount } from '../../services/NoticeBroadcaster';
 
 const router = Router();
 
@@ -74,7 +75,7 @@ router.get('/', async (_req, res) => {
   // 发布态/定时任务以结构化对象返回，隐藏内部 JSON 字符串键，避免前端误用
   delete all.notice_payload;
   delete all.notice_pending;
-  ok(res, { ...all, ...(await noticeState()) });
+  ok(res, { ...all, ...(await noticeState()), notice_stream_clients: onlineCount() });
 });
 
 router.put('/', async (req, res) => {
@@ -99,15 +100,15 @@ router.post('/notice/send', async (req, res) => {
   const draft = hasDraftFields(value) ? pickDraft(value) : await getNoticeDraft();
   if (!draft.title.trim() && !draft.content.trim()) return fail(res, '请填写公告标题或内容', 400);
   await saveNoticeDraft(draft);
-  const event = await publishNotice();
+  const { event, delivered } = await publishNotice();
   await writeOperationLog(
     req.auth!.userId,
     '发送系统公告',
     '系统设置',
-    JSON.stringify({ title: draft.title, strong: draft.strong, link: draft.link, notice: event.notice }),
+    JSON.stringify({ title: draft.title, strong: draft.strong, link: draft.link, notice: event.notice, delivered }),
     clientIp(req)
   );
-  ok(res, await noticeState());
+  ok(res, { ...(await noticeState()), notice_delivered: delivered });
 });
 
 // 定时发送：先保存草稿与定时任务，到点由后台定时任务自动推送

@@ -191,8 +191,14 @@ function buildPayload(draft: NoticeDraft, publishedAt: number): NoticePayload | 
   };
 }
 
+/** 公告发布结果：event 为下发内容，delivered 为实际送达的在线连接数 */
+export interface NoticePublishResult {
+  event: NoticeEvent;
+  delivered: number;
+}
+
 /** 立即发送：把当前草稿发布为线上公告并实时推送（草稿为空等价于撤销） */
-export async function publishNotice(): Promise<NoticeEvent> {
+export async function publishNotice(): Promise<NoticePublishResult> {
   const draft = await getNoticeDraft();
   const payload = buildPayload(draft, Date.now());
   if (!payload) return withdrawNotice();
@@ -200,9 +206,9 @@ export async function publishNotice(): Promise<NoticeEvent> {
   await saveConfig('notice', payload.title);
   await saveConfig('notice_pending', '');
   const event = toNoticeEvent(payload);
-  broadcastNotice(event);
-  log.info(`系统公告已发布：${payload.title || '(无标题)'}`);
-  return event;
+  const delivered = broadcastNotice(event);
+  log.info(`系统公告已发布：${payload.title || '(无标题)'}（送达 ${delivered} 个在线连接）`);
+  return { event, delivered };
 }
 
 /** 定时发送：保存草稿并登记待发布任务，由每分钟的定时任务到点推送 */
@@ -225,14 +231,14 @@ export async function cancelScheduledNotice(): Promise<void> {
 }
 
 /** 撤销公告：清空已发布内容并实时通知客户端隐藏横幅 */
-export async function withdrawNotice(): Promise<NoticeEvent> {
+export async function withdrawNotice(): Promise<NoticePublishResult> {
   await saveConfig('notice_payload', '');
   await saveConfig('notice', '');
   await saveConfig('notice_pending', '');
   const event = toNoticeEvent(null);
-  broadcastNotice(event);
-  log.info('系统公告已撤销');
-  return event;
+  const delivered = broadcastNotice(event);
+  log.info(`系统公告已撤销（送达 ${delivered} 个在线连接）`);
+  return { event, delivered };
 }
 
 /** 定时任务入口：待发布任务到点即发布（每分钟调用一次） */

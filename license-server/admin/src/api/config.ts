@@ -25,6 +25,11 @@ export interface NoticeState {
   notice_pending_task: PendingNotice | null
 }
 
+/** 立即发送结果：附带本次实际送达的在线客户端连接数 */
+export interface NoticeSendResult extends NoticeState {
+  notice_delivered?: number
+}
+
 export interface SystemConfig extends NoticeState {
   heartbeat_interval_hours: string
   offline_grace_days: string
@@ -43,6 +48,8 @@ export interface SystemConfig extends NoticeState {
   log_retention_days: string
   /** 每日日志自动清理时间 HH:mm */
   log_clean_time: string
+  /** 当前保持实时连接（SSE）的客户端数量 */
+  notice_stream_clients?: number
 }
 
 /** 读取系统设置（字符串值） */
@@ -57,7 +64,7 @@ export function updateConfig(data: Partial<SystemConfig>) {
 
 /** 立即发送公告（先保存草稿，再实时推送到在线客户端） */
 export function sendNotice(data: NoticeData) {
-  return post<NoticeState>('/config/notice/send', data)
+  return post<NoticeSendResult>('/config/notice/send', data)
 }
 
 /** 定时发送公告（sendAt 为 ISO 时间字符串） */

@@ -61,6 +61,10 @@
                   <span class="notice-status-text">{{ formatTime(pendingNotice.publishAt) }} 自动发送</span>
                   <el-button link type="warning" @click="handleCancelSchedule">取消定时</el-button>
                 </template>
+
+                <el-tag :type="streamClients > 0 ? 'success' : 'info'" size="small" effect="plain">
+                  实时连接 {{ streamClients }}
+                </el-tag>
               </div>
 
               <div class="notice-editor">
@@ -223,6 +227,7 @@ import {
   type NoticePayload,
   type PendingNotice,
   type NoticeState,
+  type NoticeSendResult,
 } from '@/api/config'
 import { changePassword } from '@/api/users'
 import { useUserStore } from '@/stores/user'
@@ -259,6 +264,8 @@ const pendingNotice = ref<PendingNotice | null>(null)
 const noticeSaving = ref(false)
 const noticeSending = ref(false)
 const noticeWithdrawing = ref(false)
+// 当前保持实时连接（SSE）的客户端数量，用于判断公告能否即时送达
+const streamClients = ref(0)
 
 // 预览标题：标题优先，无标题时取正文首个非空行（与客户端横幅一致）
 const previewTitle = computed(
@@ -302,6 +309,7 @@ async function loadPolicy() {
     noticeForm.strong = data.notice_strong === '1'
     noticeForm.link = data.notice_link ?? ''
     applyNoticeState(data)
+    streamClients.value = data.notice_stream_clients ?? 0
     // 老数据迁移：只有已发布公告（历史 notice）时，回填到草稿便于继续编辑
     if (!noticeForm.title && !noticeForm.content && data.notice_published) {
       noticeForm.title = data.notice_published.title
@@ -334,8 +342,9 @@ async function savePolicy() {
     let noticeTip = ''
     if (!noticeContentEmpty()) {
       if (sendMode.value === 'now') {
-        applyNoticeState(await sendNotice(buildNoticeBody()))
-        noticeTip = '，公告已推送到客户端'
+        const res = await sendNotice(buildNoticeBody())
+        applyNoticeState(res)
+        noticeTip = `，${deliveredTip(res)}`
       } else {
         const ts = sendAt.value ? new Date(sendAt.value.replace(/-/g, '/')).getTime() : 0
         if (!ts || ts <= Date.now()) {
@@ -368,6 +377,14 @@ function noticeContentEmpty(): boolean {
   return !noticeForm.title.trim() && !noticeForm.content.trim()
 }
 
+// 依据后端返回的真实送达连接数给出提示，避免无客户端在线时误报“已推送”
+function deliveredTip(res: NoticeSendResult): string {
+  const n = res.notice_delivered ?? 0
+  return n > 0
+    ? `公告已推送到 ${n} 个在线客户端`
+    : '当前无客户端保持实时连接，公告将在客户端下次心跳时同步'
+}
+
 async function handleSaveDraft() {
   noticeSaving.value = true
   try {
@@ -392,8 +409,9 @@ async function handleSendNotice() {
   }
   noticeSending.value = true
   try {
-    applyNoticeState(await sendNotice(buildNoticeBody()))
-    ElMessage.success('公告已发送，在线客户端将立即更新')
+    const res = await sendNotice(buildNoticeBody())
+    applyNoticeState(res)
+    ElMessage.success(deliveredTip(res))
   } catch {
     // 拦截器已提示
   } finally {

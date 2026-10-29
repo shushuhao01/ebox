@@ -68,9 +68,13 @@ export function removeClient(res: Response): void {
   stopKeepaliveIfIdle();
 }
 
-/** 广播公告变更到所有在线连接。 */
-export function broadcastNotice(event: NoticeEvent): void {
-  if (clients.size === 0) return;
+/** 广播公告变更到所有在线连接，返回实际写入成功的连接数。 */
+export function broadcastNotice(event: NoticeEvent): number {
+  const total = clients.size;
+  if (total === 0) {
+    logger.info('SSE 公告广播：当前无客户端保持实时连接，公告将在客户端下次心跳/启动时同步');
+    return 0;
+  }
   let sent = 0;
   for (const res of clients) {
     try {
@@ -80,7 +84,8 @@ export function broadcastNotice(event: NoticeEvent): void {
       clients.delete(res);
     }
   }
-  logger.info(`SSE 公告广播：${sent} 个在线连接已收到更新`);
+  logger.info(`SSE 公告广播：${sent}/${total} 个在线连接已收到更新`);
+  return sent;
 }
 
 /** 当前在线连接数（供后台/诊断查看）。 */
