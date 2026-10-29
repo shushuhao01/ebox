@@ -25,6 +25,12 @@
       </div>
     </section>
 
+    <BrandWall
+      title="支持多开的电脑客户端应用"
+      subtitle="以下应用均提供 Windows 客户端，都能创建多个独立环境同时运行。"
+      grouped
+    />
+
     <section class="section section-soft">
       <div class="container">
         <div class="section-head">
@@ -55,6 +61,7 @@
 </template>
 
 <script setup lang="ts">
+import BrandWall from '@/components/BrandWall.vue'
 import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
 

@@ -154,6 +154,9 @@
       subtitle="阅读使用教程、行业科普与产品更新，帮助你更好地使用本站工具。"
     />
 
+    <!-- 支持应用图标墙 -->
+    <BrandWall />
+
     <!-- CTA -->
     <section class="section">
       <div class="container">
@@ -214,6 +217,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { getCaseList, getLatestRelease, track, type LatestRelease, type SiteCase } from '@/api'
 import ArticlePinned from '@/components/ArticlePinned.vue'
+import BrandWall from '@/components/BrandWall.vue'
 import { useSite } from '@/composables/useSite'
 import { usePageHead } from '@/composables/usePageHead'
 
