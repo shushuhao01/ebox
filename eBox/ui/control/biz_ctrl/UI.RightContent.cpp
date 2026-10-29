@@ -19,7 +19,7 @@ namespace
 	constexpr float BANNER_COLLAPSED_HEIGHT = 24.f;
 	constexpr float BANNER_BTN_WIDTH = 44.f;
 	constexpr float BANNER_BTN_HEIGHT = 20.f;
-	constexpr float BANNER_BADGE_WIDTH = 46.f;    // 强提醒左侧“强提醒”胶囊宽度
+	constexpr float BANNER_BADGE_WIDTH = 34.f;    // 强提醒左侧“公告”胶囊宽度
 	constexpr float BANNER_BADGE_GAP = 8.f;
 	constexpr std::wstring_view BANNER_TEXT{
 		L"提示：启用进程后建议改环境名称；下次如需再次启动对应进程，无需重新新建，直接启动该环境即可"
@@ -59,6 +59,27 @@ namespace
 		L"本软件只能简单地在环境之间隔离，不会阻止环境内进程访问环境外资源，也不会阻止环境外进程感知环境内进程",
 		L"环境中暂时只能查看所有正在运行的进程，实际还会将其中进程读写的一部分路径重定向，包括常见的配置、存档目录",
 	};
+
+	// 公告栏按钮配色：普通公告为浅色底深色字；强提醒深红底下改为白字 + 半透明白描边/悬停底色，保证反差清晰
+	void applyBannerButtonStyle(ui::Button& btn, bool strong, const D2D1_COLOR_F& hoverBg, const D2D1_COLOR_F& hoverBorder)
+	{
+		if (strong)
+		{
+			btn.setTextColor(D2D1::ColorF(0xffffff));
+			btn.setBackgroundColor(D2D1::ColorF(0xffffff, 0.f), ui::Button::EState::Normal);
+			btn.setBackgroundColor(D2D1::ColorF(0xffffff, 0.18f), ui::Button::EState::Hover);
+			btn.setBackgroundColor(D2D1::ColorF(0xffffff, 0.30f), ui::Button::EState::Active);
+			btn.setBorderColor(D2D1::ColorF(0xffffff, 0.55f));
+			return;
+		}
+		btn.setTextColor(D2D1::ColorF(0x333333));
+		btn.setBackgroundColor(D2D1::ColorF(0x000000, 0.f), ui::Button::EState::Normal);
+		btn.setBackgroundColor(hoverBg, ui::Button::EState::Hover);
+		btn.setBackgroundColor(hoverBg, ui::Button::EState::Active);
+		btn.setBorderColor(D2D1::ColorF(0xe0e0e0));
+		btn.setBorderColor(hoverBorder, ui::Button::EState::Hover);
+		btn.setBorderColor(hoverBorder, ui::Button::EState::Active);
+	}
 }
 
 namespace ui
@@ -118,11 +139,8 @@ namespace ui
 
 		m_btnBannerToggle = std::make_unique<Button>(this);
 		m_btnBannerToggle->setText(L"收起");
-		m_btnBannerToggle->setBackgroundColor(D2D1::ColorF(0xfff3e0));
-		m_btnBannerToggle->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Normal);
-		m_btnBannerToggle->setBorderColor(D2D1::ColorF(0xffb74d));
-		m_btnBannerToggle->setBorderColor(D2D1::ColorF(0xe0e0e0), Button::EState::Normal);
-		m_btnBannerToggle->setTextColor(D2D1::ColorF(0x333333));
+		applyBannerButtonStyle(*m_btnBannerToggle, m_notice.strong,
+		                       D2D1::ColorF(0xfff3e0), D2D1::ColorF(0xffb74d));
 		m_btnBannerToggle->setTextFormat(app().textFormat().pToolBtnFormat);
 		m_btnBannerToggle->setOnClick([this]
 		{
@@ -135,11 +153,8 @@ namespace ui
 
 		m_btnBannerClose = std::make_unique<Button>(this);
 		m_btnBannerClose->setText(L"×");
-		m_btnBannerClose->setBackgroundColor(D2D1::ColorF(0xffebee));
-		m_btnBannerClose->setBackgroundColor(D2D1::ColorF(0x000000, 0.f), Button::EState::Normal);
-		m_btnBannerClose->setBorderColor(D2D1::ColorF(0xf44336));
-		m_btnBannerClose->setBorderColor(D2D1::ColorF(0xe0e0e0), Button::EState::Normal);
-		m_btnBannerClose->setTextColor(D2D1::ColorF(0x333333));
+		applyBannerButtonStyle(*m_btnBannerClose, m_notice.strong,
+		                       D2D1::ColorF(0xffebee), D2D1::ColorF(0xf44336));
 		m_btnBannerClose->setTextFormat(app().textFormat().pToolBtnFormat);
 		m_btnBannerClose->setOnClick([this]
 		{
@@ -169,6 +184,14 @@ namespace ui
 			return;
 		}
 		m_notice = std::move(notice);
+		// 强提醒会切换公告栏底色，按钮需同步换成反差配色
+		if (m_btnBannerToggle && m_btnBannerClose)
+		{
+			applyBannerButtonStyle(*m_btnBannerToggle, m_notice.strong,
+			                       D2D1::ColorF(0xfff3e0), D2D1::ColorF(0xffb74d));
+			applyBannerButtonStyle(*m_btnBannerClose, m_notice.strong,
+			                       D2D1::ColorF(0xffebee), D2D1::ColorF(0xf44336));
+		}
 		// 新公告（含强提醒）到达时自动展开，保证用户能看到最新内容
 		if (!m_notice.empty())
 		{
@@ -374,15 +397,15 @@ namespace ui
 				float textX = m_bannerRect.left + 10.f;
 				if (strong)
 				{
-					// 左侧“强提醒”胶囊（白底深红字），强化视觉反差
+					// 左侧“公告”胶囊（白底深红字），强化视觉反差
 					const float badgeTop = m_bannerRect.top + (bannerHeight - 20.f) * 0.5f;
 					const D2D1_ROUNDED_RECT badge = D2D1::RoundedRect(
 						D2D1::RectF(textX, badgeTop, textX + BANNER_BADGE_WIDTH, badgeTop + 20.f), 10.f, 10.f);
 					solidBrush->SetColor(D2D1::ColorF(0xffffff));
 					renderTarget->FillRoundedRectangle(badge, solidBrush);
 					solidBrush->SetColor(D2D1::ColorF(0x8e1b12));
-					renderTarget->DrawTextW(L"强提醒", 3u, app().textFormat().pTipsFormat,
-					                        D2D1::RectF(textX, badgeTop + 2.f, textX + BANNER_BADGE_WIDTH, badgeTop + 20.f),
+					renderTarget->DrawTextW(L"公告", 2u, app().textFormat().pTipsFormat,
+					                        D2D1::RectF(textX + 5.f, badgeTop + 2.f, textX + BANNER_BADGE_WIDTH, badgeTop + 20.f),
 					                        solidBrush);
 					textX += BANNER_BADGE_WIDTH + BANNER_BADGE_GAP;
 				}

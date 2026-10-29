@@ -46,7 +46,7 @@
             <div class="form-item">
               <div class="form-label">
                 系统公告
-                <span class="hint">客户端首页公告栏；保存草稿不会推送，需「立即发送」或设置定时发送</span>
+                <span class="hint">客户端首页公告栏；按发送方式保存设置即生效推送，也可直接点「立即发送」</span>
               </div>
 
               <div class="notice-status">
@@ -63,23 +63,23 @@
                 </template>
               </div>
 
-              <el-input
-                v-model="noticeForm.title"
-                maxlength="80"
-                show-word-limit
-                placeholder="公告标题（客户端公告栏显示，最长 2 行）"
-                style="width: 480px; max-width: 100%; margin-bottom: 10px"
-              />
+              <div class="notice-editor">
+                <el-input
+                  v-model="noticeForm.title"
+                  maxlength="80"
+                  show-word-limit
+                  placeholder="公告标题（客户端公告栏显示，最长 2 行）"
+                />
 
-              <el-input
-                v-model="noticeForm.content"
-                type="textarea"
-                :rows="5"
-                maxlength="2000"
-                show-word-limit
-                placeholder="公告详情（可选）：填写后客户端点击公告栏弹出详情窗口"
-                style="width: 480px; max-width: 100%"
-              />
+                <el-input
+                  v-model="noticeForm.content"
+                  type="textarea"
+                  :rows="5"
+                  maxlength="2000"
+                  show-word-limit
+                  placeholder="公告详情（可选）：填写后客户端点击公告栏弹出详情窗口"
+                />
+              </div>
 
               <div class="notice-options">
                 <span class="notice-option-label">强提醒</span>
@@ -92,7 +92,7 @@
                 <el-input
                   v-model="noticeForm.link"
                   maxlength="500"
-                  placeholder="https://（可选，配置后客户端详情窗口显示「查看详情」）"
+                  placeholder="https://（可选，配置后客户端详情窗口显示「详情」）"
                   style="width: 360px; max-width: 100%"
                 />
               </div>
@@ -120,7 +120,7 @@
                   <span class="np-tag">公告</span>
                   <span class="np-text">{{ previewTitle }}</span>
                   <span v-if="noticeForm.content || noticeForm.link" class="np-action">
-                    {{ noticeForm.content ? '查看详情' : '查看' }}
+                    {{ noticeForm.content ? '详情' : '查看' }}
                   </span>
                 </div>
               </div>
@@ -324,7 +324,29 @@ async function savePolicy() {
       log_retention_days: String(policy.log_retention_days),
       log_clean_time: policy.log_clean_time,
     })
-    ElMessage.success('系统设置已保存')
+    // 系统公告：保存设置后按所选发送方式立即生效（立即发送=马上推送，定时发送=到点自动推送）
+    await updateConfig({
+      notice_title: noticeForm.title,
+      notice_content: noticeForm.content,
+      notice_strong: noticeForm.strong ? '1' : '0',
+      notice_link: noticeForm.link.trim(),
+    })
+    let noticeTip = ''
+    if (!noticeContentEmpty()) {
+      if (sendMode.value === 'now') {
+        applyNoticeState(await sendNotice(buildNoticeBody()))
+        noticeTip = '，公告已推送到客户端'
+      } else {
+        const ts = sendAt.value ? new Date(sendAt.value.replace(/-/g, '/')).getTime() : 0
+        if (!ts || ts <= Date.now()) {
+          noticeTip = '，公告已保存，请选择晚于当前时间的定时发送时间'
+        } else {
+          applyNoticeState(await scheduleNotice({ ...buildNoticeBody(), sendAt: new Date(ts).toISOString() }))
+          noticeTip = `，公告将于 ${formatTime(ts)} 自动推送`
+        }
+      }
+    }
+    ElMessage.success(`系统设置已保存${noticeTip}`)
     await loadPolicy()
   } catch {
     // 拦截器已提示
@@ -556,6 +578,14 @@ onMounted(loadPolicy)
       font-size: 13px;
       color: var(--text-main);
     }
+  }
+
+  .notice-editor {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 480px;
+    max-width: 100%;
   }
 
   .notice-status {

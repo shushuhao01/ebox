@@ -2276,7 +2276,7 @@ namespace ui
 			if (data.hLink)
 			{
 				SetWindowPos(data.hLink, nullptr,
-				             S(NOTICE_DLG_WIDTH - 172 - 118), S(NOTICE_DLG_HEIGHT - 46), S(108), S(36),
+				             S(NOTICE_DLG_WIDTH - 172 - 94), S(NOTICE_DLG_HEIGHT - 46), S(84), S(36),
 				             SWP_NOZORDER | SWP_NOACTIVATE);
 			}
 		}
@@ -2320,7 +2320,7 @@ namespace ui
 				                               hInst, nullptr);
 				if (!data->link.empty())
 				{
-					data->hLink = CreateWindowExW(0, L"BUTTON", L"查看详情",
+					data->hLink = CreateWindowExW(0, L"BUTTON", L"详情",
 					                              WS_CHILD | WS_VISIBLE | WS_TABSTOP | BS_OWNERDRAW,
 					                              0, 0, 0, 0, hwnd,
 					                              reinterpret_cast<HMENU>(static_cast<std::intptr_t>(NOTICE_LINK_ID)),

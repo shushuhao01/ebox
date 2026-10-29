@@ -16,7 +16,7 @@ namespace ui
 	export void show_privacy_agreement_dialog(HWND hOwner);
 
 	// 弹出服务端系统公告详情弹窗（固定 560×560，标题最多两行，正文可滚动，
-	// 配置了链接时底部显示“查看详情”按钮）；strong=true 时使用强提醒深红标题区。
+	// 配置了链接时底部显示“详情”按钮）；strong=true 时使用强提醒深红标题区。
 	export void show_notice_dialog(HWND hOwner, const std::wstring& title, const std::wstring& content,
 	                               const std::wstring& link, bool strong);
 
