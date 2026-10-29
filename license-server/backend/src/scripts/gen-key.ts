@@ -18,8 +18,7 @@ console.log('==============================================');
 if (!d) {
   console.log('⚠️  未配置 LICENSE_PRIVATE_KEY_D');
   console.log('   请在 .env 中配置与 eBox 客户端配套的私钥标量 d（hex）');
-  console.log('   出厂默认（与当前 eBox 客户端内置公钥配套）：');
-  console.log('   1e34ab0973d3c60a02c1fdae954c4d4d9492084fafb6428a17a86991a277d66e');
+  console.log('   私钥需与 eBox 客户端内置公钥配套，仅离线保管，禁止写入仓库、脚本或文档');
   process.exit(0);
 }
 try {
