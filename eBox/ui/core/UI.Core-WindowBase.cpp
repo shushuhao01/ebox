@@ -333,6 +333,12 @@ namespace ui
 		{
 			return hr;
 		}
+		// 显式使用灰度抗锯齿：预乘 alpha 的窗口渲染目标下，ClearType 需要额外的中间不透明表面，
+		// 部分显卡驱动/虚拟机环境下该表面创建失败会导致文字被静默丢弃（图形正常、文字全空白），
+		// 统一走灰度可消除这类环境差异，观感几乎无差别
+		m_renderCtx.renderTarget->SetTextAntialiasMode(D2D1_TEXT_ANTIALIAS_MODE_GRAYSCALE);
+		// 首帧文本/字形资源可能尚未就绪，标记为需要补画一帧
+		m_bRepaintAfterCreate = true;
 		hr = m_renderCtx.renderTarget->CreateSolidColorBrush(D2D1::ColorF{D2D1::ColorF::White}, &m_renderCtx.brush);
 		if (FAILED(hr))
 		{
@@ -365,6 +371,13 @@ namespace ui
 		m_renderCtx.renderTarget.reset();
 		m_renderCtx.brush.reset();
 		onDiscardDeviceResources();
+	}
+
+	bool WindowBase::consumeRepaintAfterCreateRequest()
+	{
+		const bool bNeed = m_bRepaintAfterCreate;
+		m_bRepaintAfterCreate = false;
+		return bNeed;
 	}
 
 	void WindowBase::updateDpi()
@@ -553,11 +566,16 @@ namespace ui
 						break;
 					case WM_PAINT:
 						{
+							bool bRendered = false;
 							if (SUCCEEDED(pWnd->prepareDeviceResources()))
 							{
 								if (FAILED(pWnd->onRender()))
 								{
 									pWnd->releaseDeviceResources();
+								}
+								else
+								{
+									bRendered = true;
 								}
 							}
 							else
@@ -565,6 +583,12 @@ namespace ui
 								pWnd->releaseDeviceResources();
 							}
 							ValidateRect(hWnd, nullptr);
+							// 新建渲染目标后的首帧可能文字整体缺失（EndDraw 仍返回成功，无法感知），
+							// 这里在首帧之后强制整体重绘一次，避免用户必须重启程序才能看到文字
+							if (bRendered && pWnd->consumeRepaintAfterCreateRequest())
+							{
+								InvalidateRect(hWnd, nullptr, FALSE);
+							}
 						}
 						return 0;
 					case WM_CLOSE:

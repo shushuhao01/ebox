@@ -563,6 +563,9 @@ namespace ui
 		void destroyWindowInternal();
 		HResult prepareDeviceResources();
 		void releaseDeviceResources();
+		// 新建渲染目标后的首帧文字可能整体丢失（EndDraw 仍返回成功），需要强制整体重绘一次自愈。
+		// 返回 true 表示本次需要补一帧（每个渲染目标只触发一次）
+		bool consumeRepaintAfterCreateRequest();
 		void updateDpi();
 		void resize(std::uint32_t width, std::uint32_t height);
 		void mouseMove(int physicalX, int physicalY, MouseEvent::ButtonType button, std::size_t downState);
@@ -586,6 +589,7 @@ namespace ui
 		RenderContext m_renderCtx{};
 		std::vector<RendererInterface*> m_renderersExcludeControls;
 		std::vector<RendererInterface*> m_pendingNoDeviceResources;
+		bool m_bRepaintAfterCreate{false};   // 渲染目标新建后需补画一帧
 		ControlManager m_controlManager{};
 		// 全局悬浮提示状态
 		std::wstring m_tooltipText;

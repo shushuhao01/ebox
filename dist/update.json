@@ -3,7 +3,7 @@
     "latestVersionCode": 30300,
     "releaseDate": "2026/10/29",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "ccb753bcd4424e1ac2202e309f154987c9bdc97d62cc1a0bdd0731af96a3849a",
+    "downloadSha256": "d26bbd3c31c3dbdfd7b0c8588e8d81923516eded21efbc0593439801babf0e49",
     "downloadSize": 3930624,
     "changelog": [
         "激活码验签升级为双公钥：客户端同时内置旧、新两把 ECDSA P-256 公钥，逐把尝试验签，任一通过即激活成功",
