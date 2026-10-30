@@ -75,6 +75,7 @@ const brandGroups = [
       { file: 'capcut.png', name: '剪映' },
       { file: 'netease-music.png', name: '网易云音乐' },
       { file: 'uu-remote.png', name: 'UU远程' },
+      { file: 'bitbrowser.png', name: '比特浏览器' },
       { file: 'qqmusic.png', name: 'QQ音乐' },
       { file: 'baidupan.png', name: '百度网盘' },
       { file: 'wps.png', name: 'WPS Office' },
