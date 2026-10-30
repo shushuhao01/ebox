@@ -1,19 +1,21 @@
 {
-    "latestVersion": "v3.3.0",
-    "latestVersionCode": 30300,
+    "latestVersion": "v3.3.1",
+    "latestVersionCode": 30301,
     "releaseDate": "2026/10/30",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "d26bbd3c31c3dbdfd7b0c8588e8d81923516eded21efbc0593439801babf0e49",
-    "downloadSize": 3930624,
+    "downloadSha256": "dced8f8d67f1f65c43f6fa85f9a62cac79b67bbdd0f1b85499e800dc15e3e1f0",
+    "downloadSize": 3964416,
     "changelog": [
-        "激活码验签升级为双公钥：客户端同时内置旧、新两把 ECDSA P-256 公钥，逐把尝试验签，任一通过即激活成功",
-        "新旧密钥签发的激活码均可正常激活，旧码、已售库存码、永久码全部继续有效，本次升级对用户零影响",
-        "签名侧暂不切换（服务端仍用旧私钥签发），待存量老客户端全部升级后再执行切换"
+        "修复比特浏览器在环境里第一次打开窗口失败的问题（提示 Browser was not found）",
+        "首次启动时自动复用本机已下载好的浏览器内核，不用再等它重新下载",
+        "环境里已经有内核时自动跳过，不会重复拷贝",
+        "修复环境内程序通过 CreateProcess 系列接口启动时路径没有重定向的问题",
+        "同步版本号至 v3.3.1"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.3.0/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.3.1/eBox.exe"
     ]
 }
