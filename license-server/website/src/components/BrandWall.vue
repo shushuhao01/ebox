@@ -7,12 +7,16 @@
       </div>
 
       <template v-if="grouped">
-        <div v-for="group in brandGroups" :key="group.label" class="brand-group">
+        <div v-for="(group, gi) in brandGroups" :key="group.label" class="brand-group">
           <div class="brand-group-label">{{ group.label }}</div>
           <div class="brand-tiles">
             <div v-for="b in group.items" :key="b.file" class="brand-tile">
               <img class="brand-logo" :src="iconUrl(b.file)" :alt="b.name" loading="lazy" />
               <span class="brand-name">{{ b.name }}</span>
+            </div>
+            <div v-if="gi === brandGroups.length - 1" class="brand-tile brand-tile-more">
+              <span class="brand-more-icon" aria-hidden="true">···</span>
+              <span class="brand-name">还有更多应用</span>
             </div>
           </div>
         </div>
@@ -22,6 +26,10 @@
         <div v-for="b in flatBrands" :key="b.file" class="brand-tile">
           <img class="brand-logo" :src="iconUrl(b.file)" :alt="b.name" loading="lazy" />
           <span class="brand-name">{{ b.name }}</span>
+        </div>
+        <div class="brand-tile brand-tile-more">
+          <span class="brand-more-icon" aria-hidden="true">···</span>
+          <span class="brand-name">还有更多应用</span>
         </div>
       </div>
 
@@ -150,6 +158,33 @@ const flatBrands = computed(() => brandGroups.flatMap((g) => g.items))
 
 .brand-group + .brand-group {
   margin-top: 26px;
+}
+
+/* 末尾的“还有更多应用”占位块：虚线边框、弱化配色，与真实图标区分开 */
+.brand-tile-more {
+  border-style: dashed;
+  background: var(--bg-soft);
+  cursor: default;
+}
+
+.brand-tile-more:hover {
+  border-color: var(--border);
+  box-shadow: none;
+  transform: none;
+}
+
+.brand-more-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  color: var(--text-3);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 1px;
+  border-radius: 22%;
+  background: #fff;
 }
 
 .brand-group-label {
