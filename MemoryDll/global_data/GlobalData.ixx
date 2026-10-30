@@ -157,4 +157,13 @@ namespace global
 	}
 
 	export bool ensure_dir_exists(std::wstring_view fullName, bool bIsDir);
+
+	// CreateProcess 系 hook 专用：映像文件由内核打开，不经过 NtCreateFile hook，
+	// 因此子进程 exe 若位于被重定向的已知文件夹（如 %APPDATA%）内，需要主动改写路径。
+	// 返回环境内路径（真实存在时）；无需/无法改写时返回 std::nullopt。
+	export std::optional<std::wstring> redirect_executable_path(std::wstring_view path);
+
+	// 同上，但作用于命令行首 token（可执行文件路径，可能带引号）；
+	// 命中时返回重建后的整条命令行，否则返回 std::nullopt。
+	export std::optional<std::wstring> redirect_executable_command_line(std::wstring_view cmdLine);
 }

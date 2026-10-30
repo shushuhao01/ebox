@@ -1,6 +1,9 @@
 module;
 #include <windows.h>
 #include <tlhelp32.h>
+// SHGetKnownFolderPath：定位真实的 %APPDATA%，用于首次复用宿主机已有的浏览器内核
+#include <shlobj.h>
+#include <objbase.h>
 
 module Launcher;
 
@@ -165,6 +168,69 @@ namespace
 		blob.insert(blob.end(), countBytes, countBytes + sizeof(charCount));
 		const auto* textBytes = reinterpret_cast<const char*>(text.data());
 		blob.insert(blob.end(), textBytes, textBytes + text.size() * sizeof(wchar_t));
+	}
+
+	// 首次复用宿主机已有的浏览器内核（比特浏览器 BitBrowser）：
+	// 内核下载后由子进程 7za 解压，解压落盘走的是真实 %APPDATA%\BitBrowser\Chrome-bin，
+	// 而客户端在环境进程内用 existsSync 检查的是被重定向后的环境内路径，
+	// 首次启动必然报 "Browser was not found at the configured executablePath"。
+	// 这里在启动前把真实目录里已存在的内核复制进环境目录，消除首次失败；
+	// 环境内已有内核（非空）时直接跳过，不重复拷贝。
+	void reuse_host_bitbrowser_kernel(const biz::Env* env)
+	{
+		namespace fs = std::filesystem;
+		try
+		{
+			PWSTR roaming = nullptr;
+			if (SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &roaming) != S_OK || !roaming)
+			{
+				return;
+			}
+			const fs::path roamingPath{roaming};
+			CoTaskMemFree(roaming);
+			// 去掉盘符得到重定向相对路径（与 MemoryDll 的重定向规则一致）
+			const fs::path rel = roamingPath.relative_path();
+			if (rel.empty())
+			{
+				return;
+			}
+			const fs::path src = roamingPath / fs::path{L"BitBrowser"} / fs::path{L"Chrome-bin"};
+			std::error_code ec;
+			if (!fs::is_directory(src, ec) || ec)
+			{
+				return;
+			}
+			const fs::path dst = fs::path{app().envDataRoot()} / fs::path{L"Env"} /
+			                     fs::path{std::format(L"{}", env->getIndex())} / rel /
+			                     fs::path{L"BitBrowser"} / fs::path{L"Chrome-bin"};
+			if (fs::is_directory(dst, ec) && !ec)
+			{
+				std::error_code emptyEc;
+				if (!fs::is_empty(dst, emptyEc) && !emptyEc)
+				{
+					return;
+				}
+			}
+			fs::create_directories(dst, ec);
+			std::error_code copyEc;
+			fs::copy(src, dst, fs::copy_options::recursive | fs::copy_options::skip_existing, copyEc);
+			if (copyEc)
+			{
+				// 半成品会让客户端"看起来有内核"却启动失败，清掉以便下次启动重试
+				std::error_code removeEc;
+				fs::remove_all(dst, removeEc);
+				biz::env_logger().append(env->getIndex(), biz::EnvLogType::Error, biz::EnvLogStatus::Fail,
+				                         L"复用宿主机浏览器内核失败",
+				                         std::format(L"{} → {}（错误码 {}）", src.native(), dst.native(), copyEc.value()));
+				return;
+			}
+			biz::env_logger().append(env->getIndex(), biz::EnvLogType::Info, biz::EnvLogStatus::Info,
+			                         L"复用宿主机浏览器内核",
+			                         std::format(L"已复制 {} → {}", src.native(), dst.native()));
+		}
+		catch (...)
+		{
+		}
 	}
 
 	std::wstring read_injector_log(const std::filesystem::path& logPath)
@@ -454,6 +520,8 @@ namespace biz
 				env_logger().append(env->getIndex(), EnvLogType::Info, EnvLogStatus::Info,
 				                    L"注册表", L"hive 加载失败，已回退为进程级虚拟注册表（数据不持久化）");
 			}
+			// 首次复用宿主机已下载好的浏览器内核（避免环境内首次解压失败导致开不了窗口）
+			reuse_host_bitbrowser_kernel(env.get());
 			const PROCESS_INFORMATION procInfo = create_and_inject(env.get(), exePath, params);
 			// 32 位注入器路径下目标进程已由注入器自行 Resume，hThread/hProcess 为空
 			if (procInfo.hThread != nullptr)

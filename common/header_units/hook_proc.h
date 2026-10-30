@@ -46,6 +46,27 @@ namespace hook_proc
 		return ws;
 	}
 
+	// 宽字符串 → 窄字符串（用于 CreateProcessA 系 hook 回写重定向后的路径）
+	inline std::string w2a(const wchar_t* s)
+	{
+		if (!s)
+		{
+			return {};
+		}
+		const int len = ::WideCharToMultiByte(CP_ACP, 0, s, -1, nullptr, 0, nullptr, nullptr);
+		if (len <= 0)
+		{
+			return {};
+		}
+		std::string as(static_cast<std::size_t>(len), '\0');
+		::WideCharToMultiByte(CP_ACP, 0, s, -1, as.data(), len, nullptr, nullptr);
+		if (!as.empty() && as.back() == '\0')
+		{
+			as.pop_back();
+		}
+		return as;
+	}
+
 	// 从命令行解析第一个 token（exe 路径，可能带引号），写入 outBuf；返回 outBuf
 	inline const wchar_t* first_cmd_token(const wchar_t* cmdLine, wchar_t* outBuf, std::size_t outSize)
 	{

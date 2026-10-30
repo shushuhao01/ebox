@@ -302,6 +302,80 @@ namespace global
 		return result;
 	}
 
+	std::optional<std::wstring> redirect_executable_path(std::wstring_view path)
+	{
+		// 仅处理"已知文件夹（%APPDATA% 等）内的可执行文件"：
+		// 这类 exe 在环境内真实存在，但 CreateProcess 用逻辑路径打开映像时找不到。
+		if (path.empty())
+		{
+			return std::nullopt;
+		}
+		const Data& data = Data::get();
+		const std::wstring ntPath = std::format(L"{}{}", PREFIX_TO_CHECK, path);
+		if (!data.isInKnownFolderPath(ntPath))
+		{
+			return std::nullopt;
+		}
+		const std::optional<std::wstring> redirectPath = data.getRedirectPath(ntPath);
+		if (!redirectPath)
+		{
+			return std::nullopt;
+		}
+		std::wstring_view target = *redirectPath;
+		if (target.starts_with(PREFIX_TO_CHECK))
+		{
+			target = target.substr(PREFIX_TO_CHECK.length());
+		}
+		std::error_code ec;
+		if (!std::filesystem::is_regular_file(std::wstring{target}, ec) || ec)
+		{
+			return std::nullopt;
+		}
+		return std::wstring{target};
+	}
+
+	std::optional<std::wstring> redirect_executable_command_line(std::wstring_view cmdLine)
+	{
+		// 解析命令行首 token（exe 路径，可能带引号），命中重定向时重建整条命令行。
+		std::wstring_view rest = cmdLine;
+		while (!rest.empty() && (rest.front() == L' ' || rest.front() == L'\t'))
+		{
+			rest.remove_prefix(1);
+		}
+		if (rest.empty())
+		{
+			return std::nullopt;
+		}
+		std::wstring_view exe;
+		std::wstring_view tail;
+		if (rest.front() == L'"')
+		{
+			const std::size_t end = rest.find(L'"', 1);
+			if (end == std::wstring_view::npos)
+			{
+				return std::nullopt;
+			}
+			exe = rest.substr(1, end - 1);
+			tail = rest.substr(end + 1);
+		}
+		else
+		{
+			const std::size_t end = rest.find_first_of(L" \t");
+			exe = end == std::wstring_view::npos ? rest : rest.substr(0, end);
+			tail = end == std::wstring_view::npos ? std::wstring_view{} : rest.substr(end);
+		}
+		if (exe.empty())
+		{
+			return std::nullopt;
+		}
+		const std::optional<std::wstring> redirectPath = redirect_executable_path(exe);
+		if (!redirectPath)
+		{
+			return std::nullopt;
+		}
+		return std::format(L"\"{}\"{}", *redirectPath, tail);
+	}
+
 	void Data::initializePrivilegesAbout()
 	{
 		TOKEN_ELEVATION_TYPE elevationType = TokenElevationTypeDefault;

@@ -133,7 +133,31 @@ namespace hook
 			lpProcessInformation = &backup;
 		}
 
-		if (!Trampoline(lpApplicationName, lpCommandLine,
+		// 修复：位于被重定向已知文件夹（如 %APPDATA%）内的 exe，CreateProcess 打开映像时
+		// 用的是逻辑路径（映像打开在内核完成，不经过 NtCreateFile hook），会 PATH NOT FOUND。
+		// 调用原函数前先把路径改写为环境内真实路径。
+		std::string redirectedAppNameA;
+		LPCSTR applicationName = lpApplicationName;
+		std::string redirectedCmdLineA;
+		LPSTR commandLine = lpCommandLine;
+		if (lpApplicationName && *lpApplicationName)
+		{
+			if (std::optional<std::wstring> redirected = global::redirect_executable_path(hook_proc::a2w(lpApplicationName)))
+			{
+				redirectedAppNameA = hook_proc::w2a(redirected->c_str());
+				applicationName = redirectedAppNameA.c_str();
+			}
+		}
+		else if (lpCommandLine && *lpCommandLine)
+		{
+			if (std::optional<std::wstring> redirected = global::redirect_executable_command_line(hook_proc::a2w(lpCommandLine)))
+			{
+				redirectedCmdLineA = hook_proc::w2a(redirected->c_str());
+				commandLine = redirectedCmdLineA.data();
+			}
+		}
+
+		if (!Trampoline(applicationName, commandLine,
 		                lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags,
 		                lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation))
 		{
@@ -143,7 +167,7 @@ namespace hook
 		if (bRet)
 		{
 			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
-			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, applicationName, commandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
@@ -188,7 +212,31 @@ namespace hook
 			lpProcessInformation = &backup;
 		}
 
-		if (!Trampoline(lpApplicationName, lpCommandLine,
+		// 修复：位于被重定向已知文件夹（如 %APPDATA%）内的 exe，CreateProcess 打开映像时
+		// 用的是逻辑路径（映像打开在内核完成，不经过 NtCreateFile hook），会 PATH NOT FOUND。
+		// 调用原函数前先把路径改写为环境内真实路径。
+		std::wstring redirectedAppName;
+		LPCWSTR applicationName = lpApplicationName;
+		std::wstring redirectedCmdLine;
+		LPWSTR commandLine = lpCommandLine;
+		if (lpApplicationName && *lpApplicationName)
+		{
+			if (std::optional<std::wstring> redirected = global::redirect_executable_path(lpApplicationName))
+			{
+				redirectedAppName = std::move(*redirected);
+				applicationName = redirectedAppName.c_str();
+			}
+		}
+		else if (lpCommandLine && *lpCommandLine)
+		{
+			if (std::optional<std::wstring> redirected = global::redirect_executable_command_line(lpCommandLine))
+			{
+				redirectedCmdLine = std::move(*redirected);
+				commandLine = redirectedCmdLine.data();
+			}
+		}
+
+		if (!Trampoline(applicationName, commandLine,
 		                lpProcessAttributes, lpThreadAttributes, bInheritHandles, dwCreationFlags,
 		                lpEnvironment, lpCurrentDirectory, lpStartupInfo, lpProcessInformation))
 		{
@@ -204,7 +252,7 @@ namespace hook
 		if (bRet)
 		{
 			// 资源治理：WXWork 的 CEF 辅助进程降为低于正常优先级（进程仍挂起，启动即生效）
-			hook_proc::apply_child_priority(lpProcessInformation->hProcess, lpApplicationName, lpCommandLine);
+			hook_proc::apply_child_priority(lpProcessInformation->hProcess, applicationName, commandLine);
 			if (!bOrigSuspended)
 			{
 				ResumeThread(lpProcessInformation->hThread);
