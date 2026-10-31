@@ -376,6 +376,204 @@ namespace global
 		return std::format(L"\"{}\"{}", *redirectPath, tail);
 	}
 
+	namespace
+	{
+		// 临时诊断输出：直接 Win32 追加写，避免依赖流/静态对象（反射注入下安全）。
+		void write_trace_line(std::wstring_view text)
+		{
+			const std::wstring logPath = std::format(L"{}\\logs\\shell-redirect.log", global::Data::get().rootPath());
+			const HANDLE h = ::CreateFileW(logPath.c_str(), FILE_APPEND_DATA,
+			                               FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+			                               FILE_ATTRIBUTE_NORMAL, nullptr);
+			if (h == INVALID_HANDLE_VALUE)
+			{
+				return;
+			}
+			DWORD written = 0;
+			::WriteFile(h, text.data(), static_cast<DWORD>(text.size() * sizeof(wchar_t)), &written, nullptr);
+			::CloseHandle(h);
+		}
+
+		std::optional<std::wstring> redirect_known_folder_path_impl(std::wstring_view path)
+		{
+		// 用于把"表面路径"交给外部程序（典型：explorer.exe 打开/定位文件）之前做翻译。
+		// explorer.exe 不在被注入的重定向进程范围内，交给它的路径必须是环境内真实路径，
+		// 否则会弹"位置不可用"。
+		//
+		// 保守规则（避免误改共享/公有目录）：
+		//   1. 仅绝对路径 "X:\..."；
+		//   2. 仅已知文件夹（%APPDATA% / Documents 等）；
+		//   3. 环境内对应路径存在 → 才替换。
+		// 注意：这里不能再检查"宿主侧是否存在"——本函数运行在被注入进程内，
+		// NtQueryAttributesFile/NtCreateFile 已被重定向，exists() 看到的就是环境视图，
+		// 必然为真，会把所有路径都误判为"宿主可见"而放弃改写（实测"打开文件夹"因此失效）。
+		if (path.empty())
+		{
+			return std::nullopt;
+		}
+
+		std::wstring cleaned{path};
+		while (!cleaned.empty() && (cleaned.back() == L'\0' || cleaned.back() == L' ' || cleaned.back() == L'\t'))
+		{
+			cleaned.pop_back();
+		}
+		std::size_t head = 0;
+		while (head < cleaned.size() && (cleaned[head] == L' ' || cleaned[head] == L'\t'))
+		{
+			++head;
+		}
+		if (head > 0)
+		{
+			cleaned.erase(0, head);
+		}
+		if (cleaned.size() >= 2 && cleaned.front() == L'"' && cleaned.back() == L'"')
+		{
+			cleaned = cleaned.substr(1, cleaned.size() - 2);
+		}
+		if (cleaned.empty())
+		{
+			return std::nullopt;
+		}
+
+		// 统一去掉 \\?\ 或 \??\ 前缀
+		if (cleaned.starts_with(LR"(\\?\)") || cleaned.starts_with(LR"(\??\)"))
+		{
+			cleaned.erase(0, 4);
+		}
+
+		const Data& data = Data::get();
+		const std::wstring_view rootPath = data.rootPath();
+		if (!rootPath.empty() && cleaned.length() >= rootPath.length()
+			&& _wcsnicmp(cleaned.c_str(), rootPath.data(), rootPath.length()) == 0)
+		{
+			return std::nullopt; // 已经是环境内路径，避免重复/递归改写
+		}
+
+		if (cleaned.length() < 3 || cleaned[1] != L':' || cleaned[2] != L'\\')
+		{
+			return std::nullopt; // 非绝对路径（含 UNC）不处理
+		}
+
+		const std::wstring ntPath = std::format(L"{}{}", PREFIX_TO_CHECK, cleaned);
+		if (!data.isInKnownFolderPath(ntPath))
+		{
+			return std::nullopt;
+		}
+
+		const std::optional<std::wstring> redirectPath = data.getRedirectPath(ntPath);
+		if (!redirectPath)
+		{
+			return std::nullopt;
+		}
+		std::wstring_view target = *redirectPath;
+		if (target.starts_with(PREFIX_TO_CHECK))
+		{
+			target = target.substr(PREFIX_TO_CHECK.length());
+		}
+		std::wstring targetPath{target};
+		std::error_code ec;
+		if (!std::filesystem::exists(targetPath, ec) || ec)
+		{
+			return std::nullopt;
+		}
+		return targetPath;
+		}
+	}
+
+	namespace
+	{
+		// 诊断开关：默认关闭，避免 shell-redirect.log 在用户机器上无限增长。
+		// 需要排查时设置环境变量 EBOX_SHELL_TRACE=1 再启动环境。
+		// 用 InterlockedXXX 一次性判定，无 CRT 静态初始化依赖（反射注入下安全）。
+		bool shell_trace_enabled()
+		{
+			constexpr DWORD kBufSize = 16;
+			static volatile LONG state = 0; // 0=未判定 1=关闭 2=开启
+			LONG current = ::InterlockedCompareExchange(&state, 0, 0);
+			if (current == 0)
+			{
+				wchar_t buf[kBufSize]{};
+				const DWORD len = ::GetEnvironmentVariableW(L"EBOX_SHELL_TRACE", buf, kBufSize);
+				const bool on = len > 0 && len < kBufSize && buf[0] == L'1';
+				current = on ? 2 : 1;
+				::InterlockedExchange(&state, current);
+			}
+			return current == 2;
+		}
+	}
+
+	void debug_trace(std::wstring_view text)
+	{
+		if (!shell_trace_enabled())
+		{
+			return;
+		}
+		write_trace_line(std::format(L"[{}] {}\r\n", ::GetCurrentProcessId(), text));
+	}
+
+	std::optional<std::wstring> redirect_known_folder_path(std::wstring_view path)
+	{
+		const std::optional<std::wstring> result = redirect_known_folder_path_impl(path);
+		debug_trace(std::format(L"knownFolder: [{}] => {}", path, result ? *result : L"<nullopt>"));
+		return result;
+	}
+
+	std::optional<std::wstring> redirect_paths_in_command_line(std::wstring_view cmdLine)
+	{
+		// 命令行可能是 explorer.exe /select,"D:\..." 或 explorer.exe "D:\..."，
+		// 逐个识别 "X:\..." 片段并尝试重定向。
+		if (cmdLine.empty())
+		{
+			return std::nullopt;
+		}
+		const auto is_boundary = [](wchar_t c)
+		{
+			return c == L' ' || c == L'\t' || c == L'"' || c == L'\'' || c == L','
+				|| c == L'=' || c == L';' || c == L'\r' || c == L'\n';
+		};
+		const auto is_drive_letter = [](wchar_t c)
+		{
+			return (c >= L'a' && c <= L'z') || (c >= L'A' && c <= L'Z');
+		};
+
+		std::wstring result;
+		result.reserve(cmdLine.size());
+		bool changed = false;
+		std::size_t i = 0;
+		while (i < cmdLine.size())
+		{
+			const bool atBoundary = i == 0 || is_boundary(cmdLine[i - 1]);
+			if (atBoundary && i + 2 < cmdLine.size() && is_drive_letter(cmdLine[i])
+				&& cmdLine[i + 1] == L':' && cmdLine[i + 2] == L'\\')
+			{
+				std::size_t end = i + 3;
+				while (end < cmdLine.size() && !is_boundary(cmdLine[end]))
+				{
+					++end;
+				}
+				const std::wstring_view token = cmdLine.substr(i, end - i);
+				if (const std::optional<std::wstring> redirected = redirect_known_folder_path(token))
+				{
+					result.append(*redirected);
+					changed = true;
+				}
+				else
+				{
+					result.append(token);
+				}
+				i = end;
+				continue;
+			}
+			result.push_back(cmdLine[i]);
+			++i;
+		}
+		if (!changed)
+		{
+			return std::nullopt;
+		}
+		return result;
+	}
+
 	void Data::initializePrivilegesAbout()
 	{
 		TOKEN_ELEVATION_TYPE elevationType = TokenElevationTypeDefault;
@@ -391,28 +589,29 @@ namespace global
 
 	void Data::initializeRegistry()
 	{
-		// 环境虚拟注册表优先使用 eBox 加载到 HKU\eBox_Env_<index> 的共享 hive
-		// （多进程共享 + 随环境持久化）。若 hive 未加载（eBox 加载失败、权限不足、
-		// 环境异常等任何原因），回退为 RegLoadAppKeyW 按进程加载同一 hive 文件，
-		// 保证进程绝不在注册表初始化阶段被终止——这是稳定性底线。
+		// 环境虚拟注册表有两种共享存储：
+		//  1. eBox 提权运行：RegLoadKeyW 挂到 HKU\eBox_Env_<index> 的 hive（数据在环境目录）
+		//  2. eBox 普通用户运行：HKCU\Software\eBox\EnvRegistry\<index>（Windows 自动落盘）
+		// 选择顺序必须与 eBox 侧 Env::loadRegistryHive 一致：已存在的用户注册表存储优先，
+		// 否则同一环境会在两套存储之间来回切换，用户每次都要重新扫码。
 		m_appKey = RegKey{
 			[&]()-> HKEY
 			{
+				const std::wstring userStore = std::format(L"Software\\eBox\\EnvRegistry\\{}", m_envIndex);
+				HKEY hUserStore = nullptr;
+				if (RegOpenKeyExW(HKEY_CURRENT_USER, userStore.c_str(), 0, KEY_ALL_ACCESS, &hUserStore) == ERROR_SUCCESS)
+				{
+					return hUserStore;
+				}
 				const std::wstring subKey = std::format(L"eBox_Env_{}", m_envIndex);
 				HKEY hKey = nullptr;
 				if (RegOpenKeyExW(HKEY_USERS, subKey.c_str(), 0, KEY_ALL_ACCESS, &hKey) == ERROR_SUCCESS)
 				{
 					return hKey;
 				}
-				// 回退：按进程加载环境 hive 文件（不共享、本次运行不落盘，但保证可用）
-				namespace fs = std::filesystem;
-				const fs::path envFile{fs::weakly_canonical(fs::path{m_rootPath} / fs::path{L"Env"} / fs::path{std::format(L"{}", m_envIndex)} / fs::path{m_envFlagName})};
-				HKEY hFallback = nullptr;
-				if (RegLoadAppKeyW(envFile.native().c_str(), &hFallback, KEY_ALL_ACCESS, 0, 0) == ERROR_SUCCESS)
-				{
-					return hFallback;
-				}
-				// 极端兜底：返回空句柄，hook 里对 appKey 的写入/查询会优雅失败（仅走真实注册表）
+				// 两种共享存储都不存在（eBox 侧加载失败，处于临时模式）：不回退到任何存储，
+				// hook 里对 appKey 的写入/查询会优雅失败（仅走真实注册表），与 eBox 的判断保持一致。
+				// 注意：这里绝不自行创建用户注册表存储，否则会把"本可恢复 hive 的环境"永久切到用户存储。
 				return nullptr;
 			}
 		};

@@ -602,6 +602,23 @@ namespace ui
 							pWnd->onBeforeWindowDestroy();
 						}
 						break;
+					case WM_QUERYENDSESSION:
+						{
+							// 关机/重启/注销前唯一的落盘时机：必须同步完成，返回 FALSE 会阻断关机，
+							// 因此无论成功与否都放行（数据落盘失败由子类自行记日志）。
+							pWnd->onQueryEndSession();
+						}
+						return TRUE;
+					case WM_ENDSESSION:
+						{
+							// wParam=TRUE：系统确实要结束会话，此时 WM_QUERYENDSESSION 的落盘已做完，
+							// 这里只做卸载等收尾工作。
+							if (wParam)
+							{
+								pWnd->onEndSession();
+							}
+						}
+						return 0;
 					case WM_DISPLAYCHANGE:
 						{
 							InvalidateRect(hWnd, nullptr, FALSE);

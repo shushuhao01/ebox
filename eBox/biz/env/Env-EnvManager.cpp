@@ -571,6 +571,8 @@ namespace biz
 		env->deleteDllFromDevice();
 		// 若注册表 hive 仍加载，先卸载再删除目录，否则 hive 文件被系统锁定无法删除
 		env->unloadRegistryHive();
+		// 普通用户模式下注册表数据在 HKCU，随环境一起清理，避免环境序号复用时串数据
+		env->deleteUserRegistryStore();
 		removeEnv(env->getFlag());
 		delete_env_dir(env->getIndex(), env->getFlagName());
 		delete_env_from_reg(env->getFlagName());

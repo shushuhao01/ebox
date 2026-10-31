@@ -33,6 +33,8 @@ namespace ui
 		virtual void onResize(float width, float height) override;
 		virtual void onActivate(WParam wParam, LParam lParam) override;
 		virtual bool onClose() override;
+		virtual void onQueryEndSession() override;
+		virtual void onEndSession() override;
 		virtual void onBeforeWindowDestroy() override;
 		virtual bool onNcCalcSize(WParam wParam, LParam lParam) override;
 		virtual LResult onNcHitTest(WPARAM wParam, LParam lParam, LResult dwmProcessedResult) override;
@@ -50,6 +52,8 @@ namespace ui
 		void destroyTray() const;
 		void killAllEnvProcesses() const;
 		void startExitCleanup();
+		// 关机/重启前把各环境注册表 hive 同步落盘（unload=true 时同时卸载并提交正式文件）
+		void flushEnvRegistryHives(bool unload) const;
 		ID2D1Bitmap* getTitleIconBitmap(ID2D1HwndRenderTarget* renderTarget);
 		// coro::LazyTask<void> initSymbols();
 		bool ncBtnHitTest(POINT pt) const;

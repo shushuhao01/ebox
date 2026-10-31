@@ -6,20 +6,21 @@ module;
 module biz.LicenseServerClient;
 
 import std;
+import biz.LicenseReg;
 
 namespace
 {
 	// 授权服务器默认地址（生产环境：abc222.cn，宝塔 Nginx 反代到后端 3008）：
 	//   - 必须使用 https：WinHTTP 的 POST 不会跟随 http->https 的 301 跳转，
 	//     直连 https 才能保证在线激活/心跳/解绑生效
-	//   - 客户端优先读注册表 HKCU\Software\2Box\ServerUrl 覆盖（联调/换域名免重新编译）
+	//   - 客户端优先读注册表 HKCU\Software\eBox\ServerUrl 覆盖（旧键 Software\2Box 兼容回退）
+	//     联调/换域名免重新编译
 	//   - 未配置注册表时使用下方默认地址
 	//   - 服务器不可达时按离线方式放行（forceOnlineActivate 默认 false），
 	//     本机开发机的离线激活码与在线版本互不干扰
 	constexpr wchar_t kDefaultServerUrl[] = L"https://abc222.cn";
 
-	// 与 biz.License 共享注册表子键
-	constexpr wchar_t kRegSubKey[] = L"Software\\2Box";
+	// 注册表根键由 biz.LicenseReg 统一解析（主键 Software\eBox，旧键 Software\2Box 兼容）
 	constexpr wchar_t kRegServerUrl[] = L"ServerUrl";
 	constexpr wchar_t kRegHeartbeatHours[] = L"HeartbeatIntervalHours";
 	constexpr wchar_t kRegForceOnline[] = L"ForceOnlineActivate";
@@ -628,99 +629,36 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// 注册表读写（HKCU\Software\2Box）
+	// 注册表读写：服务端组逐值「主键 Software\eBox 优先、缺失回退旧键 Software\2Box」
 	// ---------------------------------------------------------------------------
 	bool regReadString(const wchar_t* valueName, std::wstring& out)
 	{
-		HKEY hKey = nullptr;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) != ERROR_SUCCESS)
-		{
-			return false;
-		}
-		DWORD size = 0;
-		LSTATUS st = RegQueryValueExW(hKey, valueName, nullptr, nullptr, nullptr, &size);
-		if (st == ERROR_SUCCESS && size > 0)
-		{
-			out.resize(size / sizeof(wchar_t));
-			st = RegQueryValueExW(hKey, valueName, nullptr, nullptr,
-			                      reinterpret_cast<LPBYTE>(out.data()), &size);
-			if (st == ERROR_SUCCESS && !out.empty() && out.back() == L'\0')
-			{
-				out.pop_back();
-			}
-			else
-			{
-				st = ERROR_FILE_NOT_FOUND;
-			}
-		}
-		RegCloseKey(hKey);
-		return st == ERROR_SUCCESS && !out.empty();
+		return biz::licensereg::serverReadString(valueName, out);
 	}
 
 	void regWriteString(const wchar_t* valueName, const std::wstring& value)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			const DWORD bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
-			RegSetValueExW(hKey, valueName, 0, REG_SZ,
-			               reinterpret_cast<const BYTE*>(value.c_str()), bytes);
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::serverWriteString(valueName, value);
 	}
 
 	std::int64_t regReadQword(const wchar_t* valueName, std::int64_t def = 0)
 	{
-		HKEY hKey = nullptr;
-		std::int64_t result = def;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-		{
-			DWORD type = 0;
-			DWORD cb = sizeof(result);
-			if (RegQueryValueExW(hKey, valueName, nullptr, &type,
-			                     reinterpret_cast<LPBYTE>(&result), &cb) != ERROR_SUCCESS || type != REG_QWORD)
-			{
-				result = def;
-			}
-			RegCloseKey(hKey);
-		}
-		return result;
+		return biz::licensereg::serverReadQword(valueName, def);
 	}
 
 	void regWriteQword(const wchar_t* valueName, std::int64_t value)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			RegSetValueExW(hKey, valueName, 0, REG_QWORD,
-			               reinterpret_cast<const BYTE*>(&value), sizeof(value));
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::serverWriteQword(valueName, value);
 	}
 
 	DWORD regReadDword(const wchar_t* valueName, DWORD def = 0)
 	{
-		HKEY hKey = nullptr;
-		DWORD result = def;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-		{
-			DWORD cb = sizeof(result);
-			RegQueryValueExW(hKey, valueName, nullptr, nullptr,
-			                 reinterpret_cast<LPBYTE>(&result), &cb);
-			RegCloseKey(hKey);
-		}
-		return result;
+		return biz::licensereg::serverReadDword(valueName, def);
 	}
 
 	void regWriteDword(const wchar_t* valueName, DWORD value)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			RegSetValueExW(hKey, valueName, 0, REG_DWORD,
-			               reinterpret_cast<const BYTE*>(&value), sizeof(value));
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::serverWriteDword(valueName, value);
 	}
 }
 
@@ -771,13 +709,8 @@ namespace biz
 		{
 			if (url.empty())
 			{
-				// 空串 = 删除覆盖，回退默认地址
-				HKEY hKey = nullptr;
-				if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-				{
-					RegDeleteValueW(hKey, kRegServerUrl);
-					RegCloseKey(hKey);
-				}
+				// 空串 = 删除覆盖，回退默认地址（主键与旧键都删）
+				licensereg::serverDeleteValue(kRegServerUrl);
 				return;
 			}
 			regWriteString(kRegServerUrl, url);
@@ -1064,12 +997,7 @@ namespace biz
 		{
 			if (status.empty())
 			{
-				HKEY hKey = nullptr;
-				if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-				{
-					RegDeleteValueW(hKey, kRegServerStatus);
-					RegCloseKey(hKey);
-				}
+				licensereg::serverDeleteValue(kRegServerStatus);
 				return;
 			}
 			regWriteString(kRegServerStatus, status);
@@ -1114,22 +1042,15 @@ namespace biz
 
 		void storeNotice(const NoticeInfo& notice)
 		{
-			HKEY hKey = nullptr;
-			if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) != ERROR_SUCCESS)
-			{
-				return;
-			}
 			if (notice.empty())
 			{
-				// 服务端已撤下公告：删除全部公告记录
-				RegDeleteValueW(hKey, kRegNotice);
-				RegDeleteValueW(hKey, kRegNoticeContent);
-				RegDeleteValueW(hKey, kRegNoticeLink);
-				RegDeleteValueW(hKey, kRegNoticeStrong);
-				RegCloseKey(hKey);
+				// 服务端已撤下公告：删除全部公告记录（主键与旧键都删）
+				licensereg::serverDeleteValue(kRegNotice);
+				licensereg::serverDeleteValue(kRegNoticeContent);
+				licensereg::serverDeleteValue(kRegNoticeLink);
+				licensereg::serverDeleteValue(kRegNoticeStrong);
 				return;
 			}
-			RegCloseKey(hKey);
 			regWriteString(kRegNotice, notice.title);
 			regWriteString(kRegNoticeContent, notice.content);
 			regWriteString(kRegNoticeLink, notice.link);

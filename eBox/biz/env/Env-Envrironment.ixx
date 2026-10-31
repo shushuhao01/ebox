@@ -221,6 +221,12 @@ namespace biz
 		// 连续请求自动合并为一次。
 		void saveRegistryHiveAsync();
 		bool isRegistryHiveLoaded() const { return m_hiveLoaded; }
+		// 普通用户模式：未提权时拿不到 SeRestorePrivilege/SeBackupPrivilege，
+		// RegLoadKeyW/RegSaveKeyW 都不可用，环境注册表改落在
+		// HKCU\Software\eBox\EnvRegistry\<index>，由 Windows 自动落盘（效果等同 hive）。
+		bool isUserRegistryStore() const { return m_userRegistryStore; }
+		// 删除环境时清理该环境的用户注册表存储
+		void deleteUserRegistryStore() const;
 
 	public:
 		std::shared_ptr<ProcessInfo> addProcess(DWORD pid);
@@ -266,6 +272,14 @@ namespace biz
 		void removeToplevelWindowWhenProcessTerminate(const std::shared_ptr<ProcessInfo>& procInfo);
 		std::wstring registryHiveSubKey() const;
 		std::filesystem::path registryHivePath() const;
+		// 已持有 m_hiveMutex 时使用的 hive 文件创建实现（供 loadRegistryHive 内部调用）。
+		// outStatus 返回 RegSaveKeyW 的 LSTATUS：调用方据此区分"权限不足(1314)"与"其它失败"，
+		// 前者必须保持 hive 文件原样，不能备份重建（那会清空环境登录态）。
+		bool ensureRegistryHiveFileLocked(LSTATUS* outStatus = nullptr);
+		// 切换到"用户注册表存储"（普通用户模式）：成功返回 true，此后本环境不再尝试 hive
+		bool useUserRegistryStore();
+		// 加载前把上次未完成落盘的 <hive>.tmp 提升为正式 hive 文件
+		void promotePendingHiveFile();
 		void commitPendingHiveFile();
 
 	private:
@@ -279,6 +293,9 @@ namespace biz
 		// 用 timed_mutex：loadRegistryHive 需要有界等待，不能被后台保存/卸载长时间拖住。
 		std::timed_mutex m_hiveMutex;
 		std::atomic<bool> m_hiveLoaded{false};
+		// 普通用户模式：虚拟注册表落在 HKCU\Software\eBox\EnvRegistry\<index>，
+		// 不加载/不保存 hive（注册表由 Windows 自行落盘）
+		std::atomic<bool> m_userRegistryStore{false};
 		// 已排队/执行中的异步保存请求（合并用）
 		std::atomic<bool> m_saveQueued{false};
 		std::wstring m_pendingHiveFile;

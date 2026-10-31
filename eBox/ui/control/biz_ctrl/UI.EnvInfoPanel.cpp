@@ -356,19 +356,27 @@ namespace ui
 		// 6. 注册表 hive（环境注册表指纹）
 		try
 		{
-			const fs::path hivePath = envDir / m_env->getFlagName();
-			std::wstring hiveStatus;
-			std::error_code ec;
-			if (fs::exists(hivePath, ec) && !ec)
+			if (m_env->isUserRegistryStore())
 			{
-				hiveStatus = std::format(L"{}（{}）", m_env->isRegistryHiveLoaded() ? L"已加载" : L"未加载",
-				                         format_size(fs::file_size(hivePath, ec)));
+				// 普通用户模式：没有挂载 hive，环境注册表落在用户配置注册表里（Windows 自动落盘）
+				addField(L"注册表 hive", std::format(L"HKCU\\Software\\eBox\\EnvRegistry\\{}｜已加载（普通用户模式，随用户配置自动保存）", m_env->getIndex()));
 			}
 			else
 			{
-				hiveStatus = L"未创建（启动后自动创建）";
+				const fs::path hivePath = envDir / m_env->getFlagName();
+				std::wstring hiveStatus;
+				std::error_code ec;
+				if (fs::exists(hivePath, ec) && !ec)
+				{
+					hiveStatus = std::format(L"{}（{}）", m_env->isRegistryHiveLoaded() ? L"已加载" : L"未加载",
+					                         format_size(fs::file_size(hivePath, ec)));
+				}
+				else
+				{
+					hiveStatus = L"未创建（启动后自动创建）";
+				}
+				addField(L"注册表 hive", std::format(L"{}｜{}", hivePath.native(), hiveStatus));
 			}
-			addField(L"注册表 hive", std::format(L"{}｜{}", hivePath.native(), hiveStatus));
 		}
 		catch (...)
 		{

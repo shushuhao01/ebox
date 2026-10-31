@@ -88,11 +88,24 @@ namespace hook
 				applicationName = redirectedAppNameA.c_str();
 			}
 		}
-		else if (lpCommandLine && *lpCommandLine)
+		if (lpCommandLine && *lpCommandLine)
 		{
-			if (std::optional<std::wstring> redirected = global::redirect_executable_command_line(hook_proc::a2w(lpCommandLine)))
+			// 除首 token（可执行文件）外，参数里的绝对路径也要改写
+			std::wstring cmdLineW = hook_proc::a2w(lpCommandLine);
+			bool changed = false;
+			if (std::optional<std::wstring> redirected = global::redirect_executable_command_line(cmdLineW))
 			{
-				redirectedCmdLineA = hook_proc::w2a(redirected->c_str());
+				cmdLineW = std::move(*redirected);
+				changed = true;
+			}
+			if (std::optional<std::wstring> redirected = global::redirect_paths_in_command_line(cmdLineW))
+			{
+				cmdLineW = std::move(*redirected);
+				changed = true;
+			}
+			if (changed)
+			{
+				redirectedCmdLineA = hook_proc::w2a(cmdLineW.c_str());
 				commandLine = redirectedCmdLineA.data();
 			}
 		}
@@ -176,11 +189,24 @@ namespace hook
 				applicationName = redirectedAppName.c_str();
 			}
 		}
-		else if (lpCommandLine && *lpCommandLine)
+		if (lpCommandLine && *lpCommandLine)
 		{
-			if (std::optional<std::wstring> redirected = global::redirect_executable_command_line(lpCommandLine))
+			// 除首 token（可执行文件）外，参数里的绝对路径也要改写
+			std::wstring cmdLineW{lpCommandLine};
+			bool changed = false;
+			if (std::optional<std::wstring> redirected = global::redirect_executable_command_line(cmdLineW))
 			{
-				redirectedCmdLine = std::move(*redirected);
+				cmdLineW = std::move(*redirected);
+				changed = true;
+			}
+			if (std::optional<std::wstring> redirected = global::redirect_paths_in_command_line(cmdLineW))
+			{
+				cmdLineW = std::move(*redirected);
+				changed = true;
+			}
+			if (changed)
+			{
+				redirectedCmdLine = std::move(cmdLineW);
 				commandLine = redirectedCmdLine.data();
 			}
 		}

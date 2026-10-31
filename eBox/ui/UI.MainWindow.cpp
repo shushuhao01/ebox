@@ -45,6 +45,28 @@ namespace ui
 	// 易歪歪安装位置检测提示：窗口显示后再弹（避免构造期弹窗跑到主界面之前）
 	static constexpr UINT WM_APP_YIWAIIWAI_TIP = WM_USER + 9532;
 
+	// 环境注册表 hive 的运行期检查点。
+	// 只在关机消息里落盘是不够的：Windows 等待应用的时间很短，慢盘/杀软扫描下保存来不及完成就会被强杀，
+	// 于是环境 hive 停在旧快照上，重启后企业微信只能要求重新扫码（本机快、客户机慢时正好复现这种差异）。
+	// 这里每 5 分钟把已加载的 hive 存成 .tmp 快照，最坏情况只丢最近几分钟的注册表变更。
+	static constexpr UINT_PTR HIVE_CHECKPOINT_TIMER_ID = 1;
+	static constexpr UINT HIVE_CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
+
+	// 定时器回调运行在 UI 线程：只派发，真正的 RegSaveKeyW 在后台线程串行执行，避免界面卡住。
+	static void onHiveCheckpointTimer(HWND, UINT, UINT_PTR, DWORD)
+	{
+		std::thread([]
+		{
+			for (const std::shared_ptr<biz::Env>& env : biz::env_mgr().getAllEnv())
+			{
+				if (env->isRegistryHiveLoaded())
+				{
+					env->saveRegistryHive();
+				}
+			}
+		}).detach();
+	}
+
 	// 同步悬浮提示工具：首次注册；之后仅矩形/文字变化时才发消息更新。
 	// 不能每帧 DELTOOL+ADDTOOL——那会重置 tooltip 弹出计时器，持续渲染的主窗口提示永远弹不出来。
 	static void sync_tooltip(HWND hTip, UINT id, HWND owner, const RECT& rc, const wchar_t* text,
@@ -88,6 +110,8 @@ namespace ui
 		initWindowPosition();
 		initTitleIcon();
 		initTray();
+		// 运行期定时给环境 hive 打检查点：关机消息里的同步落盘可能被系统超时强杀打断
+		SetTimer(nativeHandle(), HIVE_CHECKPOINT_TIMER_ID, HIVE_CHECKPOINT_INTERVAL_MS, onHiveCheckpointTimer);
 		// 升级恢复：清理上次成功升级遗留的 .bak；若上次 bat 更新失败（已回滚）则提示用户
 		biz::update::cleanupBackupIfNeeded();
 		{
@@ -1047,8 +1071,65 @@ namespace ui
 		}
 	}
 
+	void MainWindow::onQueryEndSession()
+	{
+		// 关机/重启/注销前唯一的落盘时机：把各环境 hive 同步保存为 <hive>.tmp。
+		// 企业微信"免扫码登录"等状态全部存放在环境 hive 里，不落盘就会在重启后要求重新扫码。
+		// 这里只保存不卸载：若本次关机被其它程序取消，hive 继续可用，环境不受影响。
+		//
+		// 必须先用 ShutdownBlockReasonCreate 告诉系统"我正在保存"：Windows 只等几秒就强杀，
+		// 慢盘/杀软扫描下 RegSaveKeyW 可能更久，被强杀就等于这次关机没有任何落盘——
+		// 这正是"本机正常、个别客户机重启后要重新扫码"最可能的成因。
+		const HWND hWnd = nativeHandle();
+		const BOOL blocked = ShutdownBlockReasonCreate(hWnd, L"正在保存环境数据，请稍候…");
+		flushEnvRegistryHives(false);
+		if (blocked)
+		{
+			ShutdownBlockReasonDestroy(hWnd);
+		}
+	}
+
+	void MainWindow::onEndSession()
+	{
+		// 系统已确认结束会话（无法再取消）。这里仍然只保存、不卸载：
+		// 此刻环境内进程（企业微信及其子进程）还没被系统终止，它们仍持有
+		// HKU\eBox_Env_<idx> 的句柄，RegUnLoadKeyW 必然返回 5(ERROR_ACCESS_DENIED)，
+		// 卸载不成功时正式 hive 文件也无法被 .tmp 替换，只会留下"未落盘"的误报。
+		// 保存到 .tmp 已足够：下次启动 loadRegistryHive 会先把它提升为正式文件。
+		flushEnvRegistryHives(false);
+	}
+
+	void MainWindow::flushEnvRegistryHives(bool unload) const
+	{
+		// 各环境 hive 相互独立，按环境并行处理，总耗时从"累加"降为"最慢的一个"，
+		// 尽量在系统等待上限内完成。任务持有 shared_ptr，保存期间环境被删除也不会访问已释放对象。
+		const std::vector<std::shared_ptr<biz::Env>> envs = biz::env_mgr().getAllEnv();
+		std::vector<std::thread> workers;
+		workers.reserve(envs.size());
+		for (const std::shared_ptr<biz::Env>& env : envs)
+		{
+			if (!env->isRegistryHiveLoaded())
+			{
+				continue;
+			}
+			workers.emplace_back([env, unload]
+			{
+				env->saveRegistryHive();
+				if (unload)
+				{
+					env->unloadRegistryHive();
+				}
+			});
+		}
+		for (std::thread& worker : workers)
+		{
+			worker.join();
+		}
+	}
+
 	void MainWindow::onBeforeWindowDestroy()
 	{
+		KillTimer(nativeHandle(), HIVE_CHECKPOINT_TIMER_ID);
 		destroyTray();
 	}
 
@@ -1344,7 +1425,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.3.1   更新时间：2026/10/30   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.3.2   更新时间：2026/10/31   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",

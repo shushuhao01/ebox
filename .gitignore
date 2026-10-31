@@ -92,6 +92,9 @@ License.cpp.private.bak
 /密钥改造升级计划.md
 /*密钥*方案*.md
 /*密钥*.md
+# 同上两份已移入 docs/账号会员体系；此处显式兜底，防止 docs 规则变动后误入库
+/docs/账号会员体系/密钥轮换与双公钥过渡方案.md
+/docs/账号会员体系/密钥改造升级计划.md
 
 # ===== KeyGen 激活码生成工具（调用私钥生成激活码，禁止推送到公开仓库）=====
 # License.cpp 中 #ifdef LICENSE_GENERATOR 段的私钥已替换为占位符 0xCC

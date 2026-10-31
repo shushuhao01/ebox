@@ -137,13 +137,16 @@ namespace global
 
 	export bool is_app_key_name(std::wstring_view fullName)
 	{
-		// 兼容两种环境虚拟注册表形态：
+		// 兼容三种环境虚拟注册表形态：
 		//  1. eBox 加载到 HKU\eBox_Env_<idx> 的共享 hive
-		//  2. 回退路径 RegLoadAppKeyW 的 \REGISTRY\A\{GUID} 私有 hive
+		//  2. 回退路径 RegLoadAppKeyW 的 \REGISTRY\A\{GUID} 私有 hive（旧版本）
+		//  3. 普通用户模式的 HKCU\Software\eBox\EnvRegistry\<idx>
 		// 命中即跳过，避免 hook 对虚拟注册表自身操作造成递归。
 		static constexpr std::wstring_view hkuPrefix(LR"(\REGISTRY\USER\eBox_Env_)");
 		static constexpr std::wstring_view appKeyPrefix(LR"(\REGISTRY\A\{)");
-		return fullName.starts_with(hkuPrefix) || fullName.starts_with(appKeyPrefix);
+		static constexpr std::wstring_view userStoreMarker(LR"(\Software\eBox\EnvRegistry\)");
+		return fullName.starts_with(hkuPrefix) || fullName.starts_with(appKeyPrefix)
+			|| fullName.find(userStoreMarker) != std::wstring_view::npos;
 	}
 
 	export std::wstring_view remove_leading_backslashes_sv(std::wstring_view sv)
@@ -166,4 +169,17 @@ namespace global
 	// 同上，但作用于命令行首 token（可执行文件路径，可能带引号）；
 	// 命中时返回重建后的整条命令行，否则返回 std::nullopt。
 	export std::optional<std::wstring> redirect_executable_command_line(std::wstring_view cmdLine);
+
+	// 通用（文件/文件夹均可）路径重定向：用于"把路径交给外部程序"的场景（ShellExecute
+	// 交给 explorer.exe 打开/定位文件）。保守规则：宿主侧同一路径存在时保持原样，
+	// 只有宿主不存在、环境内存在时才返回环境内路径，避免影响公有/共享目录。
+	export std::optional<std::wstring> redirect_known_folder_path(std::wstring_view path);
+
+	// 扫描命令行中所有 "X:\..." 绝对路径片段并逐个尝试重定向（如 explorer.exe /select,"D:\..."）；
+	// 有改写时返回重建后的命令行，否则返回 std::nullopt。
+	export std::optional<std::wstring> redirect_paths_in_command_line(std::wstring_view cmdLine);
+
+	// 临时诊断：把一行带 PID 前缀的文本追加到 <rootPath>\logs\shell-redirect.log。
+	// 默认关闭（避免日志无限增长），设置环境变量 EBOX_SHELL_TRACE=1 后才写入。
+	export void debug_trace(std::wstring_view text);
 }

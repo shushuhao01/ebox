@@ -10,6 +10,7 @@ module biz.License;
 
 import std;
 import biz.LicenseServerClient;
+import biz.LicenseReg;
 
 namespace
 {
@@ -86,9 +87,9 @@ namespace
 	// 换机/续期场景由发码工具生成，到期 = 原码剩余时间对应的日期，且新旧客户端均兼容
 	constexpr BYTE kLegacyFormatMinor = 7;
 
-	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.3.1）
+	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.3.2）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v3.3.1";
+	constexpr wchar_t kAppVersion[] = L"v3.3.2";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()
@@ -334,54 +335,28 @@ namespace
 	}
 
 	// ---------------------------------------------------------------------------
-	// 激活状态持久化：HKCU\Software\2Box\License = 激活码文本
+	// 激活状态持久化：根键由 biz.LicenseReg 统一解析（主键 Software\eBox，旧键 Software\2Box 兼容）
 	// ---------------------------------------------------------------------------
-	constexpr wchar_t kRegSubKey[] = L"Software\\2Box";
 	constexpr wchar_t kRegValue[] = L"License";
 
 	std::wstring loadStoredCode()
 	{
-		HKEY hKey = nullptr;
-		wchar_t buf[1024]{};
-		DWORD size = sizeof(buf);
-		std::wstring code;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-		{
-			if (RegQueryValueExW(hKey, kRegValue, nullptr, nullptr,
-			                     reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS)
-			{
-				code = buf;
-			}
-			RegCloseKey(hKey);
-		}
-		return code;
+		return biz::licensereg::authString(kRegValue);
 	}
 
 	void storeCode(const std::wstring& code)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			RegSetValueExW(hKey, kRegValue, 0, REG_SZ,
-			               reinterpret_cast<const BYTE*>(code.c_str()),
-			               static_cast<DWORD>((code.size() + 1) * sizeof(wchar_t)));
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::writeAuthString(kRegValue, code);
 	}
 
 	void clearStoredCode()
 	{
-		HKEY hKey = nullptr;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-		{
-			RegDeleteValueW(hKey, kRegValue);
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::deleteAuthValue(kRegValue);
 	}
 
 	// ---------------------------------------------------------------------------
-	// 解绑次数持久化：HKCU\Software\2Box\UnbindMonth(REG_SZ "yyyyMM") + UnbindCount(REG_DWORD)
-	//                   + UnbindKey(REG_SZ 当前激活码身份)
+	// 解绑次数持久化：UnbindMonth(REG_SZ "yyyyMM") + UnbindCount(REG_DWORD)
+	//                   + UnbindKey(REG_SZ 当前激活码身份)，根键同授权组（biz.LicenseReg）
 	// 跨月自动重置：读取时发现月份与当前不一致，计数按 0 处理
 	// 换新激活码后本地计次归零：每个激活码的解绑次数独立，互不影响（全新购买的码不能继承旧码计数）
 	// ---------------------------------------------------------------------------
@@ -395,126 +370,49 @@ namespace
 	// 加载本地绑定的机器指纹
 	std::wstring loadBoundFp()
 	{
-		HKEY hKey = nullptr;
-		std::wstring result;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-		{
-			DWORD size = 0;
-			if (RegQueryValueExW(hKey, kRegBoundFp, nullptr, nullptr, nullptr, &size) == ERROR_SUCCESS && size > 0)
-			{
-				result.resize(size / sizeof(wchar_t));
-				RegQueryValueExW(hKey, kRegBoundFp, nullptr, nullptr,
-				                 reinterpret_cast<LPBYTE>(result.data()), &size);
-				if (!result.empty() && result.back() == L'\0')
-				{
-					result.pop_back();
-				}
-			}
-			RegCloseKey(hKey);
-		}
-		return result;
+		return biz::licensereg::authString(kRegBoundFp);
 	}
 
 	void storeBoundFp(const std::wstring& fp)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			const DWORD bytes = static_cast<DWORD>((fp.size() + 1) * sizeof(wchar_t));
-			RegSetValueExW(hKey, kRegBoundFp, 0, REG_SZ, reinterpret_cast<const BYTE*>(fp.c_str()), bytes);
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::writeAuthString(kRegBoundFp, fp);
 	}
 
 	void clearBoundFp()
 	{
-		HKEY hKey = nullptr;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-		{
-			RegDeleteValueW(hKey, kRegBoundFp);
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::deleteAuthValue(kRegBoundFp);
 	}
 
 	// 时长制：首次激活时间戳（Unix 秒）。同一激活码重复激活不刷新（以首次激活计时）；更换新激活码才重新起算
 	std::int64_t loadActivatedAt()
 	{
-		HKEY hKey = nullptr;
-		std::int64_t result = 0;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-		{
-			DWORD type = 0;
-			DWORD cb = sizeof(result);
-			if (RegQueryValueExW(hKey, kRegActivatedAt, nullptr, &type,
-			                     reinterpret_cast<LPBYTE>(&result), &cb) != ERROR_SUCCESS || type != REG_QWORD)
-			{
-				result = 0;
-			}
-			RegCloseKey(hKey);
-		}
-		return result;
+		return biz::licensereg::authQword(kRegActivatedAt);
 	}
 
 	void storeActivatedAt(std::int64_t activatedAt)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			RegSetValueExW(hKey, kRegActivatedAt, 0, REG_QWORD,
-			               reinterpret_cast<const BYTE*>(&activatedAt), sizeof(activatedAt));
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::writeAuthQword(kRegActivatedAt, activatedAt);
 	}
 
 	void clearActivatedAt()
 	{
-		HKEY hKey = nullptr;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-		{
-			RegDeleteValueW(hKey, kRegActivatedAt);
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::deleteAuthValue(kRegActivatedAt);
 	}
 
 	// 加载激活码身份（与 ActivatedAt 配套）
 	std::wstring loadActivatedCode()
 	{
-		HKEY hKey = nullptr;
-		wchar_t buf[1024]{};
-		DWORD size = sizeof(buf);
-		std::wstring id;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
-		{
-			if (RegQueryValueExW(hKey, kRegActivatedCode, nullptr, nullptr,
-			                     reinterpret_cast<LPBYTE>(buf), &size) == ERROR_SUCCESS)
-			{
-				id = buf;
-			}
-			RegCloseKey(hKey);
-		}
-		return id;
+		return biz::licensereg::authString(kRegActivatedCode);
 	}
 
 	void storeActivatedCode(const std::wstring& id)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			RegSetValueExW(hKey, kRegActivatedCode, 0, REG_SZ,
-			               reinterpret_cast<const BYTE*>(id.c_str()),
-			               static_cast<DWORD>((id.size() + 1) * sizeof(wchar_t)));
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::writeAuthString(kRegActivatedCode, id);
 	}
 
 	void clearActivatedCode()
 	{
-		HKEY hKey = nullptr;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_WRITE, &hKey) == ERROR_SUCCESS)
-		{
-			RegDeleteValueW(hKey, kRegActivatedCode);
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::deleteAuthValue(kRegActivatedCode);
 	}
 
 	// 激活码身份：规范化文本（去空格/前缀/分隔符，转大写），用于判断是否同一激活码
@@ -567,20 +465,9 @@ namespace
 	//   只有换了"全新的、非换机链的激活码"才从零重新计次。
 	void storeUnbindCountState(const std::wstring& codeId, int count)
 	{
-		HKEY hKey = nullptr;
-		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
-		{
-			const std::wstring month = currentMonthKey();
-			RegSetValueExW(hKey, kRegUnbindMonth, 0, REG_SZ,
-			               reinterpret_cast<const BYTE*>(month.c_str()),
-			               static_cast<DWORD>((month.size() + 1) * sizeof(wchar_t)));
-			RegSetValueExW(hKey, kRegUnbindKey, 0, REG_SZ,
-			               reinterpret_cast<const BYTE*>(codeId.c_str()),
-			               static_cast<DWORD>((codeId.size() + 1) * sizeof(wchar_t)));
-			RegSetValueExW(hKey, kRegUnbindCount, 0, REG_DWORD,
-			               reinterpret_cast<const BYTE*>(&count), sizeof(count));
-			RegCloseKey(hKey);
-		}
+		biz::licensereg::writeAuthString(kRegUnbindMonth, currentMonthKey());
+		biz::licensereg::writeAuthString(kRegUnbindKey, codeId);
+		biz::licensereg::writeAuthDword(kRegUnbindCount, static_cast<DWORD>(count));
 	}
 
 	void incrementUnbindCount()
@@ -592,39 +479,38 @@ namespace
 
 	int loadUnbindCount()
 	{
-		HKEY hKey = nullptr;
-		wchar_t month[16]{};
-		DWORD monthSize = sizeof(month);
-		wchar_t keyId[512]{};
-		DWORD keySize = sizeof(keyId);
-		DWORD count = 0;
-		if (RegOpenKeyExW(HKEY_CURRENT_USER, kRegSubKey, 0, KEY_READ, &hKey) == ERROR_SUCCESS)
+		// 授权组整组同源：月份/次数/激活码身份与 License 必须来自同一根键
+		const biz::licensereg::RootKey root = biz::licensereg::selectAuthRoot();
+
+		std::wstring month;
+		if (!biz::licensereg::readAuthString(root, kRegUnbindMonth, month))
 		{
-			if (RegQueryValueExW(hKey, kRegUnbindMonth, nullptr, nullptr,
-			                     reinterpret_cast<LPBYTE>(month), &monthSize) == ERROR_SUCCESS)
+			return 0;
+		}
+		if (month != currentMonthKey())
+		{
+			// 跨月自动重置
+			return 0;
+		}
+
+		DWORD count = 0;
+		if (!biz::licensereg::readAuthDword(root, kRegUnbindCount, count))
+		{
+			return 0;
+		}
+
+		std::wstring keyId;
+		if (biz::licensereg::readAuthString(root, kRegUnbindKey, keyId))
+		{
+			std::wstring storedCode;
+			biz::licensereg::readAuthString(root, kRegValue, storedCode);
+			if (activationCodeId(keyId) != activationCodeId(storedCode))
 			{
-				DWORD cbCount = sizeof(count);
-				if (RegQueryValueExW(hKey, kRegUnbindCount, nullptr, nullptr,
-				                     reinterpret_cast<LPBYTE>(&count), &cbCount) != ERROR_SUCCESS)
-				{
-					count = 0;
-				}
-				if (month != currentMonthKey())
-				{
-					// 跨月自动重置
-					count = 0;
-				}
-				else if (RegQueryValueExW(hKey, kRegUnbindKey, nullptr, nullptr,
-				                          reinterpret_cast<LPBYTE>(keyId), &keySize) == ERROR_SUCCESS
-				         && activationCodeId(keyId) != activationCodeId(loadStoredCode()))
-				{
-					// 当前激活码与计次所属码不一致：
-					//   - 属于"全新的、非换机链的激活码" → 次数独立，归零；
-					//   - 同一激活码/同一换机链（换机码继承链上计数）→ 不归零。
-					count = 0;
-				}
+				// 当前激活码与计次所属码不一致：
+				//   - 属于"全新的、非换机链的激活码" → 次数独立，归零；
+				//   - 同一激活码/同一换机链（换机码继承链上计数）→ 不归零。
+				return 0;
 			}
-			RegCloseKey(hKey);
 		}
 		return static_cast<int>(count);
 	}

@@ -514,11 +514,13 @@ namespace biz
 				throw std::runtime_error(wide_to_utf8(*precheckError));
 			}
 			// 启动前确保该环境注册表 hive 已加载（DLL 注入后优先使用 HKU\eBox_Env_<idx> 的虚拟注册表）。
-			// 若加载失败，DLL 侧会自动回退为按进程加载，进程仍能正常启动，这里只记录不阻塞。
+			// 加载失败时 DLL 侧会自动回退为按进程加载，进程仍能正常启动，但不能静默降级：
+			// 该模式下注册表变更不持久化（企业微信会要求重新扫码），必须以错误级别暴露给用户。
+			// 具体失败原因（错误码、备份路径）由 Env::loadRegistryHive 写入环境日志。
 			if (!env->loadRegistryHive())
 			{
-				env_logger().append(env->getIndex(), EnvLogType::Info, EnvLogStatus::Info,
-				                    L"注册表", L"hive 加载失败，已回退为进程级虚拟注册表（数据不持久化）");
+				env_logger().append(env->getIndex(), EnvLogType::Error, EnvLogStatus::Fail,
+				                    L"注册表", L"环境注册表未加载，已回退为进程级虚拟注册表：本次运行的登录态等数据不会持久化（重启后需重新扫码）");
 			}
 			// 首次复用宿主机已下载好的浏览器内核（避免环境内首次解压失败导致开不了窗口）
 			reuse_host_bitbrowser_kernel(env.get());

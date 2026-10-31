@@ -8,11 +8,121 @@ import "sys_defs.hpp";
 
 import MainApp;
 import EssentialData;
+import EnvLog;
 
 namespace biz
 {
 	namespace
 	{
+		// hive 备份文件后缀：<hive>.bad.<yyyyMMdd-HHmmss>，便于事后排查又不会覆盖历史备份
+		std::wstring backup_timestamp_suffix()
+		{
+			SYSTEMTIME st{};
+			GetLocalTime(&st);
+			return std::format(L"{:04}{:02}{:02}-{:02}{:02}{:02}",
+			                   st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+		}
+
+		// RegLoadKeyW 的"暂时性"失败：文件正被杀软扫描、被其它进程短暂映射时会出现。
+		// 这类失败不代表 hive 损坏，重试通常能成功，不能因此去备份并重建（那会清空环境登录态）。
+		bool is_transient_hive_error(LSTATUS status)
+		{
+			switch (status)
+			{
+			case ERROR_SHARING_VIOLATION:
+			case ERROR_LOCK_VIOLATION:
+			case ERROR_ACCESS_DENIED:
+			case ERROR_BUSY:
+				return true;
+			default:
+				return false;
+			}
+		}
+
+		// 权限类失败：RegLoadKeyW 需要 SeRestorePrivilege、RegSaveKeyW 需要 SeBackupPrivilege，
+		// 未以管理员身份运行时访问令牌里根本没有这两项权限，RegLoadKeyW 返回
+		// 1314(ERROR_PRIVILEGE_NOT_HELD)；权限被组策略移除时返回 1300。
+		// 这类失败与 hive 文件本身无关，绝不能备份重建——那等于把用户现有登录态换成一个空环境。
+		bool is_privilege_hive_error(LSTATUS status)
+		{
+			return status == ERROR_PRIVILEGE_NOT_HELD || status == ERROR_NOT_ALL_ASSIGNED;
+		}
+
+		// 把 hive 文件的"大小 + 最后写入时间"整理成一行日志。
+		// 重启后是否要重新扫码，取决于本次启动加载到的是不是关机前最新那份快照；
+		// 把两个文件的实际状态写进日志，复现时就能直接区分"关机前没存"和"存了没提升"。
+		std::wstring describe_hive_file(const std::filesystem::path& path)
+		{
+			WIN32_FILE_ATTRIBUTE_DATA attr{};
+			if (!GetFileAttributesExW(path.native().c_str(), GetFileExInfoStandard, &attr))
+			{
+				return L"不存在";
+			}
+			FILETIME local{};
+			FileTimeToLocalFileTime(&attr.ftLastWriteTime, &local);
+			SYSTEMTIME st{};
+			FileTimeToSystemTime(&local, &st);
+			const std::uint64_t size = (static_cast<std::uint64_t>(attr.nFileSizeHigh) << 32) | attr.nFileSizeLow;
+			return std::format(L"{} 字节 / 写入 {:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+			                   size, st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond);
+		}
+
+		// 把 1314 翻译成用户能照做的动作，避免只看到"错误码 1314"无从下手
+		std::wstring hive_privilege_hint()
+		{
+			HANDLE token = nullptr;
+			if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+			{
+				return L"无法查询进程令牌权限";
+			}
+			TOKEN_ELEVATION elevation{};
+			DWORD size = sizeof(elevation);
+			const bool queried = GetTokenInformation(token, TokenElevation, &elevation, size, &size) != FALSE;
+			CloseHandle(token);
+			if (queried && !elevation.TokenIsElevated)
+			{
+				return L"当前进程未以管理员身份运行，请以管理员身份重新运行 eBox";
+			}
+			return L"当前进程令牌中没有 SeRestorePrivilege / SeBackupPrivilege（可能被安全策略移除）";
+		}
+
+		// 加载 hive：暂时性错误重试 3 次（累计最多约 1.2 秒），其余错误立即返回
+		LSTATUS load_hive_with_retry(const std::wstring& subKey, const std::wstring& hivePath)
+		{
+			LSTATUS status = ERROR_SUCCESS;
+			for (int attempt = 0; attempt < 3; ++attempt)
+			{
+				status = RegLoadKeyW(HKEY_USERS, subKey.c_str(), hivePath.c_str());
+				if (status == ERROR_SUCCESS || !is_transient_hive_error(status))
+				{
+					return status;
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds{200 * (attempt + 1)});
+			}
+			return status;
+		}
+
+		// 写环境级错误日志。EnvLogger 由 Biz.Core 初始化，极端早期（构造前）访问会解引用空指针，
+		// 这里统一做空指针保护。
+		void log_env_error(const Env& env, std::wstring_view action, std::wstring_view detail)
+		{
+			if (!g_env_logger)
+			{
+				return;
+			}
+			env_logger().append(env.getIndex(), EnvLogType::Error, EnvLogStatus::Fail, action, detail);
+		}
+
+		// 写环境级提示日志（普通用户模式等非故障信息，避免被当成错误）
+		void log_env_info(const Env& env, std::wstring_view action, std::wstring_view detail)
+		{
+			if (!g_env_logger)
+			{
+				return;
+			}
+			env_logger().append(env.getIndex(), EnvLogType::Info, EnvLogStatus::Info, action, detail);
+		}
+
 		// 启用指定权限（RegLoadKeyW 需要 SeRestorePrivilege，RegSaveKeyW 需要 SeBackupPrivilege）
 		bool enable_privilege(LPCTSTR privilege)
 		{
@@ -39,19 +149,21 @@ namespace biz
 		// 注意：不能直接在 HKEY_USERS 下创建键——RegCreateKeyExW(HKEY_USERS, ...)
 		// 固定返回 ERROR_INVALID_PARAMETER(87)，导致空 hive 永远建不出来。
 		// 改用 HKCU\Software 下的临时键（可正常创建）RegSaveKeyW 导出为 hive 文件。
-		bool create_empty_hive_file(const std::wstring& hivePath)
+		// 返回 LSTATUS：调用方需要区分"权限不足(1314)"与"其它失败"，前者不可反复重试/删文件。
+		LSTATUS create_empty_hive_file(const std::wstring& hivePath)
 		{
 			constexpr wchar_t tempSubKey[] = L"Software\\eBox_Env_Temp";
 			RegDeleteKeyW(HKEY_CURRENT_USER, tempSubKey);
 			HKEY hTemp = nullptr;
-			if (RegCreateKeyExW(HKEY_CURRENT_USER, tempSubKey, 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &hTemp, nullptr) != ERROR_SUCCESS)
+			const LSTATUS createStatus = RegCreateKeyExW(HKEY_CURRENT_USER, tempSubKey, 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &hTemp, nullptr);
+			if (createStatus != ERROR_SUCCESS)
 			{
-				return false;
+				return createStatus;
 			}
-			const bool ok = RegSaveKeyW(hTemp, hivePath.c_str(), nullptr) == ERROR_SUCCESS;
+			const LSTATUS saveStatus = RegSaveKeyW(hTemp, hivePath.c_str(), nullptr);
 			RegCloseKey(hTemp);
 			RegDeleteKeyW(HKEY_CURRENT_USER, tempSubKey);
-			return ok;
+			return saveStatus;
 		}
 		// 注册表 hive 保存/卸载的后台执行器。
 		//
@@ -815,25 +927,179 @@ namespace biz
 		return fs::weakly_canonical(fs::path{app().envDataRoot()} / fs::path{L"Env"} / fs::path{std::format(L"{}", m_index)} / m_flagName);
 	}
 
+	// 普通用户模式下的环境注册表存储位置（注入 DLL 侧使用同一路径，见 MemoryDll GlobalData::initializeRegistry）
+	static std::wstring user_registry_store_subkey(std::uint32_t index)
+	{
+		return std::format(L"Software\\eBox\\EnvRegistry\\{}", index);
+	}
+
+	// 该环境的用户注册表存储是否已存在。
+	// 存在即说明此环境曾以普通用户身份运行过，之后固定使用它：否则同一环境在
+	// "这次提权、下次不提权"之间会同时存在 hive 与用户注册表两份数据，来回切换
+	// 会让用户每次都要重新扫码。
+	static bool user_registry_store_exists(std::uint32_t index)
+	{
+		const std::wstring storeKey = user_registry_store_subkey(index);
+		HKEY hKey = nullptr;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, storeKey.c_str(), 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+		{
+			return false;
+		}
+		RegCloseKey(hKey);
+		return true;
+	}
+
+	bool Env::useUserRegistryStore()
+	{
+		// 未提权时 RegLoadKeyW（需 SeRestorePrivilege）/ RegSaveKeyW（需 SeBackupPrivilege）
+		// 一定失败，hive 方案对普通用户不可用。用户配置注册表本身就是"自动落盘的注册表"，
+		// 把环境虚拟注册表挂在这里即可：无需任何权限、重启后仍在、环境内所有进程共享同一份。
+		const std::wstring storeKey = user_registry_store_subkey(m_index);
+		HKEY hKey = nullptr;
+		const LSTATUS status = RegCreateKeyExW(HKEY_CURRENT_USER, storeKey.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &hKey, nullptr);
+		if (hKey)
+		{
+			RegCloseKey(hKey);
+		}
+		if (status != ERROR_SUCCESS)
+		{
+			log_env_error(*this, L"注册表", std::format(L"用户注册表存储初始化失败（错误码 {}）：HKCU\\{}；本次为临时模式，数据不持久化", static_cast<int>(status), storeKey));
+			return false;
+		}
+		m_userRegistryStore = true;
+		// 对 UI 与退出流程而言等价于"注册表已就绪"（不需要保存/卸载）
+		m_hiveLoaded = true;
+		log_env_info(*this, L"注册表", std::format(L"当前以普通用户运行，环境注册表使用用户注册表存储（HKCU\\{}），登录态随用户配置自动保存，重启后无需重新扫码", storeKey));
+		return true;
+	}
+
+	void Env::deleteUserRegistryStore() const
+	{
+		const std::wstring storeKey = user_registry_store_subkey(m_index);
+		RegDeleteTreeW(HKEY_CURRENT_USER, storeKey.c_str());
+	}
+
 	bool Env::ensureRegistryHiveFile()
+	{
+		// 与 load/save/unload 串行化：创建环境时的预创建与随后的启动加载可能并发，
+		// 两个线程同时 RegSaveKeyW 同一路径会让其中一个失败（甚至写出不完整的 hive）。
+		std::lock_guard hiveLock(m_hiveMutex);
+		return ensureRegistryHiveFileLocked();
+	}
+
+	bool Env::ensureRegistryHiveFileLocked(LSTATUS* outStatus)
 	{
 		namespace fs = std::filesystem;
 		const fs::path hivePath = registryHivePath();
 		std::error_code ec;
 		if (fs::exists(hivePath, ec) && !ec)
 		{
-			// 已存在但大小为 0 视为无效（历史上创建失败的残留），重建
+			// 已存在但大小为 0 视为无效（历史上创建失败的残留），重建。
+			// 注意 RegSaveKeyW 不允许覆盖已存在的文件，必须先删掉这个 0 字节残留，
+			// 否则重建永远失败、该环境会永久退化为"数据不持久化"。
 			if (fs::file_size(hivePath, ec) > 0)
 			{
+				if (outStatus)
+				{
+					*outStatus = ERROR_SUCCESS;
+				}
 				return true;
 			}
+			std::error_code removeEc;
+			fs::remove(hivePath, removeEc);
 		}
 		if (!fs::exists(hivePath.parent_path(), ec))
 		{
 			fs::create_directories(hivePath.parent_path(), ec);
 		}
 		enable_privilege(SE_BACKUP_NAME);
-		return create_empty_hive_file(hivePath.native());
+		const LSTATUS status = create_empty_hive_file(hivePath.native());
+		if (outStatus)
+		{
+			*outStatus = status;
+		}
+		return status == ERROR_SUCCESS;
+	}
+
+	// 把上次未完成落盘的 <hive>.tmp 提升为正式 hive 文件。
+	//
+	// 正式 hive 文件只在 unloadRegistryHive（RegUnLoadKeyW 释放文件锁后）被 .tmp 替换；
+	// 若进程在关机/被杀时没走完卸载流程，.tmp 里才是最新的注册表快照，而正式文件仍是
+	// 旧数据（甚至已被删除）。这里在加载前优先采用 .tmp，避免"重启后登录态丢失"。
+	void Env::promotePendingHiveFile()
+	{
+		namespace fs = std::filesystem;
+		const fs::path hivePath = registryHivePath();
+		const fs::path tmpPath = fs::path{hivePath.native() + L".tmp"};
+		const fs::path oldPath = fs::path{hivePath.native() + L".old"};
+		std::error_code ec;
+		if (!fs::exists(tmpPath, ec) || ec)
+		{
+			return;
+		}
+		if (fs::file_size(tmpPath, ec) == 0 || ec)
+		{
+			// 空/读不到大小：是上次保存失败的残留，直接清掉
+			std::error_code removeEc;
+			fs::remove(tmpPath, removeEc);
+			return;
+		}
+		// 开机瞬间杀毒软件常会打开正式 hive 文件做扫描，此时删除/改名会短暂返回共享冲突。
+		// 提升失败会让本次启动加载到"旧"的正式文件——企业微信随即要求重新扫码，
+		// 因此这里必须重试，而不是失败一次就退回旧文件。
+		//
+		// 不能"先删正式 hive 再改名 .tmp"：remove 成功而 rename 失败时正式 hive 就没了，
+		// 本次启动只能新建空 hive，随后的检查点还会覆盖掉完好的 .tmp。
+		// 改成先把正式 hive 改名成 .old（可回退），提升成功后再删 .old。
+		std::error_code lastEc;
+		for (int attempt = 0; attempt < 8; ++attempt)
+		{
+			// 上一轮可能留下 .old，先清掉
+			std::error_code removeOldEc;
+			fs::remove(oldPath, removeOldEc);
+
+			bool backedUp = false;
+			std::error_code existsEc;
+			if (fs::exists(hivePath, existsEc) && !existsEc)
+			{
+				std::error_code backupEc;
+				fs::rename(hivePath, oldPath, backupEc);
+				if (backupEc)
+				{
+					// 正式 hive 改名失败（多为杀软占用）：原文件未动，稍后重试
+					lastEc = backupEc;
+					if (attempt + 1 < 8)
+					{
+						std::this_thread::sleep_for(std::chrono::milliseconds{250});
+					}
+					continue;
+				}
+				backedUp = true;
+			}
+
+			std::error_code renameEc;
+			fs::rename(tmpPath, hivePath, renameEc);
+			if (!renameEc)
+			{
+				std::error_code removeBackupEc;
+				fs::remove(oldPath, removeBackupEc);
+				log_env_info(*this, L"注册表", std::format(L"已采用关机前准备的 hive 快照：{}", describe_hive_file(hivePath)));
+				return;
+			}
+			lastEc = renameEc;
+			if (backedUp)
+			{
+				// 提升失败：把原正式 hive 放回去，保证本次启动仍能加载旧快照
+				std::error_code restoreEc;
+				fs::rename(oldPath, hivePath, restoreEc);
+			}
+			if (attempt + 1 < 8)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds{250});
+			}
+		}
+		log_env_error(*this, L"注册表", std::format(L"hive 临时快照提升失败（重试 8 次，错误码 {}）：{}；本次将加载旧快照 {}，环境登录态可能回退",
+		                                            lastEc.value(), describe_hive_file(tmpPath), describe_hive_file(hivePath)));
 	}
 
 	bool Env::loadRegistryHive()
@@ -844,20 +1110,20 @@ namespace biz
 		std::unique_lock hiveLock(m_hiveMutex, std::defer_lock);
 		if (!hiveLock.try_lock_for(std::chrono::seconds{2}))
 		{
+			log_env_error(*this, L"注册表", L"hive 正被后台保存/卸载占用（等待超过 2 秒），本次为临时模式，数据不持久化");
 			return false;
 		}
 		if (m_hiveLoaded)
 		{
 			return true;
 		}
-		namespace fs = std::filesystem;
-		const fs::path hivePath = registryHivePath();
-		// 文件不存在/无效时先创建（环境首次使用或历史残留 0 字节文件）
-		if (!ensureRegistryHiveFile())
+		// 该环境已在用用户注册表存储：固定沿用，不再走 hive（避免提权/未提权交替启动时两套存储来回切换）
+		if (user_registry_store_exists(m_index))
 		{
-			return false;
+			return useUserRegistryStore();
 		}
-		// 已加载则直接复用
+		// 已加载则直接复用。必须先于 promotePendingHiveFile 判断：hive 仍挂载时它的
+		// 文件被内核锁定，此时去删/改名只会失败，还会留下一条误导性的错误日志。
 		HKEY chk = nullptr;
 		if (RegOpenKeyExW(HKEY_USERS, registryHiveSubKey().c_str(), 0, KEY_QUERY_VALUE, &chk) == ERROR_SUCCESS)
 		{
@@ -865,23 +1131,77 @@ namespace biz
 			m_hiveLoaded = true;
 			return true;
 		}
-		enable_privilege(SE_RESTORE_NAME);
-		if (RegLoadKeyW(HKEY_USERS, registryHiveSubKey().c_str(), hivePath.native().c_str()) != ERROR_SUCCESS)
+		namespace fs = std::filesystem;
+		const fs::path hivePath = registryHivePath();
+		// 先尝试采用上次未完成落盘的 .tmp（关机/杀进程场景下的最新数据）
+		promotePendingHiveFile();
+		// 文件不存在/无效时先创建（环境首次使用或历史残留 0 字节文件）
+		LSTATUS createStatus = ERROR_SUCCESS;
+		if (!ensureRegistryHiveFileLocked(&createStatus))
 		{
-			// 旧 hive 文件可能损坏或不兼容（如旧版 RegLoadAppKeyW 生成的临时 hive），
-			// 重建空 hive 再加载一次
-			std::error_code removeEc;
-			fs::remove(hivePath, removeEc);
-			enable_privilege(SE_BACKUP_NAME);
-			if (!create_empty_hive_file(hivePath.native()))
+			if (is_privilege_hive_error(createStatus))
 			{
+				// 普通用户无法 RegSaveKeyW 创建 hive：改用用户注册表存储（不需要任何权限，同样持久化）
+				return useUserRegistryStore();
+			}
+			log_env_error(*this, L"注册表", std::format(L"hive 文件创建失败：{}（错误码 {}），本次为临时模式，数据不持久化", hivePath.native(), static_cast<int>(createStatus)));
+			return false;
+		}
+		enable_privilege(SE_RESTORE_NAME);
+		// 复现"重启后要重新扫码"时的决定性证据：本次真正加载的 hive 有多新、是否还残留未提升的快照。
+		// 正式文件写入时间远早于关机时刻且 .tmp 不存在 → 关机前的保存根本没执行（被系统强杀/超时），
+		// 而不是加载失败——这两种情况的修复方向完全不同，不能靠猜。
+		log_env_info(*this, L"注册表", std::format(L"加载 hive：正式文件 {}；未提升快照 {}",
+		                                          describe_hive_file(hivePath),
+		                                          describe_hive_file(fs::path{hivePath.native() + L".tmp"})));
+		const LSTATUS loadStatus = load_hive_with_retry(registryHiveSubKey(), hivePath.native());
+		if (loadStatus != ERROR_SUCCESS)
+		{
+			if (is_privilege_hive_error(loadStatus))
+			{
+				// 权限不足（未以管理员身份运行）：hive 文件本身是好的，绝不能备份重建，
+				// 否则等于把用户现有登录态换成一个空环境。改为用户注册表存储，仍然持久化。
+				return useUserRegistryStore();
+			}
+			if (is_transient_hive_error(loadStatus))
+			{
+				// 文件被占用（杀软扫描 / 上一轮进程尚未完全释放对 hive 的映射）：
+				// 绝不能备份重建——那等于把用户现有登录态换成一个空环境。
+				log_env_error(*this, L"注册表", std::format(L"hive 加载失败（错误码 {}：文件被占用，已重试 3 次）：{}；本次为临时模式，数据不持久化",
+				                                            static_cast<int>(loadStatus), hivePath.native()));
+				return false;
+			}
+			// 旧 hive 文件可能损坏或不兼容（如旧版 RegLoadAppKeyW 生成的临时 hive）。
+			// 这里【只备份不删除】：改名成 .bad.<时间戳> 保留现场，便于用户事后恢复/排查；
+			// 直接删除会让"一次加载失败"永久变成"登录态全丢"。
+			const fs::path badPath = fs::path{std::format(L"{}.bad.{}", hivePath.native(), backup_timestamp_suffix())};
+			std::error_code renameEc;
+			fs::rename(hivePath, badPath, renameEc);
+			if (renameEc)
+			{
+				// 改名失败（文件被占用/权限不足）：不做任何破坏性动作，保持临时模式
+				log_env_error(*this, L"注册表", std::format(L"hive 加载失败（错误码 {}），且无法备份为 {}（错误码 {}）；本次为临时模式，数据不持久化",
+				                                            static_cast<int>(loadStatus), badPath.native(), renameEc.value()));
+				return false;
+			}
+			enable_privilege(SE_BACKUP_NAME);
+			const LSTATUS rebuildStatus = create_empty_hive_file(hivePath.native());
+			if (rebuildStatus != ERROR_SUCCESS)
+			{
+				log_env_error(*this, L"注册表", std::format(L"hive 加载失败（错误码 {}），已备份为 {}，但重建空 hive 失败（错误码 {}）；本次为临时模式，数据不持久化",
+				                                            static_cast<int>(loadStatus), badPath.native(), static_cast<int>(rebuildStatus)));
 				return false;
 			}
 			enable_privilege(SE_RESTORE_NAME);
-			if (RegLoadKeyW(HKEY_USERS, registryHiveSubKey().c_str(), hivePath.native().c_str()) != ERROR_SUCCESS)
+			const LSTATUS retryStatus = load_hive_with_retry(registryHiveSubKey(), hivePath.native());
+			if (retryStatus != ERROR_SUCCESS)
 			{
+				log_env_error(*this, L"注册表", std::format(L"hive 加载失败（错误码 {}），旧文件已备份为 {}，重建后仍加载失败（错误码 {}）；本次为临时模式，数据不持久化",
+				                                            static_cast<int>(loadStatus), badPath.native(), static_cast<int>(retryStatus)));
 				return false;
 			}
+			log_env_error(*this, L"注册表", std::format(L"hive 文件损坏或不兼容（错误码 {}），已备份为 {} 并重建空环境，该环境原有登录态已丢失",
+			                                            static_cast<int>(loadStatus), badPath.native()));
 		}
 		m_hiveLoaded = true;
 		return true;
@@ -890,13 +1210,20 @@ namespace biz
 	bool Env::saveRegistryHive()
 	{
 		std::lock_guard hiveLock(m_hiveMutex);
+		if (m_userRegistryStore)
+		{
+			// 用户注册表由 Windows 自动落盘，无需 RegSaveKeyW
+			return true;
+		}
 		if (!m_hiveLoaded)
 		{
 			return false;
 		}
 		HKEY hKey = nullptr;
-		if (RegOpenKeyExW(HKEY_USERS, registryHiveSubKey().c_str(), 0, KEY_ALL_ACCESS, &hKey) != ERROR_SUCCESS)
+		const LSTATUS openStatus = RegOpenKeyExW(HKEY_USERS, registryHiveSubKey().c_str(), 0, KEY_ALL_ACCESS, &hKey);
+		if (openStatus != ERROR_SUCCESS)
 		{
+			log_env_error(*this, L"注册表", std::format(L"保存 hive 失败：无法打开已加载的 hive（错误码 {}），本次数据未落盘", static_cast<int>(openStatus)));
 			return false;
 		}
 		namespace fs = std::filesystem;
@@ -904,12 +1231,48 @@ namespace biz
 		// hive 加载期间源文件被系统锁定，不能直接覆盖；先保存到 .tmp，
 		// 卸载（RegUnLoadKeyW 释放文件锁）后再替换为正式文件
 		const fs::path tmpPath = fs::path{hivePath.native() + L".tmp"};
+		// 先写到 .tmp.new，成功后再改名成 .tmp。关机时 Windows 只等几秒就会强杀
+		// eBox，若直接写 .tmp，被强杀会留下半截文件，下次启动会被当成有效快照
+		// 提升、反而覆盖掉好的正式 hive。改成"写完成才顶替"，半截文件永远不会被提升。
+		const fs::path stagingPath = fs::path{hivePath.native() + L".tmp.new"};
 		std::error_code ec;
-		fs::remove(tmpPath, ec);
+		fs::remove(stagingPath, ec);
 		enable_privilege(SE_BACKUP_NAME);
-		const bool ok = RegSaveKeyW(hKey, tmpPath.native().c_str(), nullptr) == ERROR_SUCCESS;
+		const LSTATUS saveStatus = RegSaveKeyW(hKey, stagingPath.native().c_str(), nullptr);
 		RegCloseKey(hKey);
-		m_pendingHiveFile = ok ? tmpPath.native() : std::wstring{};
+		bool ok = saveStatus == ERROR_SUCCESS;
+		if (ok)
+		{
+			fs::remove(tmpPath, ec);
+			ec.clear();
+			fs::rename(stagingPath, tmpPath, ec);
+			if (ec)
+			{
+				ok = false;
+				std::error_code removeEc;
+				fs::remove(stagingPath, removeEc);
+				log_env_error(*this, L"注册表", std::format(L"hive 快照改名失败：{}（错误码 {}），本次注册表变更未落盘", tmpPath.native(), ec.value()));
+			}
+			else
+			{
+				m_pendingHiveFile = tmpPath.native();
+			}
+		}
+		else
+		{
+			// 失败可能留下写了一半的暂存文件，清掉，避免下次加载时被误当成有效快照
+			m_pendingHiveFile.clear();
+			std::error_code removeEc;
+			fs::remove(stagingPath, removeEc);
+			if (is_privilege_hive_error(saveStatus))
+			{
+				log_env_error(*this, L"注册表", std::format(L"保存 hive 失败（错误码 {}）：{}，本次注册表变更未落盘", static_cast<int>(saveStatus), hive_privilege_hint()));
+			}
+			else
+			{
+				log_env_error(*this, L"注册表", std::format(L"保存 hive 失败（错误码 {}），本次注册表变更未落盘", static_cast<int>(saveStatus)));
+			}
+		}
 		return ok;
 	}
 
@@ -923,17 +1286,45 @@ namespace biz
 		std::error_code ec;
 		const fs::path hivePath = registryHivePath();
 		fs::remove(hivePath, ec);
+		ec.clear();
 		fs::rename(m_pendingHiveFile, hivePath, ec);
+		if (ec)
+		{
+			// 保留 .tmp（下次加载时 promotePendingHiveFile 会把它提升为正式文件），不丢数据
+			log_env_error(*this, L"注册表", std::format(L"hive 正式文件替换失败：{}（错误码 {}），数据暂存于 .tmp，下次启动时自动恢复", hivePath.native(), ec.value()));
+			return;
+		}
 		m_pendingHiveFile.clear();
 	}
 
 	bool Env::unloadRegistryHive()
 	{
 		std::lock_guard hiveLock(m_hiveMutex);
+		if (m_userRegistryStore)
+		{
+			// 用户注册表没有挂载动作，也就没有卸载；保持 m_hiveLoaded 为 true，
+			// 避免下次启动重复尝试 hive（普通用户一定失败）
+			return true;
+		}
 		if (m_hiveLoaded)
 		{
 			enable_privilege(SE_RESTORE_NAME);
-			RegUnLoadKeyW(HKEY_USERS, registryHiveSubKey().c_str());
+			LSTATUS unloadStatus = RegUnLoadKeyW(HKEY_USERS, registryHiveSubKey().c_str());
+			// 环境内进程刚被终止时内核句柄可能还没完全释放，RegUnLoadKeyW 会返回
+			// ERROR_ACCESS_DENIED(5)。短暂重试，避免 hive 长期挂着、正式文件一直不更新。
+			for (int attempt = 0; unloadStatus != ERROR_SUCCESS && attempt < 4; ++attempt)
+			{
+				std::this_thread::sleep_for(std::chrono::milliseconds{200});
+				unloadStatus = RegUnLoadKeyW(HKEY_USERS, registryHiveSubKey().c_str());
+			}
+			if (unloadStatus != ERROR_SUCCESS)
+			{
+				// hive 仍挂载（通常是环境内进程还没退干净）：保留 m_hiveLoaded，
+				// 下次仍可保存并再次尝试卸载；本次数据已写入 .tmp，
+				// 下次启动由 promotePendingHiveFile 提升为正式文件，不会丢。
+				log_env_error(*this, L"注册表", std::format(L"hive 卸载失败（错误码 {}），数据已暂存于 .tmp，下次启动时自动恢复", static_cast<int>(unloadStatus)));
+				return false;
+			}
 			m_hiveLoaded = false;
 		}
 		// 卸载释放了 hive 文件锁，此时才把 .tmp 落盘替换为正式文件
@@ -943,7 +1334,7 @@ namespace biz
 
 	void Env::saveRegistryHiveAsync()
 	{
-		if (!m_hiveLoaded)
+		if (!m_hiveLoaded || m_userRegistryStore)
 		{
 			return;
 		}

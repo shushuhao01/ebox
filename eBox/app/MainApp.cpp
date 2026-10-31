@@ -107,6 +107,136 @@ namespace
 		// 已落盘：不再走 WER 上报/弹窗，直接让进程结束
 		return EXCEPTION_EXECUTE_HANDLER;
 	}
+
+	// ===== 启动期权限检查（环境注册表 hive 的硬前提）=====
+	// 环境 hive 依赖 RegLoadKeyW（需 SeRestorePrivilege）与 RegSaveKeyW（需 SeBackupPrivilege）。
+	// 这两项权限只存在于已提权的管理员令牌中：未提权时 RegLoadKeyW 直接返回
+	// 1314(ERROR_PRIVILEGE_NOT_HELD)，环境会退化为进程级临时注册表、数据不落盘，
+	// 表现为"重启后需要重新扫码"。所以启动期先确认权限，缺失则以管理员身份重启自身。
+	constexpr std::wstring_view ELEVATED_RELAUNCH_FLAG = L"--elevated-relaunch";
+
+	// 当前令牌是否持有 hive 所需的全部权限（有权限但被禁用也算持有，后续可自行启用）
+	bool holds_hive_privileges()
+	{
+		HANDLE token = nullptr;
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		{
+			return false;
+		}
+		// PRIVILEGE_SET 的 Privilege 数组声明长度为 1，两项权限必须自行扩容，否则越界写入
+		struct alignas(PRIVILEGE_SET) PrivilegeSetTwo
+		{
+			DWORD PrivilegeCount;
+			DWORD Control;
+			LUID_AND_ATTRIBUTES Privilege[2];
+		};
+		PrivilegeSetTwo required{};
+		LUID restoreLuid{};
+		LUID backupLuid{};
+		bool held = false;
+		if (LookupPrivilegeValueW(nullptr, SE_RESTORE_NAME, &restoreLuid) &&
+		    LookupPrivilegeValueW(nullptr, SE_BACKUP_NAME, &backupLuid))
+		{
+			required.PrivilegeCount = 2;
+			required.Control = PRIVILEGE_SET_ALL_NECESSARY;
+			required.Privilege[0].Luid = restoreLuid;
+			required.Privilege[1].Luid = backupLuid;
+			BOOL result = FALSE;
+			held = PrivilegeCheck(token, reinterpret_cast<PRIVILEGE_SET*>(&required), &result) && result;
+		}
+		CloseHandle(token);
+		return held;
+	}
+
+	bool is_admin_member()
+	{
+		SID_IDENTIFIER_AUTHORITY ntAuthority = SECURITY_NT_AUTHORITY;
+		PSID adminSid = nullptr;
+		if (!AllocateAndInitializeSid(&ntAuthority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+		                              DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &adminSid))
+		{
+			return false;
+		}
+		BOOL isMember = FALSE;
+		CheckTokenMembership(nullptr, adminSid, &isMember);
+		FreeSid(adminSid);
+		return isMember != FALSE;
+	}
+
+	// 当前用户能否"无凭据"提权：属于管理员组、只是被 UAC 过滤（Limited）。
+	// 标准用户提权必须输入管理员账号，会让 eBox 以另一个用户身份运行（HKCU / 数据目录错位），
+	// 因此这种情况不自动提权，只由环境日志提示需要管理员权限。
+	bool can_elevate_silently()
+	{
+		HANDLE token = nullptr;
+		if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+		{
+			return false;
+		}
+		TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+		DWORD size = sizeof(type);
+		const bool gotType = GetTokenInformation(token, TokenElevationType, &type, size, &size) != FALSE;
+		CloseHandle(token);
+		if (!gotType)
+		{
+			return false;
+		}
+		switch (type)
+		{
+		case TokenElevationTypeFull:
+			return true;
+		case TokenElevationTypeLimited:
+			return true; // 用户属于管理员组，UAC 可无凭据提权
+		default:
+			// 未启用 UAC（令牌本身已是管理员）或标准用户
+			return is_admin_member();
+		}
+	}
+
+	// 是否已有环境在使用"用户注册表存储"（HKCU\Software\eBox\EnvRegistry\<index>）。
+	// 有则说明用户已经（或只能）以普通权限运行过：提权对持久化已无任何作用，
+	// 反而每次启动都会弹一次 UAC，因此不再自动提权。
+	bool user_registry_store_present()
+	{
+		HKEY hKey = nullptr;
+		if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\eBox\\EnvRegistry", 0, KEY_READ, &hKey) != ERROR_SUCCESS)
+		{
+			return false;
+		}
+		DWORD subKeyCount = 0;
+		const bool hasSubKey =
+			RegQueryInfoKeyW(hKey, nullptr, nullptr, nullptr, &subKeyCount,
+			                 nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr) == ERROR_SUCCESS
+			&& subKeyCount > 0;
+		RegCloseKey(hKey);
+		return hasSubKey;
+	}
+
+	// 以管理员身份重启自身；返回 true 表示新实例已拉起，本进程应立即退出。
+	bool relaunch_elevated(std::wstring_view cmdLine)
+	{
+		wchar_t exePath[MAX_PATH * 4]{};
+		const DWORD capacity = static_cast<DWORD>(std::size(exePath));
+		const DWORD len = GetModuleFileNameW(nullptr, exePath, capacity);
+		if (len == 0 || len >= capacity)
+		{
+			return false;
+		}
+		// 带标记重启：万一提权后令牌仍缺权限（如组策略移除），不会无限重启自己
+		std::wstring params{cmdLine};
+		if (!params.empty())
+		{
+			params += L' ';
+		}
+		params += ELEVATED_RELAUNCH_FLAG;
+		SHELLEXECUTEINFOW siw{sizeof(siw)};
+		siw.fMask = SEE_MASK_NOASYNC; // 本进程马上退出，必须等启动完成
+		siw.lpVerb = L"runas";
+		siw.lpFile = exePath;
+		siw.lpParameters = params.c_str();
+		siw.nShow = SW_SHOWNORMAL;
+		return ShellExecuteExW(&siw) != FALSE; // 用户取消 UAC 时返回 FALSE，继续以受限模式运行
+	}
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
@@ -116,6 +246,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 
 	try
 	{
+		// 环境注册表优先沿用 hive（提权可用时，数据仍留在环境目录）；普通权限下自动改用
+		// HKCU 用户注册表存储，同样持久化、无需管理员。因此只有"从未用过用户注册表存储"
+		// 且当前令牌缺 hive 权限时，才尝试提权重启；已切到用户注册表存储的环境不再弹 UAC。
+		if (!holds_hive_privileges()
+			&& !user_registry_store_present()
+			&& !std::wstring_view{lpCmdLine}.contains(ELEVATED_RELAUNCH_FLAG)
+			&& can_elevate_silently()
+			&& relaunch_elevated(lpCmdLine))
+		{
+			return 0;
+		}
+
 		// 退出/重启接力：新实例必须等旧实例完全退出后再抢单实例互斥，
 		// 否则会误报"eBox 已在运行"，且旧实例仍持有 Env\data\eBox hive 句柄导致迁移失败。
 		wait_previous_instance_end(lpCmdLine);
@@ -2621,7 +2763,9 @@ namespace
 			check_component(binDir / std::format(L"{}_64.bin", flag), core.dll64,
 			                std::format(L"环境「{}」的 64 位组件", name), inUse);
 
-			if (!envWritable || inUse)
+			// 未提权时 hive 用不上（环境注册表走用户注册表存储），不检查 hive 文件，
+			// 否则普通用户会一直看到"注册表数据无效"的误报
+			if (!envWritable || inUse || !holds_hive_privileges())
 			{
 				continue;
 			}

@@ -527,6 +527,18 @@ namespace ui
 			return false;
 		}
 
+		// 系统即将关机/重启/注销（WM_QUERYENDSESSION）：子类在这里做落盘等准备工作。
+		// 实现方应尽量快，窗口过程会阻塞到本函数返回后才允许系统继续关机。
+		virtual void onQueryEndSession()
+		{
+		}
+
+		// 系统已确认结束会话（WM_ENDSESSION，wParam=TRUE 表示确实要关机）：
+		// 子类可在这里释放/卸载资源，此时已无法阻止关机。
+		virtual void onEndSession()
+		{
+		}
+
 		virtual void onBeforeWindowDestroy()
 		{
 		}
