@@ -1,21 +1,20 @@
 {
-    "latestVersion": "v3.3.1",
-    "latestVersionCode": 30301,
-    "releaseDate": "2026/10/30",
+    "latestVersion": "v3.3.2",
+    "latestVersionCode": 30302,
+    "releaseDate": "2026/10/31",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "dced8f8d67f1f65c43f6fa85f9a62cac79b67bbdd0f1b85499e800dc15e3e1f0",
-    "downloadSize": 3964416,
+    "downloadSha256": "e07c5afd9c398b9ca28d1e83abe379e082ced7cbcee415460425e69a241ef4a5",
+    "downloadSize": 4023296,
     "changelog": [
-        "修复比特浏览器在环境里第一次打开窗口失败的问题（提示 Browser was not found）",
-        "首次启动时自动复用本机已下载好的浏览器内核，不用再等它重新下载",
-        "环境里已经有内核时自动跳过，不会重复拷贝",
-        "修复环境内程序通过 CreateProcess 系列接口启动时路径没有重定向的问题",
-        "同步版本号至 v3.3.1"
+        "淇浼佷笟寰俊寮€鏈鸿嚜鍚悗閲嶅惎鐢佃剳浠嶉渶閲嶆柊鎵爜鐧诲綍鐨勯棶棰?",
+        "浼佷笟寰俊鐨勬暟鎹洰褰曠幇鍦ㄦ寜鐜闅旂锛岄噸鍚悗鑷姩鐧诲綍渚濈劧鏈夋晥",
+        "浼樺寲鐜鏁版嵁淇濆瓨锛屽叧鏈烘垨寮哄埗缁撴潫绋嬪簭鏃朵篃鑳戒繚鐣欐渶鏂扮櫥褰曠姸鎬?淇鐜鍐呯▼搴忓惎鍔ㄦ椂璺緞娌℃湁閲嶅畾鍚戠殑涓埆闂",
+        "鍚屾鐗堟湰鍙疯嚦 v3.3.2"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.3.1/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.3.2/eBox.exe"
     ]
 }
