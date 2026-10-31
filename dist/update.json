@@ -1,21 +1,23 @@
 {
-    "latestVersion": "v3.3.2",
-    "latestVersionCode": 30302,
+    "latestVersion": "v3.3.3",
+    "latestVersionCode": 30303,
     "releaseDate": "2026/10/31",
     "downloadUrl": "https://abc222.cn/download/eBox.exe",
-    "downloadSha256": "e07c5afd9c398b9ca28d1e83abe379e082ced7cbcee415460425e69a241ef4a5",
-    "downloadSize": 4023296,
+    "downloadSha256": "1e000f6f8ab2af7cebd3b0e622f57fac8bb1ff237916b6e5991b75e17abc088e",
+    "downloadSize": 4081664,
     "changelog": [
-        "修复企业微信开机自启后重启电脑仍需重新扫码登录的问题",
-        "企业微信的数据目录现在按环境隔离，重启后自动登录依然有效",
-        "优化环境数据保存，关机或强制结束程序时也能保留最新登录状态",
-        "修复环境内程序启动时路径没有重定向的个别问题",
-        "同步版本号至 v3.3.2"
+        "首次运行或数据盘不可用时引导选择数据盘，优先推荐固定硬盘，避免数据放在会被拔掉的移动盘",
+        "数据目录迁移更稳：中途卡住能自动恢复，只读文件不再反复失败，移动硬盘掉线会明确提示是哪块盘",
+        "设置里的「检查与修复」「修复企业微信数据」改为后台执行，不再出现「未响应」",
+        "激活弹窗会说明为什么要重新激活；重装/换硬件与「已绑定其他电脑」的提示分开，并给出换机码指引",
+        "环境里的程序被移动或卸载后，点【启动】可直接重新选择并切换主程序",
+        "常见问题新增「注意事项」「功能详情」分类，易歪歪问题置顶",
+        "调整标题栏问号样式，与更新图标保持一致"
     ],
     "minSkipVersionCode": 0,
     "forceUpdate": false,
     "downloadUrls": [
         "https://abc222.cn/download/eBox.exe",
-        "https://github.com/shushuhao01/ebox/releases/download/v3.3.2/eBox.exe"
+        "https://github.com/shushuhao01/ebox/releases/download/v3.3.3/eBox.exe"
     ]
 }
