@@ -103,6 +103,11 @@ namespace ui
 		lastText = text;
 	}
 
+	bool prompt_first_run_data_dir()
+	{
+		return ui::ensure_startup_data_dir();
+	}
+
 	MainWindow::MainWindow() : WindowBase({MainApp::appName})
 	{
 		setExitAppWhenWindowDestroyed(true);
@@ -112,6 +117,8 @@ namespace ui
 		initTray();
 		// 运行期定时给环境 hive 打检查点：关机消息里的同步落盘可能被系统超时强杀打断
 		SetTimer(nativeHandle(), HIVE_CHECKPOINT_TIMER_ID, HIVE_CHECKPOINT_INTERVAL_MS, onHiveCheckpointTimer);
+		// 后台预热数据目录占用空间：设置里点"数据存放位置"时直接拿结果，不用现场扫描
+		ui::warm_up_data_dir_size();
 		// 升级恢复：清理上次成功升级遗留的 .bak；若上次 bat 更新失败（已回滚）则提示用户
 		biz::update::cleanupBackupIfNeeded();
 		{
@@ -735,18 +742,24 @@ namespace ui
 					D2D1::RoundedRect(D2D1::RectF(0.f, 0.f, width, height), 4.f, 4.f),
 					solidBrush);
 			}
-			// 只画一个"?"：常态灰色、悬浮/按下主题蓝，无背景、无描边
+			// 问号：沿用字形绘制（线条图标在 12px 尺寸下钩圈过小，容易糊成钩子），
+			// 但字号提到 14px 并按 20px 盒整体居中，使字高/重量与右侧 1.5px 线性箭头一致，
+			// 光学中心与按钮中心重合；常态灰、悬浮/按下主题蓝
 			solidBrush->SetColor(hot
 			                     ? D2D1::ColorF(0.00784f, 0.4706f, 0.8314f, 1.f)
 			                     : D2D1::ColorF(0.45f, 0.45f, 0.45f, 1.f));
-			IDWriteTextFormat* const tipsFmt = app().textFormat().pTipsFormat.get();
+			const float cy = height * 0.5f;
+			IDWriteTextFormat* const tipsFmt = app().textFormat().pMainFormat.get();
 			const auto oldAlign = tipsFmt->GetTextAlignment();
+			const auto oldParaAlign = tipsFmt->GetParagraphAlignment();
 			tipsFmt->SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER);
+			tipsFmt->SetParagraphAlignment(DWRITE_PARAGRAPH_ALIGNMENT_CENTER);
 			renderTarget->DrawTextW(L"?", 1,
 			                        tipsFmt,
-			                        D2D1::RectF(0.f, (height - 14.f) * 0.5f, width, (height - 14.f) * 0.5f + 14.f),
+			                        D2D1::RectF(0.f, cy - 10.f, width, cy + 10.f),
 			                        solidBrush);
 			tipsFmt->SetTextAlignment(oldAlign);
+			tipsFmt->SetParagraphAlignment(oldParaAlign);
 		}
 		else
 		{
@@ -1425,7 +1438,7 @@ namespace ui
 		m_pTitleLayout.reset();
 		// 授权到期红点：距到期 <=7 天时"授权"按钮亮红点（点击进入授权信息查看详情）
 		m_licenseRemindDays = biz::license::remainingDays();
-		// 标题：eBox v3.3.2   更新时间：2026/10/31   [到期：yyyy-MM-dd]
+		// 标题：eBox v3.3.3   更新时间：2026/11/1   [到期：yyyy-MM-dd]
 		const std::wstring expireText = biz::license::expireDateText();
 		const std::wstring titleText = expireText.empty()
 			? std::format(L"{} {}   更新时间：{}",

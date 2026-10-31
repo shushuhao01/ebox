@@ -7,6 +7,10 @@ module;
 #include <richedit.h>
 #include <windowsx.h>
 #include <tlhelp32.h>
+// IOCTL_STORAGE_QUERY_PROPERTY：读取磁盘总线类型，识别 USB 外置硬盘（这类盘常报 DRIVE_FIXED）
+#include <winioctl.h>
+#include <cmath>
+#include <array>
 #pragma comment(lib, "msimg32.lib")
 #pragma comment(lib, "comctl32.lib")
 module UI.Core;
@@ -110,13 +114,32 @@ namespace ui
 		const int h = rc.bottom - rc.top;
 		int x = 0;
 		int y = 0;
+		POINT cursor{};
+		const bool hasCursor = GetCursorPos(&cursor) != FALSE;
+		HMONITOR hMon = nullptr;
 		if (owner != nullptr && IsWindow(owner) && GetWindowRect(owner, &rcOwner))
 		{
 			x = rcOwner.left + (rcOwner.right - rcOwner.left - w) / 2;
 			y = rcOwner.top + (rcOwner.bottom - rcOwner.top - h) / 2;
+			hMon = MonitorFromWindow(owner, MONITOR_DEFAULTTONEAREST);
+		}
+		else
+		{
+			// 无父窗口（如启动期选盘）：创建时窗口在 (0,0)，不能按窗口所在显示器居中，
+			// 否则 clamp 后仍停在左上角。改为在鼠标所在显示器的工作区正中显示。
+			hMon = MonitorFromPoint(cursor, hasCursor ? MONITOR_DEFAULTTONEAREST : MONITOR_DEFAULTTOPRIMARY);
+			MONITORINFO cursorMi{sizeof(MONITORINFO)};
+			if (hMon != nullptr && GetMonitorInfoW(hMon, &cursorMi))
+			{
+				x = cursorMi.rcWork.left + (cursorMi.rcWork.right - cursorMi.rcWork.left - w) / 2;
+				y = cursorMi.rcWork.top + (cursorMi.rcWork.bottom - cursorMi.rcWork.top - h) / 2;
+			}
 		}
 		MONITORINFO mi{sizeof(MONITORINFO)};
-		const HMONITOR hMon = MonitorFromWindow(owner != nullptr ? owner : hwnd, MONITOR_DEFAULTTONEAREST);
+		if (hMon == nullptr)
+		{
+			hMon = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+		}
 		if (hMon != nullptr && GetMonitorInfoW(hMon, &mi))
 		{
 			if (x + w > mi.rcWork.right)
@@ -1208,8 +1231,18 @@ namespace ui
 		constexpr int ACT_CANCEL_ID = 3003;
 		constexpr int ACT_BUY_ID = 3007;
 		constexpr int ACT_DLG_WIDTH = 480;
-		constexpr int ACT_DLG_HEIGHT = 300;
+		// 提示区需容纳 4~5 行诊断/错误文案（指纹变化、已绑定其他电脑等），
+		// 由 300 增至 320，配套把提示区加高、协议行与按钮行下移。
+		constexpr int ACT_DLG_HEIGHT = 320;
 		constexpr UINT ACT_WM_DONE = WM_APP + 0x32; // 后台激活完成（线程消息，结果经 ActShared 交接，消息不携带指针）
+
+		// 激活弹窗提示区样式：普通提示（灰）/ 前置诊断（琥珀）/ 失败原因（红）
+		enum class ActHintStyle
+		{
+			Hint,
+			Warn,
+			Error,
+		};
 
 		// 后台激活共享结果：工作线程与 UI 交接数据，消息本身不携带指针，杜绝悬垂/泄漏
 		struct ActShared
@@ -1234,7 +1267,10 @@ namespace ui
 			HFONT hFontSmall{nullptr};
 			HFONT hFontHint{nullptr};
 			HBRUSH hHintBg{nullptr};    // 提示行不透明底刷：切换提示词时先清底再画新文字（互斥，防旧文字残留重叠）
-			bool errorMode{false};      // false=灰色提示词 true=红色错误提示（互斥显示）
+			ActHintStyle hintStyle{ActHintStyle::Hint};  // 当前提示区样式（决定文字颜色）
+			COLORREF hintBgColor{RGB(0xf7, 0xfa, 0xfe)}; // 当前提示区底色（与 hHintBg 保持一致）
+			std::wstring baseHint;      // 输入时恢复的默认提示（打开弹窗时可能预置诊断说明，空=用通用提示）
+			ActHintStyle baseStyle{ActHintStyle::Hint};  // 默认提示对应的样式
 			bool done{false};
 			bool activated{false};
 			bool activating{false};     // 后台激活校验进行中（防重入）
@@ -1258,7 +1294,7 @@ namespace ui
 
 		// 勾选同意《用户协议》行的布局（提示行与按钮行之间的空白带内）
 		constexpr int AGREE_BOX_LEFT = 40;
-		constexpr int AGREE_BOX_TOP  = 194;
+		constexpr int AGREE_BOX_TOP  = 216;
 		constexpr int AGREE_BOX_SIZE = 18;
 		constexpr wchar_t AGREE_LABEL[] = L"我已阅读并同意";
 		constexpr wchar_t AGREE_LINK_UA[] = L"《eBox 用户协议》";
@@ -2671,26 +2707,68 @@ namespace ui
 		}
 
 
-		void activate_dlg_show_error(ActivateDialogData& data, std::wstring_view msg)
+		// 提示区配色：普通提示（浅灰蓝）/ 前置诊断（浅琥珀）/ 失败原因（浅红）
+		COLORREF activate_hint_bg(ActHintStyle style)
+		{
+			switch (style)
+			{
+			case ActHintStyle::Warn:
+				return RGB(0xff, 0xf9, 0xeb);
+			case ActHintStyle::Error:
+				return RGB(0xfd, 0xf2, 0xf2);
+			default:
+				return RGB(0xf7, 0xfa, 0xfe);
+			}
+		}
+
+		COLORREF activate_hint_fg(ActHintStyle style)
+		{
+			switch (style)
+			{
+			case ActHintStyle::Warn:
+				return RGB(0xb4, 0x53, 0x09);
+			case ActHintStyle::Error:
+				return CLEAN_DANGER;
+			default:
+				return CLEAN_TEXT_SUB;
+			}
+		}
+
+		// 统一切换提示区文案与样式：文字与底色一起更新，避免旧提示残留重叠
+		void activate_dlg_set_hint(ActivateDialogData& data, std::wstring_view msg, ActHintStyle style)
 		{
 			if (!data.hError)
 			{
 				return;
 			}
-			data.errorMode = true;
-			SetWindowTextW(data.hError, msg.data());
+			data.hintStyle = style;
+			data.hintBgColor = activate_hint_bg(style);
+			if (data.hHintBg)
+			{
+				DeleteObject(data.hHintBg);
+			}
+			data.hHintBg = CreateSolidBrush(data.hintBgColor);
+			const std::wstring text{msg};
+			SetWindowTextW(data.hError, text.c_str());
 			InvalidateRect(data.hError, nullptr, TRUE);
 		}
 
+		void activate_dlg_show_error(ActivateDialogData& data, std::wstring_view msg)
+		{
+			activate_dlg_set_hint(data, msg, ActHintStyle::Error);
+		}
+
+		// 恢复默认提示：打开弹窗时若预置了诊断说明（指纹变化等），恢复诊断而不是通用提示
 		void activate_dlg_show_hint(ActivateDialogData& data)
 		{
-			if (!data.hError)
+			if (data.baseHint.empty())
 			{
-				return;
+				activate_dlg_set_hint(data, ACT_HINT_TEXT, ActHintStyle::Hint);
 			}
-			data.errorMode = false;
-			SetWindowTextW(data.hError, ACT_HINT_TEXT.data());
-			InvalidateRect(data.hError, nullptr, TRUE);
+			else
+			{
+				activate_dlg_set_hint(data, data.baseHint, data.baseStyle);
+			}
 		}
 
 		// 按窗口 DPI 重建字体（首次创建与跨屏 DPI 变化共用）
@@ -2772,7 +2850,8 @@ namespace ui
 			place(data.hTitle, S(58), S(22), S(ACT_DLG_WIDTH - 90), S(30));
 			place(data.hSub, S(58), S(56), S(ACT_DLG_WIDTH - 90), S(20));
 			place(data.hEdit, S(40), S(102), S(ACT_DLG_WIDTH - 80), S(38));
-			place(data.hError, S(40), S(150), S(ACT_DLG_WIDTH - 80), S(28));
+			// 提示区加高到 64px（约 5 行）：指纹变化/已绑定其他电脑等多行诊断不再被截断
+			place(data.hError, S(40), S(148), S(ACT_DLG_WIDTH - 80), S(64));
 			place(data.hBuy, S(24), S(ACT_DLG_HEIGHT - 56), S(100), S(38));
 			place(data.hOk, S(ACT_DLG_WIDTH - 200), S(ACT_DLG_HEIGHT - 56), S(110), S(38));
 			place(data.hCancel, S(ACT_DLG_WIDTH - 88), S(ACT_DLG_HEIGHT - 56), S(74), S(38));
@@ -2995,8 +3074,8 @@ namespace ui
 				{
 					// 提示行：不透明底（先清底再画新文字，互斥显示，防止旧提示词残留重叠）
 					SetBkMode(hdc, OPAQUE);
-					SetBkColor(hdc, RGB(0xf7, 0xfa, 0xfe));
-					SetTextColor(hdc, data->errorMode ? CLEAN_DANGER : CLEAN_TEXT_SUB);
+					SetBkColor(hdc, data->hintBgColor);
+					SetTextColor(hdc, activate_hint_fg(data->hintStyle));
 					return reinterpret_cast<LRESULT>(data->hHintBg);
 				}
 				else if (hWnd == data->hSub)
@@ -3157,9 +3236,7 @@ namespace ui
 					// 原实现会令 UI 线程未响应）→ 立即反馈"验证中"，完成后经线程消息回 UI
 					data->activating = true;
 					data->actShared = std::make_shared<ActShared>();
-					data->errorMode = false;
-					SetWindowTextW(data->hError, L"正在验证激活码，请稍候…");
-					InvalidateRect(data->hError, nullptr, TRUE);
+					activate_dlg_set_hint(*data, L"正在验证激活码，请稍候…", ActHintStyle::Hint);
 					EnableWindow(data->hOk, FALSE);
 					SetWindowTextW(data->hOk, L"验证中…");
 					auto shared = data->actShared; // 与工作线程共享生命周期
@@ -3248,6 +3325,21 @@ namespace ui
 		ShowWindow(hDlg, SW_SHOW);
 		SetFocus(data.hEdit);
 		SendMessageW(data.hEdit, EM_SETSEL, 0, static_cast<LPARAM>(-1));
+
+		// 打开弹窗时先诊断"为什么又需要重新激活"，把原因和指引预置到提示区（琥珀底，非报错）。
+		// 这样才能区分：指纹/注册表残留（本地可修） vs 服务端锁定 vs 记录不完整。
+		{
+			const biz::license::InactiveReason reason = biz::license::inactiveReason();
+			if (reason != biz::license::InactiveReason::None && reason != biz::license::InactiveReason::NoCode)
+			{
+				data.baseHint = biz::license::inactiveReasonText();
+				if (!data.baseHint.empty())
+				{
+					data.baseStyle = ActHintStyle::Warn;
+					activate_dlg_show_hint(data);
+				}
+			}
+		}
 
 		if (hOwner && IsWindow(hOwner))
 		{
@@ -4438,7 +4530,7 @@ namespace ui
 		return data.result;
 	}
 
-	// ---- 常见问题对话框：左侧分类（常见问题 / 妙用小技巧），右侧内容展示 ----
+	// ---- 常见问题对话框：左侧分类（常见问题 / 注意事项 / 功能详情 / 妙用小技巧），右侧内容展示 ----
 	namespace
 	{
 		constexpr wchar_t FAQ_DLG_CLASS[] = L"eBoxFaqDialog";
@@ -4457,6 +4549,12 @@ namespace ui
 		constexpr int FAQ_PANEL_H = 364;
 		constexpr int FAQ_PAD_X = 10;    // 面板左右内边距
 		constexpr int FAQ_TITLE_H = 30;  // 每个问题标题行高
+		// 左侧分类列表：浅蓝灰底卡片 + 选中蓝色胶囊，与右侧白色内容卡片区分
+		constexpr COLORREF FAQ_CAT_CARD_BG = RGB(0xf4, 0xf7, 0xfc);
+		constexpr COLORREF FAQ_CAT_SEL_BG = RGB(0xe3, 0xef, 0xfd);
+		constexpr COLORREF FAQ_CAT_SEL_TEXT = RGB(0x0a, 0x6c, 0xbd);
+		constexpr COLORREF FAQ_CAT_TEXT = RGB(0x5a, 0x65, 0x74);
+		constexpr int FAQ_CAT_ITEM_H = 38;  // 分类项高度（含项间留白）
 
 		struct FaqEntry
 		{
@@ -4471,29 +4569,87 @@ namespace ui
 			int count;
 		};
 
+		// 常见问题：按“用户最常问、最影响使用”的顺序排列，易歪歪图片发送问题排第一
 		constexpr FaqEntry FAQ_QUESTIONS[] =
 		{
-			{L"Q1：同时最多能开几个企业微信？",
-			 L"数量取决于电脑内存与磁盘空间，每个环境独立运行互不干扰；建议内存占用较高时用顶部看板观察，及时清理缓存。"},
-			{L"Q2：为什么某个环境启动后没反应？",
-			 L"展开该环境查看日志与进程记录，通常为首启加载较慢，稍等片刻；若日志出现“失败/错误”，复制日志发给客服。"},
+			{L"Q1：易歪歪发送含图片的话术，图片发不出去？",
+			 L"这是易歪歪安装位置导致的。如果易歪歪安装在 C 盘（尤其是“文档”等系统用户目录下），会被 eBox 的环境隔离重定向，多开的企业微信读取不到图片文件，所以只发出文字。\r\n\r\n"
+			  L"解决办法：把易歪歪卸载后安装到 D 盘（或其他非 C 盘），重新打开即可正常发送图片。eBox 启动时若检测到安装位置有问题，也会主动提醒。"},
+			{L"Q2：升级系统或重装电脑后，提示激活信息不一致、已绑定其他电脑？",
+			 L"激活码绑定的是本机设备信息（系统盘序列号 + CPU），重装 / 格式化系统盘、更换硬盘、重新分区都会让它变化，需要重新激活。\r\n\r\n"
+			  L"处理：先直接输入原激活码重试；仍提示“已绑定其他电脑”时，在原电脑【授权 → 解绑本机】获取换机码，或联系客服处理旧的绑定记录。"},
 			{L"Q3：换电脑后怎么继续用？",
 			 L"先在旧电脑上【解绑本机】获取换机码 → 在新电脑安装 eBox → 用换机码激活即可（注意每月解绑次数限制）。"},
-			{L"Q4：清理聊天记录会影响登录状态吗？",
+			{L"Q4：同时最多能开几个企业微信？",
+			 L"数量取决于电脑内存与磁盘空间，每个环境独立运行互不干扰；建议内存占用较高时用顶部看板观察，及时清理缓存。"},
+			{L"Q5：为什么某个环境启动后没反应？",
+			 L"展开该环境查看日志与进程记录，通常为首启加载较慢，稍等片刻；若日志出现“失败/错误”，复制日志发给客服。"},
+			{L"Q6：更新 eBox 后，环境里的数据和登录状态会丢吗？",
+			 L"不会。更新只替换程序文件，不触碰数据目录；登录态保存在各环境的注册表 hive 中，随环境持久化。若更新过程失败，eBox 会自动恢复原版本，数据仍可正常使用。"},
+			{L"Q7：重启电脑后，企业微信还要重新扫码？",
+			 L"先确认该环境里的企业微信已勾选“自动登录”。仍要扫码时，检查【环境信息】中注册表 hive 是否显示“已加载”，以及数据目录是否被杀毒软件拦截或被清理工具删过。"},
+			{L"Q8：清理聊天记录会影响登录状态吗？",
 			 L"不会，登录状态保留；但聊天记录本身会永久删除，请谨慎操作。"},
-			{L"Q5：授权到期了还能打开软件吗？",
+			{L"Q9：授权到期了还能打开软件吗？",
 			 L"可以打开查看界面，但无法再启动环境、新增环境；需购买新码并在【授权】中续期。"},
-			{L"Q6：断网了还能用吗？",
+			{L"Q10：断网了还能用吗？",
 			 L"在线激活码在离线宽限期内可正常使用；激活后即使暂时离线，也能用完完整的授权期限。"},
-			{L"Q7：全盘垃圾清理会删掉我的聊天记录吗？",
-			 L"会。微信/企业微信/QQ/钉钉 的聊天图片、视频、文件在清理范围内（默认选中）。如不想删除，请在清理前手动备份，或仅使用“环境卡片 → 仅缓存”。"},
-			{L"Q8：全盘清理会影响 eBox 环境的登录状态吗？",
+			{L"Q11：全盘垃圾清理会删掉我的聊天记录吗？",
+			 L"会。微信/企业微信/QQ/钉钉 的聊天图片、视频、文件在清理范围内（默认选中）。如不想删除，请在清理前手动备份，或仅使用环境信息里的“仅缓存”清理。"},
+			{L"Q12：全盘清理会影响 eBox 环境的登录状态吗？",
 			 L"不会。各环境的登录状态、注册表 hive、企业配置、设备指纹（machine_id / qimei）被白名单保护，绝不删除；只清理缓存目录与聊天消息库。清理后环境内重新启动企业微信即可正常使用。"},
-			{L"Q9：清理时为什么要求关闭程序并需要管理员权限？",
+			{L"Q13：清理时为什么要求关闭程序并需要管理员权限？",
 			 L"关闭浏览器/聊天软件是为了释放正在被占用的缓存文件（否则删不掉）；管理员权限用于清理系统目录（Windows 更新缓存、错误报告、回收站等），清理过程会弹出 UAC 授权窗口，属正常现象。"},
-			{L"Q10：易歪歪发送含图片的话术，图片发不出去？",
-			 L"这是易歪歪安装位置导致的。如果易歪歪安装在 C 盘（尤其是“文档”等系统用户目录下），会被 eBox 的环境隔离重定向，多开的企业微信读取不到图片文件，所以只发出文字。\r\n\r\n"
-			  L"解决办法：把易歪歪卸载后安装到 D 盘（或其他非 C 盘），重新打开即可正常发送图片。"},
+			{L"Q14：数据放在移动硬盘或 U 盘，拔掉后环境打不开？",
+			 L"数据目录建议放在固定硬盘：移动硬盘拔掉后环境目录不可访问，程序会启动失败甚至掉登录态。切换数据盘请用【设置 → 数据存放位置】，eBox 会逐文件校验大小与 SHA-256 后才切换，失败自动保留原目录。"},
+			{L"Q15：环境启动直接报错，例如提示“加载资源文件失败”？",
+			 L"多为环境数据目录不可写、被杀毒软件拦截或磁盘空间不足。先打开【设置 → 检查与修复】自检，再把 eBox 与数据目录加入杀毒软件白名单，确认剩余空间充足后重试。"},
+			{L"Q16：退出 eBox 会不会把正常使用的企业微信一起关掉？",
+			 L"不会。eBox 只结束由它自己启动、属于各环境的进程，宿主机原本运行的同名程序不受影响。"},
+		};
+
+		// 注意事项：容易造成不可逆损失的操作提醒，排在功能说明之前
+		constexpr FaqEntry FAQ_NOTES[] =
+		{
+			{L"不要手动删除或移动环境数据文件夹",
+			 L"环境目录里放的是该环境的聊天记录、登录状态与注册表 hive，手动删除或挪走会掉登录、丢聊天记录。需要换盘请用【设置 → 数据存放位置】迁移，eBox 会逐文件校验后才切换，失败自动保留原目录。"},
+			{L"删除环境要谨慎，删除后无法恢复",
+			 L"环境卡片【关闭 → 删除环境】会把该环境的数据与登录记录一并删除，删除后无法再通过该环境登录。只是想腾空间请用【环境信息 → 清理】（仅缓存 / 仅聊天记录），不要删除环境。"},
+			{L"【解绑本机】有次数限制",
+			 L"每张激活码默认每月可解绑 3 次（具体以【授权】页显示为准），次数用尽后当月无法再换机。解绑后旧电脑立即失效，请确认新电脑能正常安装、激活后再操作。"},
+			{L"内存或磁盘满了要及时清理",
+			 L"多开后内存与磁盘增长较快。顶部看板内存占用偏高、磁盘饼图超过 85% 时，先清理缓存或做全盘清理，否则容易出现卡顿、环境启动失败。"},
+			{L"不要强杀 eBox 或更新过程中断电",
+			 L"更新被强杀或断电，eBox 会自动回滚到原版本后重试；但关机前是环境注册表 hive 的保存窗口，强杀可能丢掉最后一次登录态。建议先关闭各环境内的程序，再退出 eBox。"},
+			{L"把 eBox 与数据目录加入杀毒白名单",
+			 L"部分杀毒软件会误删注入组件或拦截环境目录写入，表现为启动报错、功能异常。出现这类问题时，把 eBox 安装目录与数据目录加入白名单，再用【设置 → 检查与修复】自检。"},
+		};
+
+		// 功能详情：说明各入口的作用与边界，避免“找不到功能 / 以为两个入口冲突”
+		constexpr FaqEntry FAQ_FUNCTIONS[] =
+		{
+			{L"启动新进程（左上角蓝色按钮）",
+			 L"打开应用选择器：自动扫描已安装应用，支持搜索与“置顶”（最多 3 个常用应用，也可手动选择文件）。选好后自动挑一个空闲环境启动，没有空闲环境就新建一个。"},
+			{L"添加进程（右侧环境详情）",
+			 L"与“启动新进程”复用同一个应用选择器，用于给当前环境换程序：原程序被移动或卸载导致路径失效时，可用它重新指定；选到与环境已绑定程序不同的应用时，会先确认再切换该环境的主程序，环境数据与登录态不受影响，可随时切回。"},
+			{L"同一个环境可以同时开两个程序吗？",
+			 L"可以。环境是独立的运行容器，企业微信、钉钉等可以同时在该环境内运行，进程记录会全部列出（名称、PID、路径）。【启动】按钮启动的是该环境绑定的主程序，其他程序用“添加进程”启动。"},
+			{L"环境卡片与视图",
+			 L"卡片上的【启动】启动主程序；【改名】可自定义环境名称；【关闭】菜单含“结束进程 / 删除环境”。长按卡片可上下拖拽排序；环境较多时可在左侧切换列表视图，更紧凑。"},
+			{L"环境信息面板",
+			 L"展示环境名称、索引、应用路径、环境目录、进程内存占用、数据/缓存/聊天记录大小、设备码 machine_id、注册表 hive、腾讯 qimei，以及【清理】【复制】入口，排查问题时可一键复制全部信息。"},
+			{L"环境日志",
+			 L"记录该环境 24 小时内的启动、清理、异常等动作，可查看、复制、清理。环境异常时先把日志复制给客服，能快速定位原因。"},
+			{L"设置中心（右上角齿轮）",
+			 L"① 数据存放位置：查看当前数据目录与所在盘剩余空间，可一键迁移到其他盘（自动创建 eBoxData，逐文件校验后才切换，失败保留原目录）。\r\n"
+			  L"② 检查与修复：自检运行组件、环境注册表 hive、数据目录可写性，修复被杀毒软件误删的文件。\r\n"
+			  L"③ 修复企业微信数据：对比企微自带本地备份，回填丢失或异常的客户资料文件。"},
+			{L"环境清理（仅缓存 / 仅聊天记录 / 都清理）",
+			 L"在【环境信息】底部点【清理】，三档可选：仅缓存、仅聊天记录、两者都清理。登录状态、注册表 hive、企业配置、设备指纹始终保留，只清理缓存与消息文件。"},
+			{L"磁盘看板与全盘清理",
+			 L"顶部看板实时显示 CPU、内存、GPU、磁盘占用；磁盘卡的饼状图表示占用比例（超过 85% 建议清理），点【清理垃圾】进入全盘清理，结果按改名后的环境名称展示。"},
+			{L"授权信息（右上角【授权】）",
+			 L"查看到期时间、本机指纹、剩余解绑次数；可重新激活/续期、购买激活码、联系客服。【解绑本机】会退出当前授权，凭换机码可在新电脑上激活。"},
 		};
 
 		constexpr FaqEntry FAQ_TIPS[] =
@@ -4517,6 +4673,8 @@ namespace ui
 		constexpr FaqCategory FAQ_CATEGORIES[] =
 		{
 			{L"常见问题", FAQ_QUESTIONS, static_cast<int>(std::size(FAQ_QUESTIONS))},
+			{L"注意事项", FAQ_NOTES, static_cast<int>(std::size(FAQ_NOTES))},
+			{L"功能详情", FAQ_FUNCTIONS, static_cast<int>(std::size(FAQ_FUNCTIONS))},
 			{L"妙用小技巧", FAQ_TIPS, static_cast<int>(std::size(FAQ_TIPS))},
 		};
 
@@ -4534,6 +4692,7 @@ namespace ui
 			HFONT hFontQTitle{nullptr};   // 问题标题（13px 半粗）
 			HFONT hFontQContent{nullptr}; // 问题内容（12px 常规）
 			HFONT hFontLink{nullptr};     // 底部《eBox 使用手册》超链接（11px 下划线）
+			HBRUSH hCatBg{nullptr};       // 左侧分类列表底色（与分类卡片同色）
 			std::vector<int> contentH;    // 当前分类下每条展开内容的高度（px）
 			int expandedIdx{0};           // 当前展开的问题索引（-1=全部收起）
 			int scrollOffset{0};          // 面板垂直滚动偏移
@@ -4822,6 +4981,8 @@ namespace ui
 			if (data.hCatList)
 			{
 				SendMessageW(data.hCatList, WM_SETFONT, reinterpret_cast<WPARAM>(data.hFontList), TRUE);
+				// 自绘列表的项高由 LB_SETITEMHEIGHT 决定（默认仅够一行文字，分类之间没有留白）
+				SendMessageW(data.hCatList, LB_SETITEMHEIGHT, 0, ui::dlg_s(FAQ_CAT_ITEM_H, dpi));
 			}
 		}
 
@@ -4899,12 +5060,14 @@ namespace ui
 				data->dpi = ui::dlg_dpi(hwnd);
 				faq_dlg_create_fonts(*data);
 
-				// 左侧大类列表（常见问题 / 妙用小技巧）
+				// 左侧大类列表（常见问题 / 注意事项 / 功能详情 / 妙用小技巧）
 				data->hCatList = CreateWindowExW(0, WC_LISTBOXW, L"",
-				                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
+				                                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WS_VSCROLL | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT |
+				                                 LBS_OWNERDRAWFIXED | LBS_HASSTRINGS,
 				                                 0, 0, 0, 0, hwnd,
 				                                 reinterpret_cast<HMENU>(static_cast<std::intptr_t>(FAQ_CAT_LIST_ID)), hInst, nullptr);
 				SendMessageW(data->hCatList, WM_SETFONT, reinterpret_cast<WPARAM>(data->hFontList), TRUE);
+				SendMessageW(data->hCatList, LB_SETITEMHEIGHT, 0, ui::dlg_s(FAQ_CAT_ITEM_H, data->dpi));
 				for (int c = 0; c < static_cast<int>(std::size(FAQ_CATEGORIES)); ++c)
 				{
 					SendMessageW(data->hCatList, LB_ADDSTRING, 0, reinterpret_cast<LPARAM>(FAQ_CATEGORIES[c].name));
@@ -4984,7 +5147,7 @@ namespace ui
 					SetBkMode(hdc, TRANSPARENT);
 					HFONT hOldFont = static_cast<HFONT>(SelectObject(hdc, data->hFontSmall));
 					RECT rcSub{S(24), S(52), clientRight - S(24), S(72)};
-					DrawTextW(hdc, L"使用帮助 · 常见问题 · 妙用小技巧", -1, &rcSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+					DrawTextW(hdc, L"使用帮助 · 常见问题 · 注意事项 · 功能详情 · 妙用小技巧", -1, &rcSub, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, hOldFont);
 				}
 				// 分隔线
@@ -4996,10 +5159,10 @@ namespace ui
 					SelectObject(hdc, hOldPen);
 					DeleteObject(hPen);
 				}
-				// 左侧大类白卡片 + 右侧问题白卡片
+				// 左侧大类浅色卡片 + 右侧问题白卡片
 				{
 					RECT rcCatCard{S(24), data->cardTop, S(24) + S(186), data->cardBottom};
-					draw_round_rect(hdc, rcCatCard, S(10), RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
+					draw_round_rect(hdc, rcCatCard, S(10), FAQ_CAT_CARD_BG, RGB(0xe8, 0xee, 0xf6), 1);
 					RECT rcEditCard{data->panelX - S(6), data->cardTop, data->panelX + data->panelW + S(6), data->cardBottom};
 					draw_round_rect(hdc, rcEditCard, S(10), RGB(0xff, 0xff, 0xff), RGB(0xe8, 0xee, 0xf6), 1);
 				}
@@ -5027,17 +5190,78 @@ namespace ui
 			}
 			case WM_CTLCOLORSTATIC:
 			case WM_CTLCOLOREDIT:
-			case WM_CTLCOLORLISTBOX:
 			{
 				HDC hdc = reinterpret_cast<HDC>(wParam);
 				SetBkColor(hdc, RGB(0xff, 0xff, 0xff));
 				SetTextColor(hdc, RGB(0x1f, 0x29, 0x37));
 				return reinterpret_cast<LRESULT>(GetStockObject(WHITE_BRUSH));
 			}
+			case WM_CTLCOLORLISTBOX:
+			{
+				// 分类列表底色跟随左侧卡片（浅蓝灰），空白区与卡片融为一体
+				HDC hdc = reinterpret_cast<HDC>(wParam);
+				SetBkColor(hdc, FAQ_CAT_CARD_BG);
+				SetTextColor(hdc, FAQ_CAT_TEXT);
+				if (data->hCatBg == nullptr)
+				{
+					data->hCatBg = CreateSolidBrush(FAQ_CAT_CARD_BG);
+				}
+				return reinterpret_cast<LRESULT>(data->hCatBg);
+			}
 			case WM_DRAWITEM:
 			{
 				const DRAWITEMSTRUCT* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lParam);
 				const int id = dis->CtlID;
+				if (id == FAQ_CAT_LIST_ID)
+				{
+					// 左侧分类项自绘：选中为蓝色圆角胶囊 + 左侧强调条 + 半粗蓝字，
+					// 未选中为灰字，项间留白更大，与右侧白色手风琴内容区分开
+					const int item = static_cast<int>(dis->itemID);
+					if (item < 0 || item >= static_cast<int>(std::size(FAQ_CATEGORIES)))
+					{
+						return TRUE;
+					}
+					HBRUSH hBg = data->hCatBg;
+					const bool ownBg = (hBg == nullptr);
+					if (ownBg)
+					{
+						hBg = CreateSolidBrush(FAQ_CAT_CARD_BG);
+					}
+					FillRect(dis->hDC, &dis->rcItem, hBg);
+					if (ownBg)
+					{
+						DeleteObject(hBg);
+					}
+
+					const bool selected = (dis->itemState & ODS_SELECTED) != 0;
+					const int insetX = ui::dlg_s(8, data->dpi);
+					const int insetY = ui::dlg_s(4, data->dpi);
+					const RECT rcPill{dis->rcItem.left + insetX, dis->rcItem.top + insetY,
+					                  dis->rcItem.right - insetX, dis->rcItem.bottom - insetY};
+					if (selected)
+					{
+						draw_round_rect(dis->hDC, rcPill, ui::dlg_s(7, data->dpi),
+						                FAQ_CAT_SEL_BG, FAQ_CAT_SEL_BG, 1);
+						const RECT rcBar{rcPill.left + ui::dlg_s(7, data->dpi), rcPill.top + ui::dlg_s(8, data->dpi),
+						                 rcPill.left + ui::dlg_s(10, data->dpi), rcPill.bottom - ui::dlg_s(8, data->dpi)};
+						draw_round_rect(dis->hDC, rcBar, ui::dlg_s(2, data->dpi),
+						                RGB(0x00, 0x78, 0xd4), RGB(0x00, 0x78, 0xd4), 1);
+					}
+
+					wchar_t text[64]{};
+					SendMessageW(dis->hwndItem, LB_GETTEXT, static_cast<WPARAM>(item),
+					             reinterpret_cast<LPARAM>(text));
+					SetBkMode(dis->hDC, TRANSPARENT);
+					SetTextColor(dis->hDC, selected ? FAQ_CAT_SEL_TEXT : FAQ_CAT_TEXT);
+					HFONT hOldFont = static_cast<HFONT>(SelectObject(
+						dis->hDC, selected ? data->hFontQTitle : data->hFontList));
+					RECT rcText{rcPill.left + ui::dlg_s(18, data->dpi), rcPill.top,
+					            rcPill.right - ui::dlg_s(6, data->dpi), rcPill.bottom};
+					DrawTextW(dis->hDC, text, -1, &rcText,
+					          DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX);
+					SelectObject(dis->hDC, hOldFont);
+					return TRUE;
+				}
 				if (id == FAQ_CLOSE_ID || id == FAQ_SERVICE_ID || id == FAQ_GUIDE_ID || id == FAQ_WEBSITE_ID)
 				{
 					const bool hover = (dis->itemState & ODS_HOTLIGHT) != 0;
@@ -5241,6 +5465,11 @@ namespace ui
 				if (data->hFontLink)
 				{
 					DeleteObject(data->hFontLink);
+				}
+				if (data->hCatBg)
+				{
+					DeleteObject(data->hCatBg);
+					data->hCatBg = nullptr;
 				}
 				data->done = true;
 				return 0;
@@ -7538,7 +7767,10 @@ namespace ui
 			return next == L'\\' || next == L'/';
 		}
 
-		std::uint64_t dir_size_bytes(const std::filesystem::path& dir)
+		// 统计目录占用空间。用户机器上可能有几百 GB 数据、上万个文件，遍历本身很慢，
+		// 因此由调用方放到后台线程执行；onProgress 用于定期回报进度（可为空）。
+		std::uint64_t dir_size_bytes(const std::filesystem::path& dir,
+		                             const std::function<void(std::uint64_t files, std::uint64_t bytes)>& onProgress = {})
 		{
 			std::error_code ec;
 			if (!std::filesystem::is_directory(dir, ec) || ec)
@@ -7546,6 +7778,7 @@ namespace ui
 				return 0;
 			}
 			std::uint64_t total = 0;
+			std::uint64_t files = 0;
 			std::filesystem::recursive_directory_iterator it{dir, std::filesystem::directory_options::skip_permission_denied, ec};
 			const std::filesystem::recursive_directory_iterator end{};
 			while (!ec && it != end)
@@ -7557,6 +7790,11 @@ namespace ui
 					if (!entryEc)
 					{
 						total += size;
+						++files;
+						if (onProgress && (files % 256) == 0)
+						{
+							onProgress(files, total);
+						}
 					}
 				}
 				entryEc.clear();
@@ -7566,7 +7804,114 @@ namespace ui
 					break;
 				}
 			}
+			if (onProgress)
+			{
+				onProgress(files, total);
+			}
 			return total;
+		}
+
+		// 当前数据目录的占用空间缓存：启动后后台预热一次（warm_up_data_dir_size），
+		// 用户点"数据存放位置"时直接拿结果去选盘，不必每次守着进度条重扫几万个文件。
+		// 目录在同一进程内不会变（迁移必须重启），因此结果可以一直复用。
+		struct DataDirSizeCache
+		{
+			std::mutex mutex;
+			std::wstring dir;
+			std::atomic<bool> running{false};
+			std::atomic<bool> done{false};
+			std::atomic<std::uint64_t> files{0};
+			std::atomic<std::uint64_t> bytes{0};
+			std::atomic<std::uint64_t> total{0};
+		};
+
+		// 故意不析构：预热线程在进程退出时可能仍在跑，静态对象析构会与之竞争
+		DataDirSizeCache& data_dir_size_cache()
+		{
+			static DataDirSizeCache* cache = new DataDirSizeCache;
+			return *cache;
+		}
+
+		void start_data_dir_size_scan(std::wstring dir)
+		{
+			DataDirSizeCache& cache = data_dir_size_cache();
+			{
+				std::lock_guard lock{cache.mutex};
+				if (cache.running.load() || (cache.done.load() && _wcsicmp(cache.dir.c_str(), dir.c_str()) == 0))
+				{
+					return;
+				}
+				cache.dir = std::move(dir);
+				cache.files.store(0);
+				cache.bytes.store(0);
+				cache.total.store(0);
+				cache.done.store(false);
+				cache.running.store(true);
+			}
+			std::thread([]
+			{
+				// 预热只是提前算好数字，绝不能跟界面/环境启动抢 CPU
+				SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+				DataDirSizeCache& c = data_dir_size_cache();
+				std::wstring dir;
+				{
+					std::lock_guard lock{c.mutex};
+					dir = c.dir;
+				}
+				const std::filesystem::path base{dir};
+				std::uint64_t envFiles = 0;
+				const std::uint64_t envBytes =
+					dir_size_bytes(base / L"Env", [&c, &envFiles](std::uint64_t files, std::uint64_t bytes)
+					{
+						envFiles = files;
+						c.files.store(files);
+						c.bytes.store(bytes);
+					});
+				const std::uint64_t binBytes =
+					dir_size_bytes(base / L"bin", [&c, envFiles, envBytes](std::uint64_t files, std::uint64_t bytes)
+					{
+						c.files.store(envFiles + files);
+						c.bytes.store(envBytes + bytes);
+					});
+				c.total.store(envBytes + binBytes);
+				c.done.store(true);
+				c.running.store(false);
+			}).detach();
+		}
+
+		// 已算完且目录匹配时直接取结果
+		std::optional<std::uint64_t> cached_data_dir_size(const std::wstring& dir)
+		{
+			DataDirSizeCache& cache = data_dir_size_cache();
+			std::lock_guard lock{cache.mutex};
+			if (!cache.done.load() || _wcsicmp(cache.dir.c_str(), dir.c_str()) != 0)
+			{
+				return std::nullopt;
+			}
+			return cache.total.load();
+		}
+
+		// 等待统计完成（未开始则现场启动），期间按 200ms 回报进度
+		std::uint64_t await_data_dir_size(const std::wstring& dir,
+		                                  const std::function<void(std::uint64_t, std::uint64_t)>& onProgress)
+		{
+			start_data_dir_size_scan(dir);
+			DataDirSizeCache& cache = data_dir_size_cache();
+			for (;;)
+			{
+				{
+					std::lock_guard lock{cache.mutex};
+					if (cache.done.load() && _wcsicmp(cache.dir.c_str(), dir.c_str()) == 0)
+					{
+						return cache.total.load();
+					}
+				}
+				if (onProgress)
+				{
+					onProgress(cache.files.load(), cache.bytes.load());
+				}
+				std::this_thread::sleep_for(std::chrono::milliseconds(200));
+			}
 		}
 
 		struct DiskSpaceInfo
@@ -7625,8 +7970,45 @@ namespace ui
 			std::uint64_t freeBytes{0};
 			std::uint64_t totalBytes{0};
 			bool isSystem{false};       // 是否系统盘
+			bool removable{false};      // 移动硬盘/U 盘：拔掉后数据不可用，不推荐存放数据
 			std::wstring blockedReason; // 非空 = 该盘不可选
 		};
+
+		// 移动硬盘识别：U 盘/读卡器报 DRIVE_REMOVABLE，但 USB 外置硬盘/固态常报 DRIVE_FIXED，
+		// 需要再按存储设备的总线类型判断（BusTypeUsb），否则会把移动硬盘当成内置盘推荐出去。
+		bool drive_is_external(const std::wstring& root, UINT driveType)
+		{
+			if (driveType == DRIVE_REMOVABLE)
+			{
+				return true;
+			}
+			if (root.size() < 2)
+			{
+				return false;
+			}
+			const std::wstring device = L"\\\\.\\" + root.substr(0, 2);
+			const HANDLE hDrive = CreateFileW(device.c_str(), 0, FILE_SHARE_READ | FILE_SHARE_WRITE,
+			                                  nullptr, OPEN_EXISTING, 0, nullptr);
+			if (hDrive == INVALID_HANDLE_VALUE)
+			{
+				return false; // 查询失败时按内置盘处理（保守：不因此禁用可选盘）
+			}
+			STORAGE_PROPERTY_QUERY query{};
+			query.PropertyId = StorageDeviceProperty;
+			query.QueryType = PropertyStandardQuery;
+			std::array<BYTE, 1024> buffer{};
+			DWORD returned = 0;
+			bool external = false;
+			if (DeviceIoControl(hDrive, IOCTL_STORAGE_QUERY_PROPERTY, &query, sizeof(query),
+			                    buffer.data(), static_cast<DWORD>(buffer.size()), &returned, nullptr) &&
+			    returned >= sizeof(STORAGE_DEVICE_DESCRIPTOR))
+			{
+				const auto* desc = reinterpret_cast<const STORAGE_DEVICE_DESCRIPTOR*>(buffer.data());
+				external = desc->BusType == BusTypeUsb;
+			}
+			CloseHandle(hDrive);
+			return external;
+		}
 
 		std::vector<DriveEntry> scan_drives(const std::wstring& currentDir, std::uint64_t neededBytes)
 		{
@@ -7668,6 +8050,7 @@ namespace ui
 				entry.freeBytes = freeBytes.QuadPart;
 				entry.totalBytes = totalBytes.QuadPart;
 				entry.isSystem = !systemRoot.empty() && _wcsicmp(root.c_str(), systemRoot.c_str()) == 0;
+				entry.removable = drive_is_external(root, type);
 				wchar_t volumeName[MAX_PATH]{};
 				if (GetVolumeInformationW(root.c_str(), volumeName, MAX_PATH, nullptr, nullptr, nullptr, nullptr, 0))
 				{
@@ -7678,8 +8061,10 @@ namespace ui
 				entry.targetDir = target.wstring();
 
 				const std::wstring targetNorm = normalized_dir(target);
-				if (same_dir(targetNorm, currentNorm) || dir_within(currentNorm, targetNorm) ||
-				    dir_within(targetNorm, currentNorm))
+				// 首次运行时 currentDir 为空（尚无数据目录），跳过"当前盘"相关判断
+				if (!currentNorm.empty() &&
+				    (same_dir(targetNorm, currentNorm) || dir_within(currentNorm, targetNorm) ||
+				     dir_within(targetNorm, currentNorm)))
 				{
 					entry.blockedReason = L"当前数据就在此盘，无需切换";
 				}
@@ -7734,6 +8119,8 @@ namespace ui
 				int rowHeight{0};
 				int rowHeightInit{0}; // 创建窗口前按屏幕高度算好的实际行高（像素），0=用标准行高
 				int rowGap{0};
+				int recommended{-1};  // 建议使用的盘（可选盘中剩余空间最大），行内标"推荐"
+				bool firstRun{false}; // 首次运行：文案改成"选择数据盘"，不涉及迁移
 				RECT rcList{};
 				RECT rcOk{};
 				RECT rcCancel{};
@@ -7855,6 +8242,49 @@ namespace ui
 				DeleteObject(hPen);
 			}
 
+			// 圆盘占用图：红色 = 已用，浅蓝 = 可用（usedRatio 为已用比例）。
+			// GDI 的 Pie 在 y 轴向下的坐标系里角度方向反直觉，这里按点序列自己画扇形：
+			// 起点固定在 12 点方向、顺时针填充，视觉上最直观。
+			void draw_disk_pie(HDC hdc, int cx, int cy, int radius, double usedRatio, bool enabled)
+			{
+				if (radius < 2)
+				{
+					return;
+				}
+				const double ratio = std::clamp(usedRatio, 0.0, 1.0);
+				const COLORREF freeColor = enabled ? RGB(0x9d, 0xcb, 0xf3) : RGB(0xe4, 0xe8, 0xee);
+				const COLORREF usedColor = enabled ? RGB(0xe5, 0x4b, 0x4b) : RGB(0xc9, 0xcf, 0xd8);
+				const int saved = SaveDC(hdc);
+				HBRUSH hFree = CreateSolidBrush(freeColor);
+				HPEN hFreePen = CreatePen(PS_SOLID, 1, freeColor);
+				SelectObject(hdc, hFree);
+				SelectObject(hdc, hFreePen);
+				Ellipse(hdc, cx - radius, cy - radius, cx + radius, cy + radius);
+				if (ratio > 0.001)
+				{
+					constexpr int steps = 60;
+					const double sweep = ratio * 6.283185307179586;
+					std::array<POINT, steps + 2> pts{};
+					pts[0] = POINT{cx, cy};
+					for (int i = 0; i <= steps; ++i)
+					{
+						const double angle = sweep * i / steps;
+						pts[i + 1] = POINT{cx + static_cast<LONG>(std::lround(radius * std::sin(angle))),
+						                   cy - static_cast<LONG>(std::lround(radius * std::cos(angle)))};
+					}
+					HBRUSH hUsed = CreateSolidBrush(usedColor);
+					HPEN hUsedPen = CreatePen(PS_SOLID, 1, usedColor);
+					SelectObject(hdc, hUsed);
+					SelectObject(hdc, hUsedPen);
+					Polygon(hdc, pts.data(), static_cast<int>(pts.size()));
+					DeleteObject(hUsed);
+					DeleteObject(hUsedPen);
+				}
+				RestoreDC(hdc, saved);
+				DeleteObject(hFree);
+				DeleteObject(hFreePen);
+			}
+
 			void drive_draw(HDC hdc, DrivePickData& data, const RECT& client)
 			{
 				const int dpi = data.dpi > 0 ? data.dpi : 96;
@@ -7866,9 +8296,24 @@ namespace ui
 				draw_text_line(hdc, data.hFontTitle, CLEAN_TEXT, L"选择数据存放的磁盘", rcTitle,
 				               DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 				RECT rcSub{S(28), S(52), client.right - S(28), S(78)};
-				draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB,
-				               L"环境数据与运行组件会整体迁移到所选磁盘的 eBoxData 目录。", rcSub,
-				               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				// 副标题拆两段：前半灰字说明，后半「建议选固定硬盘。」用强调色标出推荐项
+				{
+					const std::wstring prefix = data.firstRun
+						? L"数据目录将创建在所选盘的 eBoxData 文件夹，"
+						: L"环境数据会迁移到所选盘的 eBoxData 目录，";
+					constexpr wchar_t kAdvice[] = L"建议选固定硬盘。";
+					draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB, prefix, rcSub,
+					               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+					SIZE prefixSize{};
+					{
+						const HGDIOBJ oldFont = SelectObject(hdc, data.hFontBody);
+						GetTextExtentPoint32W(hdc, prefix.c_str(), static_cast<int>(prefix.size()), &prefixSize);
+						SelectObject(hdc, oldFont);
+					}
+					RECT rcAdvice{rcSub.left + prefixSize.cx, rcSub.top, rcSub.right, rcSub.bottom};
+					draw_text_line(hdc, data.hFontBody, RGB(0xd0, 0x50, 0x45), kAdvice, rcAdvice,
+					               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				}
 
 				// 磁盘列表（超出可见行数时滚动）
 				const int saved = SaveDC(hdc);
@@ -7917,54 +8362,77 @@ namespace ui
 					DrawTextW(hdc, letter.c_str(), -1, &rcLetter, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 					SelectObject(hdc, oldFont);
 
+					// 右侧圆饼图：浅蓝 = 可用、红色 = 已用（百分比在底行标出）
+					const int pieRadius = baseRow > 0
+						? std::max(S(8), MulDiv(S(24), data.rowHeight, baseRow))
+						: S(24);
+					const int pieCx = row.right - S(20) - pieRadius;
+					const int pieCy = row.top + data.rowHeight / 2;
+					// 饼图左侧文字可用的右边界
+					const int textRight = pieCx - pieRadius - S(14);
+
 					int x = textLeft + letterSize.cx + S(8);
-					std::wstring tail = entry.volumeName;
-					if (entry.isSystem)
+					// 首次运行：给"建议使用的盘"打上推荐徽章（可选盘中剩余空间最大）
+					if (data.firstRun && enabled && i == data.recommended)
 					{
-						tail += tail.empty() ? L"系统盘" : L"（系统盘）";
+						const int badgeW = S(34);
+						const int badgeH = S(16);
+						RECT rcBadge{x, ry(26) - badgeH / 2, x + badgeW, ry(26) + badgeH / 2};
+						draw_round_rect(hdc, rcBadge, S(4), RGB(0xe3, 0xf2, 0xfd), RGB(0xe3, 0xf2, 0xfd), 1);
+						draw_text_line(hdc, data.hFontSmall, CLEAN_ACCENT, L"推荐", rcBadge,
+						               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						x += badgeW + S(8);
 					}
+					// 磁盘类型标签：每个盘都标出（固定硬盘=浅绿，移动硬盘=浅红），
+					// 避免把数据放到"拔掉就找不到"的盘上，同时一眼区分内置盘与外置盘
+					{
+						const wchar_t* tagText = entry.removable ? L"移动硬盘"
+							: (entry.isSystem ? L"系统盘" : L"固定硬盘");
+						const COLORREF tagFill = entry.removable ? RGB(0xfd, 0xee, 0xee) : RGB(0xea, 0xf7, 0xef);
+						const COLORREF tagBorder = entry.removable ? RGB(0xf3, 0xd0, 0xd0) : RGB(0xc9, 0xe8, 0xd6);
+						const COLORREF tagTextColor = entry.removable ? RGB(0xb5, 0x4a, 0x4a) : RGB(0x2f, 0x8a, 0x5c);
+						HGDIOBJ oldTagFont = SelectObject(hdc, data.hFontSmall);
+						SIZE tagSize{};
+						GetTextExtentPoint32W(hdc, tagText, static_cast<int>(wcslen(tagText)), &tagSize);
+						SelectObject(hdc, oldTagFont);
+						const int tagW = tagSize.cx + S(12);
+						const int tagH = S(18);
+						RECT rcTag{x, ry(26) - tagH / 2, x + tagW, ry(26) + tagH / 2};
+						draw_round_rect(hdc, rcTag, S(4), tagFill, tagBorder, 1);
+						draw_text_line(hdc, data.hFontSmall, tagTextColor, tagText, rcTag,
+						               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+						x += tagW + S(8);
+					}
+					// 卷标（系统盘/固定硬盘/移动硬盘已由上面的标签表达，这里不再重复）
+					const std::wstring& tail = entry.volumeName;
 					if (!tail.empty())
 					{
-						RECT rcTail{x, ry(12), row.right - S(20), ry(40)};
+						RECT rcTail{x, ry(12), textRight - S(190), ry(40)};
 						draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : RGB(0xb0, 0xb8, 0xc2), tail,
 						               rcTail, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 					}
 
-					// 右侧：可用 / 总容量
+					// 右上：可用 / 总容量
 					const std::wstring capacity =
 						std::format(L"可用 {} / 共 {}", format_bytes(entry.freeBytes), format_bytes(entry.totalBytes));
-					RECT rcCap{row.right - S(260), ry(12), row.right - S(20), ry(40)};
+					RECT rcCap{textRight - S(180), ry(12), textRight, ry(40)};
 					draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : RGB(0xb0, 0xb8, 0xc2), capacity,
 					               rcCap, DT_RIGHT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
-					// 容量条：蓝=正常，红=空间紧张/不可用
 					const double usedRatio = entry.totalBytes > 0
 						? static_cast<double>(entry.totalBytes - entry.freeBytes) / static_cast<double>(entry.totalBytes)
 						: 0.0;
-					const bool danger = entry.freeBytes < 1'000'000'000ULL || usedRatio >= 0.9 ||
-					                    entry.blockedReason.find(L"空间不足") != std::wstring::npos;
-					const COLORREF barColor = danger ? CLEAN_DANGER : RGB(0x2f, 0x80, 0xed);
-					RECT rcBar{padLeft, ry(48), row.right - S(20), ry(56)};
-					draw_round_rect(hdc, rcBar, S(4), RGB(0xe9, 0xee, 0xf5), RGB(0xe9, 0xee, 0xf5), 1);
-					const int barWidth = rcBar.right - rcBar.left;
-					const int usedWidth = static_cast<int>(barWidth * std::clamp(usedRatio, 0.0, 1.0));
-					if (usedWidth > 0)
-					{
-						const int barSaved = SaveDC(hdc);
-						IntersectClipRect(hdc, rcBar.left, rcBar.top, rcBar.left + usedWidth, rcBar.bottom);
-						draw_round_rect(hdc, rcBar, S(4), barColor, barColor, 1);
-						RestoreDC(hdc, barSaved);
-					}
+					draw_disk_pie(hdc, pieCx, pieCy, pieRadius, usedRatio, enabled);
 
 					// 底行：数据目录说明 / 不可选原因 + 已用百分比
 					const std::wstring info = enabled
 						? std::format(L"数据目录：{}（自动创建）", entry.targetDir)
 						: entry.blockedReason;
-					RECT rcInfo{padLeft, ry(60), row.right - S(90), ry(80)};
+					RECT rcInfo{padLeft, ry(60), textRight - S(78), ry(80)};
 					draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : CLEAN_DANGER, info, rcInfo,
 					               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 					const std::wstring percent = std::format(L"已用 {:.0f}%", usedRatio * 100.0);
-					RECT rcPct{row.right - S(86), ry(60), row.right - S(20), ry(80)};
+					RECT rcPct{textRight - S(76), ry(60), textRight, ry(80)};
 					draw_text_line(hdc, data.hFontSmall, enabled ? CLEAN_TEXT_SUB : CLEAN_DANGER, percent, rcPct,
 					               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
 				}
@@ -7996,18 +8464,21 @@ namespace ui
 				DeleteObject(hLine);
 
 				RECT rcHint{S(28), footerTop + S(6), data.rcCancel.left - S(16), footerTop + S(30)};
-				draw_text_line(hdc, data.hFontSmall, CLEAN_TEXT_SUB, L"迁移期间请勿关闭电脑或强制结束程序", rcHint,
-				               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+				draw_text_line(hdc, data.hFontSmall, CLEAN_TEXT_SUB,
+				               data.firstRun ? L"仅首次运行会询问，之后自动沿用此目录"
+				                             : L"迁移期间请勿关闭电脑或强制结束程序",
+				               rcHint, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
+				const LPCWSTR okText = data.firstRun ? L"使用此盘" : L"切换到此盘";
 				const bool okEnabled = data.selected >= 0 &&
 				                       data.drives[static_cast<std::size_t>(data.selected)].blockedReason.empty();
 				draw_modern_dlg_button(hdc, data.rcOk, true, data.hoverBtn == 0 && okEnabled, data.pressBtn == 0,
-				                       L"切换到此盘");
+				                       okText);
 				if (!okEnabled)
 				{
 					// 无可选磁盘：主按钮画成灰底，避免误以为可点击
 					draw_round_rect(hdc, data.rcOk, S(8), RGB(0xef, 0xf2, 0xf6), RGB(0xef, 0xf2, 0xf6), 1);
-					draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB, L"切换到此盘", data.rcOk,
+					draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB, okText, data.rcOk,
 					               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 				}
 				draw_modern_dlg_button(hdc, data.rcCancel, false, data.hoverBtn == 1, data.pressBtn == 1, L"取消");
@@ -8265,8 +8736,9 @@ namespace ui
 		}
 
 		// 弹出磁盘选择窗口；用户取消返回 false，out 为 "<盘符>\eBoxData"。
+		// firstRun=true 时用于首次运行：不迁移数据，只在所选盘创建新目录。
 		bool pick_drive_dialog(HWND parent, const std::wstring& currentDir, std::uint64_t neededBytes,
-		                       std::wstring& out)
+		                       std::wstring& out, bool firstRun = false)
 		{
 			static const bool classRegistered = []()
 			{
@@ -8281,6 +8753,7 @@ namespace ui
 			(void)classRegistered;
 
 			DrivePickData data;
+			data.firstRun = firstRun;
 			data.drives = scan_drives(currentDir, neededBytes);
 			if (data.drives.empty())
 			{
@@ -8288,20 +8761,32 @@ namespace ui
 				            MB_OK | MB_ICONWARNING | MB_TASKMODAL);
 				return false;
 			}
-			// 默认选中可选盘中剩余空间最大的一个
-			for (int i = 0; i < static_cast<int>(data.drives.size()); ++i)
+			// 默认选中与"推荐"：优先固定硬盘（拔不掉的盘），同类里取剩余空间最大；
+			// 一个可选固定盘都没有时才退而选移动硬盘。
+			const auto pick_best = [&drives = data.drives](bool fixedOnly)
 			{
-				if (!data.drives[static_cast<std::size_t>(i)].blockedReason.empty())
+				int best = -1;
+				for (int i = 0; i < static_cast<int>(drives.size()); ++i)
 				{
-					continue;
+					const DriveEntry& entry = drives[static_cast<std::size_t>(i)];
+					if (!entry.blockedReason.empty() || (fixedOnly && entry.removable))
+					{
+						continue;
+					}
+					if (best < 0 || entry.freeBytes > drives[static_cast<std::size_t>(best)].freeBytes)
+					{
+						best = i;
+					}
 				}
-				if (data.selected < 0 ||
-				    data.drives[static_cast<std::size_t>(i)].freeBytes >
-					    data.drives[static_cast<std::size_t>(data.selected)].freeBytes)
-				{
-					data.selected = i;
-				}
+				return best;
+			};
+			data.selected = pick_best(true);
+			if (data.selected < 0)
+			{
+				data.selected = pick_best(false);
 			}
+			// 建议盘 = 优先固定硬盘中剩余空间最大的可选盘，行内打"推荐"标记
+			data.recommended = data.selected;
 
 			const int dpi = ui::dlg_dpi(parent);
 			const auto S = [dpi](int value) { return ui::dlg_s(value, dpi); };
@@ -8454,6 +8939,10 @@ namespace ui
 		constexpr int SETTINGS_ITEM_HEIGHT = 92;
 		constexpr int SETTINGS_ITEM_GAP = 12;
 		constexpr int SETTINGS_FOOTER_HEIGHT = 72;
+		// 后台任务 <-> UI 线程：WM_INVOKE 携带一段要在 UI 线程执行的代码（后台线程 SendMessage 等待返回），
+		// WM_TASK_DONE 表示任务结束、恢复正常状态。
+		constexpr UINT SETTINGS_WM_INVOKE = WM_APP + 0x61;
+		constexpr UINT SETTINGS_WM_TASK_DONE = WM_APP + 0x62;
 
 		enum class SettingAction
 		{
@@ -8489,6 +8978,14 @@ namespace ui
 			HFONT hFontBody{nullptr};
 			HFONT hFontSmall{nullptr};
 			bool done{false};
+			// 后台任务进行中：忽略点击/按键，副标题改为显示进度，避免重入与"点了没反应"。
+			bool busy{false};
+			std::wstring busyText;
+		};
+
+		struct SettingsUiJob
+		{
+			std::function<void(SettingsDlgData&)> fn;
 		};
 
 		RECT settings_item_rect(const SettingsDlgData& data, int index)
@@ -8616,7 +9113,10 @@ namespace ui
 			RECT rcTitle{S(SETTINGS_MARGIN), S(20), client.right - S(SETTINGS_MARGIN), S(52)};
 			draw_text_line(hdc, data.hFontTitle, CLEAN_TEXT, L"设置", rcTitle, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
 			RECT rcSub{S(SETTINGS_MARGIN), S(54), client.right - S(SETTINGS_MARGIN), S(82)};
-			draw_text_line(hdc, data.hFontBody, CLEAN_TEXT_SUB, L"管理 eBox 的数据位置与运行方式", rcSub,
+			// 后台任务进行中：用副标题显示当前进度，让用户知道程序还在干活（而不是"卡住了"）
+			static const std::wstring idleSubtitle{L"管理 eBox 的数据位置与运行方式"};
+			const std::wstring& subtitle = data.busy ? data.busyText : idleSubtitle;
+			draw_text_line(hdc, data.hFontBody, data.busy ? CLEAN_ACCENT : CLEAN_TEXT_SUB, subtitle, rcSub,
 			               DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
 			for (int i = 0; i < static_cast<int>(data.items.size()); ++i)
@@ -8663,28 +9163,48 @@ namespace ui
 			draw_modern_dlg_button(hdc, data.rcClose, false, data.hoverBtn == 0, data.pressBtn == 0, L"关闭");
 		}
 
-		void settings_open_data_dir(SettingsDlgData& data)
+		// 后台线程回到 UI 线程执行一段代码（WaitCursor / 弹窗 / 更新进度都用它）
+		using SettingsUiPost = std::function<void(std::function<void(SettingsDlgData&)>)>;
+
+		// 把耗时任务放到后台线程：扫描 / 统计 / 复制大量文件若占用 UI 线程，
+		// 窗口 5 秒不处理消息就会被 Windows 标记为"未响应"（用户看到的 (未响应)）。
+		// 任务体只允许通过 post 与界面交互；窗口提前关闭时 post 自动变成空操作。
+		void settings_start_task(SettingsDlgData& data, std::wstring busyText,
+		                         std::function<void(const SettingsUiPost&)> work)
 		{
-			if (data.runningEnvCount > 0)
+			if (data.busy)
 			{
-				// 环境进程会在迁移开始时被强制结束：先征得用户同意，避免误以为"点了没反应"
-				const std::wstring tip = std::format(
-					L"检测到有 {} 个环境正在运行。\n"
-					L"迁移会先强制结束这些环境进程，再开始复制数据（未发送的内容可能丢失）。\n\n是否继续？",
-					data.runningEnvCount);
-				if (MessageBoxW(data.hwnd, tip.c_str(), MainApp::appName.data(),
-				                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TASKMODAL) != IDYES)
-				{
-					return;
-				}
+				return;
 			}
+			const HWND hwnd = data.hwnd;
+			data.busy = true;
+			data.busyText = std::move(busyText);
+			data.hoverItem = -1;
+			data.hoverBtn = -1;
+			data.pressItem = -1;
+			data.pressBtn = -1;
+			InvalidateRect(hwnd, nullptr, FALSE);
+			UpdateWindow(hwnd); // 先把忙碌状态画出来，避免"点了没反应"
+			SetCursor(LoadCursorW(nullptr, IDC_WAIT));
 
-			// 统计当前占用空间（只用于容量校验与提示，点开时才算，避免打开设置卡顿）
-			const HCURSOR oldCursor = SetCursor(LoadCursorW(nullptr, IDC_WAIT));
-			const std::filesystem::path root{data.currentDir};
-			const std::uint64_t usedBytes = dir_size_bytes(root / L"Env") + dir_size_bytes(root / L"bin");
-			SetCursor(oldCursor);
+			std::thread([hwnd, work = std::move(work)]
+			{
+				// 用户机器可能较慢：扫描/复制线程降一档优先级，把 CPU 让给界面绘制与系统消息
+				SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
+				const SettingsUiPost post = [hwnd](std::function<void(SettingsDlgData&)> fn)
+				{
+					SettingsUiJob job{std::move(fn)};
+					// 窗口已关闭时 SendMessage 立即返回，不会悬空访问对话框数据
+					SendMessageW(hwnd, SETTINGS_WM_INVOKE, 0, reinterpret_cast<LPARAM>(&job));
+				};
+				work(post);
+				PostMessageW(hwnd, SETTINGS_WM_TASK_DONE, 0, 0);
+			}).detach();
+		}
 
+		// 空间统计完成后（已在 UI 线程）：选盘 → 容量校验 → 确认 → 写挂起项并重启
+		void settings_pick_and_switch(SettingsDlgData& data, std::uint64_t usedBytes)
+		{
 			std::wstring picked;
 			if (!pick_drive_dialog(data.hwnd, data.currentDir, usedBytes, picked))
 			{
@@ -8719,22 +9239,80 @@ namespace ui
 			DestroyWindow(data.hwnd);
 		}
 
+		void settings_open_data_dir(SettingsDlgData& data)
+		{
+			if (data.runningEnvCount > 0)
+			{
+				// 环境进程会在迁移开始时被强制结束：先征得用户同意，避免误以为"点了没反应"
+				const std::wstring tip = std::format(
+					L"检测到有 {} 个环境正在运行。\n"
+					L"迁移会先强制结束这些环境进程，再开始复制数据（未发送的内容可能丢失）。\n\n是否继续？",
+					data.runningEnvCount);
+				if (MessageBoxW(data.hwnd, tip.c_str(), MainApp::appName.data(),
+				                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TASKMODAL) != IDYES)
+				{
+					return;
+				}
+			}
+
+			// 统计当前占用空间（只用于容量校验与提示）：几百 GB 数据要遍历上万个文件。
+			// 启动后已由 warm_up_data_dir_size 在后台预热，这里通常直接命中缓存、点击即出选盘框；
+			// 还没算完时才等它算完（期间照常显示进度），窗口不会假死。
+			const std::wstring currentDir = data.currentDir;
+			if (const std::optional<std::uint64_t> cached = cached_data_dir_size(currentDir))
+			{
+				settings_pick_and_switch(data, *cached);
+				return;
+			}
+			settings_start_task(data, L"正在统计数据占用空间，请稍候…", [currentDir](const SettingsUiPost& post)
+			{
+				const std::uint64_t usedBytes = await_data_dir_size(currentDir,
+					[&post](std::uint64_t files, std::uint64_t bytes)
+					{
+						const std::wstring text = std::format(L"正在统计数据占用空间… 已扫描 {} 个文件（{}）",
+						                                      files, format_bytes(bytes));
+						post([text](SettingsDlgData& d)
+						{
+							d.busyText = text;
+							InvalidateRect(d.hwnd, nullptr, FALSE);
+						});
+					});
+				post([usedBytes](SettingsDlgData& d) { settings_pick_and_switch(d, usedBytes); });
+			});
+		}
+
 		void settings_run_item(SettingsDlgData& data, int index)
 		{
-			if (index < 0 || index >= static_cast<int>(data.items.size()))
+			if (data.busy || index < 0 || index >= static_cast<int>(data.items.size()))
 			{
 				return;
 			}
+			const HWND hwnd = data.hwnd;
+			// 自检与企微比对都要遍历全部环境的数据目录，必须在后台线程跑；
+			// 需要弹窗确认时通过 post 回到 UI 线程（模态框不能出现在后台线程上）。
+			const auto post_dialog = [](const SettingsUiPost& post)
+			{
+				return [post](std::function<void()> fn)
+				{
+					post([fn = std::move(fn)](SettingsDlgData&) { fn(); });
+				};
+			};
 			switch (data.items[(std::size_t)index].action)
 			{
 			case SettingAction::ChangeDataDir:
 				settings_open_data_dir(data);
 				break;
 			case SettingAction::Repair:
-				run_self_check_and_repair(data.hwnd);
+				settings_start_task(data, L"正在检查运行组件与环境数据，请稍候…", [hwnd, post_dialog](const SettingsUiPost& post)
+				{
+					run_self_check_and_repair(hwnd, post_dialog(post));
+				});
 				break;
 			case SettingAction::WxWorkDataRepair:
-				run_wxwork_data_repair(data.hwnd);
+				settings_start_task(data, L"正在比对企微本地备份，请稍候…", [hwnd, post_dialog](const SettingsUiPost& post)
+				{
+					run_wxwork_data_repair(hwnd, post_dialog(post));
+				});
 				break;
 			}
 		}
@@ -8838,8 +9416,38 @@ namespace ui
 				EndPaint(hwnd, &ps);
 				return 0;
 			}
+			case SETTINGS_WM_INVOKE:
+			{
+				// 后台任务请求在 UI 线程执行一段代码（弹窗 / 刷新进度），同步返回
+				auto* job = reinterpret_cast<SettingsUiJob*>(lParam);
+				if (data && job && job->fn)
+				{
+					job->fn(*data);
+				}
+				return 0;
+			}
+			case SETTINGS_WM_TASK_DONE:
+				if (data)
+				{
+					data->busy = false;
+					data->busyText.clear();
+					SetCursor(LoadCursorW(nullptr, IDC_ARROW));
+					InvalidateRect(hwnd, nullptr, FALSE);
+				}
+				return 0;
+			case WM_SETCURSOR:
+				if (data && data->busy)
+				{
+					SetCursor(LoadCursorW(nullptr, IDC_WAIT));
+					return TRUE;
+				}
+				break;
 			case WM_MOUSEMOVE:
 			{
+				if (data->busy)
+				{
+					return 0;
+				}
 				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 				const int item = settings_hit_item(*data, pt);
 				const int btn = PtInRect(&data->rcClose, pt) ? 0 : -1;
@@ -8854,6 +9462,10 @@ namespace ui
 			}
 			case WM_LBUTTONDOWN:
 			{
+				if (data->busy)
+				{
+					return 0;
+				}
 				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 				const int item = settings_hit_item(*data, pt);
 				const int btn = PtInRect(&data->rcClose, pt) ? 0 : -1;
@@ -8868,6 +9480,10 @@ namespace ui
 			}
 			case WM_LBUTTONUP:
 			{
+				if (data->busy)
+				{
+					return 0;
+				}
 				const POINT pt{GET_X_LPARAM(lParam), GET_Y_LPARAM(lParam)};
 				const int pressItem = data->pressItem;
 				const int pressBtn = data->pressBtn;
@@ -8892,6 +9508,10 @@ namespace ui
 			}
 			case WM_KEYDOWN:
 			{
+				if (data->busy)
+				{
+					return 0;
+				}
 				if (wParam == VK_ESCAPE)
 				{
 					DestroyWindow(hwnd);
@@ -8931,6 +9551,13 @@ namespace ui
 			}
 			return DefWindowProcW(hwnd, msg, wParam, lParam);
 		}
+	}
+
+	// 启动后调用一次：后台把当前数据目录的占用空间算好缓存起来，
+	// 用户打开设置点"数据存放位置"时直接出选盘框，不必再等遍历几万个文件。
+	void warm_up_data_dir_size()
+	{
+		start_data_dir_size_scan(normalized_dir(app().envDataRoot()));
 	}
 
 	void settings_dialog(const WindowBase* owner, std::size_t runningEnvCount)
@@ -9007,5 +9634,129 @@ namespace ui
 			EnableWindow(parent, TRUE);
 			SetForegroundWindow(parent);
 		}
+	}
+
+	// 启动期（MainApp 构造之前）决定数据盘：
+	//   - 注册表没有 DataDir → 首次运行，弹选盘框
+	//   - DataDir 记录所在磁盘当前不可达（移动硬盘拔出/盘符未挂载）→ 先提示，
+	//     用户确认后再弹选盘框；选择后把 DataDir 指向新盘，原盘数据不会被当成"没有"
+	//   - 记录目录已被删除（软件与数据文件夹被清理，但注册表仍有残留）→ 数据已不存在，
+	//     直接弹选盘框，避免在别处悄悄重建一套空环境
+	//   - 记录目录仍在 → 直接返回 false，后续启动不再询问
+	// 用户取消时返回 false，交回原有默认逻辑处理。
+	bool ensure_startup_data_dir()
+	{
+		constexpr wchar_t kRegKey[] = L"Software\\eBox";
+		constexpr wchar_t kLegacyRegKey[] = L"Software\\2Box";
+		constexpr wchar_t kRegValue[] = L"DataDir";
+
+		std::wstring recorded;
+		{
+			wchar_t buf[32768]{};
+			DWORD bufSize = sizeof(buf);
+			LSTATUS st = RegGetValueW(HKEY_CURRENT_USER, kRegKey, kRegValue, RRF_RT_REG_SZ, nullptr, buf, &bufSize);
+			if (st != ERROR_SUCCESS)
+			{
+				bufSize = sizeof(buf);
+				st = RegGetValueW(HKEY_CURRENT_USER, kLegacyRegKey, kRegValue, RRF_RT_REG_SZ, nullptr, buf, &bufSize);
+			}
+			if (st == ERROR_SUCCESS && buf[0] != L'\0')
+			{
+				recorded = buf;
+			}
+		}
+
+		// 老版本把数据放在 exe 目录下（Env 与 exe 同级）：有数据时沿用，不走选盘流程，
+		// 避免升级用户被切到新盘、原来那套环境在界面上"消失"。
+		const auto has_legacy_env_data = []() -> bool
+		{
+			wchar_t exePath[MAX_PATH * 4]{};
+			const DWORD len = GetModuleFileNameW(nullptr, exePath, static_cast<DWORD>(std::size(exePath)));
+			if (len == 0 || len >= std::size(exePath))
+			{
+				return false;
+			}
+			std::error_code ec;
+			const std::filesystem::path legacyEnv = std::filesystem::path{exePath}.parent_path() / L"Env";
+			if (!std::filesystem::is_directory(legacyEnv, ec) || ec)
+			{
+				return false;
+			}
+			ec.clear();
+			return !std::filesystem::is_empty(legacyEnv, ec) && !ec;
+		};
+
+		if (!recorded.empty())
+		{
+			std::error_code ec;
+			const std::filesystem::path recordedDir{recorded};
+			const std::filesystem::path root = recordedDir.root_path();
+			if (root.empty())
+			{
+				return false; // 记录不是绝对路径：交回原有解析逻辑
+			}
+			if (std::filesystem::exists(root, ec) && !ec)
+			{
+				ec.clear();
+				if (std::filesystem::exists(recordedDir, ec) && !ec)
+				{
+					return false; // 记录目录仍在：沿用，不再打扰用户
+				}
+				// 盘还在、目录已被删除（连同软件一起清理）。注册表仍残留这条记录：
+				// 先二次确认是否放弃它，避免用户只是临时挪走了文件夹就被改到别的盘。
+				const std::wstring msg = std::format(
+					L"检测到上次使用的数据目录 {} 已不存在（可能已随软件一起删除）。\n\n"
+					L"注册表中仍保留这条记录。是否重新选择数据盘？\n"
+					L"选择「否」将保留原记录：若以后恢复该文件夹，数据仍会被沿用。",
+					recorded);
+				if (MessageBoxW(nullptr, msg.c_str(), MainApp::appName.data(),
+				                MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON1 | MB_TASKMODAL) != IDYES)
+				{
+					return false;
+				}
+			}
+			else
+			{
+				// 记录盘不可用：先讲清后果，再让用户决定，避免把指向真实数据的记录改成空目录
+				const std::wstring msg = std::format(
+					L"上次使用的数据盘 {} 当前不可用（可能已被拔出或盘符未挂载）。\n\n"
+					L"如果这块盘只是暂时没接入，请先接好后重新启动 eBox；\n"
+					L"如果原数据已不需要，可以选择一个磁盘，eBox 会在该盘创建新的数据目录。\n\n"
+					L"是否现在选择新的数据盘？",
+					recorded);
+				if (MessageBoxW(nullptr, msg.c_str(), MainApp::appName.data(),
+				                MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 | MB_TASKMODAL) != IDYES)
+				{
+					return false;
+				}
+			}
+		}
+		else if (has_legacy_env_data())
+		{
+			return false;
+		}
+
+		// 首次运行没有数据要迁移，只需保证所选盘有基本可用空间
+		constexpr std::uint64_t kNeededBytes = 2ULL * 1024 * 1024 * 1024;
+		std::wstring picked;
+		if (!pick_drive_dialog(nullptr, std::wstring{}, kNeededBytes, picked, true))
+		{
+			return false;
+		}
+
+		std::wstring error;
+		if (!ensure_dir_writable(std::filesystem::path{picked} / L"Env", error))
+		{
+			MessageBoxW(nullptr, error.c_str(), MainApp::appName.data(), MB_OK | MB_ICONERROR | MB_TASKMODAL);
+			return false;
+		}
+		HKEY hKey = nullptr;
+		if (RegCreateKeyExW(HKEY_CURRENT_USER, kRegKey, 0, nullptr, 0, KEY_WRITE, nullptr, &hKey, nullptr) == ERROR_SUCCESS)
+		{
+			RegSetValueExW(hKey, kRegValue, 0, REG_SZ, reinterpret_cast<const BYTE*>(picked.c_str()),
+			               static_cast<DWORD>((picked.size() + 1) * sizeof(wchar_t)));
+			RegCloseKey(hKey);
+		}
+		return true;
 	}
 }

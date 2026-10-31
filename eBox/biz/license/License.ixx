@@ -77,6 +77,21 @@ namespace biz
 		// 最近一次激活失败原因（空串=成功或无失败记录），供 UI 展示具体拒绝原因
 		export std::wstring lastActivateError();
 
+		// 未激活原因（激活弹窗打开时预诊断用）：解释"为什么又需要重新激活"
+		export enum class InactiveReason
+		{
+			None,               // 已激活，无需提示
+			NoCode,             // 本机没有激活记录（全新安装）
+			InvalidCode,        // 记录中的激活码已失效（格式过旧/被篡改）
+			FingerprintChanged, // 本机设备信息与激活时不一致（重装/换硬件/系统升级等）
+			IncompleteRecord,   // 授权记录不完整（注册表被清理）
+			ServerLocked,       // 服务端已锁定（作废/过期/强制下线）
+		};
+		export InactiveReason inactiveReason();
+
+		// 未激活原因的用户可读说明（多行，空串=无需说明）
+		export std::wstring inactiveReasonText();
+
 		// 在线授权状态文本（如"在线授权"/"离线宽限剩 X 天"/"已锁定"），供授权信息界面展示
 		export std::wstring onlineStatusText();
 

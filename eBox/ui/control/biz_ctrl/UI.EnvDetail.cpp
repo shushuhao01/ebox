@@ -576,19 +576,48 @@ namespace ui
 		{
 			return;
 		}
+		const std::shared_ptr<biz::Env>& env = m_processList.getEnv();
 		if (m_strProcPath.size())
 		{
-			biz::launcher().run(m_processList.getEnv(), m_strProcPath);
-			return;
+			// 记录的程序被移动/卸载后路径已失效 → 不直接启动，改走下面的应用选择器重新指定
+			if (GetFileAttributesW(m_strProcPath.c_str()) != INVALID_FILE_ATTRIBUTES)
+			{
+				biz::launcher().run(env, m_strProcPath);
+				return;
+			}
 		}
 
-		const std::optional<std::wstring> fullPath = select_file(m_ownerWnd);
+		// 与"启动新进程"复用同一个应用选择器（扫描已安装应用 + 手动选择文件，DPI 自适应），
+		// 用于环境里记录的路径失效（程序挪了位置/卸载重装）时重新指定要启动的程序
+		const std::optional<std::wstring> fullPath = ui::select_app_dialog(m_ownerWnd);
 		if (!fullPath.has_value())
 		{
 			return;
 		}
-		setProcPath(fullPath.value());
 
-		biz::launcher().run(m_processList.getEnv(), m_strProcPath);
+		// 选了与环境已绑定程序不同的应用：先确认再切换该环境的主程序。
+		// 数据按环境隔离（Env 目录 + 环境注册表 hive），换程序不影响环境内已有数据，可随时切回；
+		// 不切换的话，“启动”按钮之后仍会启动旧程序，造成两个入口行为不一致。
+		const std::wstring boundPath(env->getAppPath());
+		if (!boundPath.empty() &&
+		    CompareStringOrdinal(boundPath.c_str(), -1, fullPath->c_str(), -1, TRUE) != CSTR_EQUAL)
+		{
+			const std::wstring msg = std::format(
+				L"该环境当前绑定的程序：\n{}\n\n将切换为：\n{}\n\n"
+				L"环境内的登录状态与数据保持不变；切换后点“启动”都会启动新选择的程序，可随时切回。\n\n"
+				L"确认切换并启动吗？",
+				boundPath, fullPath.value());
+			const int ask = MessageBoxW(m_ownerWnd ? m_ownerWnd->nativeHandle() : nullptr,
+			                            msg.c_str(), L"切换环境主程序",
+			                            MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 | MB_TASKMODAL);
+			if (ask != IDYES)
+			{
+				return;
+			}
+			biz::env_mgr().setEnvAppPath(env, fullPath.value());
+		}
+
+		setProcPath(fullPath.value());
+		biz::launcher().run(env, m_strProcPath);
 	}
 }

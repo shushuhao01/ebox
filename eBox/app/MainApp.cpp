@@ -285,6 +285,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ [[maybe_unused]] HINSTA
 		// 一键切换数据目录：上次运行挂起的迁移必须在 MainApp 构造（加载 Env\data\eBox hive）之前完成
 		run_pending_data_dir_migration();
 
+		// 首次运行（注册表无 DataDir）或记录的数据盘当前不可用（如移动硬盘已拔出）时，
+		// 让用户选择数据盘；选定后在所选盘创建 eBoxData\Env 并写入 DataDir，
+		// 之后的启动直接沿用记录，不再询问。
+		ui::prompt_first_run_data_dir();
+
 		MainApp app{hInstance, lpCmdLine, nCmdShow};
 		g_app = &app;
 
@@ -447,6 +452,10 @@ namespace
 	// 由看门狗中断阻塞中的 I/O，再走"结束占用进程 → 重试"的恢复流程。
 	constexpr ULONGLONG kCopyStallMs = 20000;
 
+	// 同一文件判定卡死后，每隔这么久补发一次 CancelSynchronousIo。
+	// 单次取消可能被过滤驱动吞掉，只发一次会让线程永久阻塞在 CopyFileExW 里。
+	constexpr ULONGLONG kCancelRepeatMs = 5000;
+
 	// 每个复制线程独立的状态：进度按字节累加，卡住原因只写进自己的槽位，
 	// 避免"某线程正在等待解锁"的提示被其它线程的复制成功清掉。
 	struct CopySlot
@@ -472,6 +481,7 @@ namespace
 		// 校验（phase=1）进度：逐文件比对大小 + SHA-256
 		std::atomic<std::uint64_t> verifyFiles{0};
 		std::atomic<std::uint64_t> verifyTotalFiles{0};
+		std::wstring verifyFile; // 正在校验的文件（textMutex 保护，供进度框显示"确实在动"）
 		std::uint64_t verifiedFileCount{0}; // 校验通过的文件数（join 后主线程读，用于完成提示）
 		std::uint64_t verifiedByteCount{0}; // 校验通过的字节数
 		// true=上次迁移已复制并校验通过、只差删除原目录（启动期续做时置位）。
@@ -1060,6 +1070,71 @@ namespace
 		return ctx->slot->cancel.load(std::memory_order_relaxed) ? PROGRESS_CANCEL : PROGRESS_CONTINUE;
 	}
 
+	// 路径所在卷当前是否可访问。迁移失败时只关心"哪块盘掉了"：文件路径本身
+	// 可能已随卷消失而不存在，所以只探测盘根，不探测文件。
+	bool volume_ready(const std::filesystem::path& path)
+	{
+		const std::wstring root = path.root_path().native();
+		if (root.empty())
+		{
+			return true;
+		}
+		ULARGE_INTEGER freeBytes{};
+		return ::GetDiskFreeSpaceExW(root.c_str(), &freeBytes, nullptr, nullptr) != FALSE;
+	}
+
+	// 结束占用进程（Restart Manager 会话 + 全进程快照 + 逐个 TerminateProcess）单次可能耗时数秒。
+	// 复制阶段最多 8 个线程同时失败：若各做一遍，界面上会出现十几秒"零进展"（看起来像卡死），
+	// 而且同一批进程会被反复关窗口。这里全局串行化 + 限频：短时间内只允许一个线程做一次。
+	std::mutex& kill_ops_mutex()
+	{
+		static std::mutex mutex;
+		return mutex;
+	}
+
+	std::atomic<ULONGLONG>& kill_ops_last_tick()
+	{
+		static std::atomic<ULONGLONG> tick{0};
+		return tick;
+	}
+
+	class KillOpsGuard
+	{
+	public:
+		explicit KillOpsGuard(ULONGLONG minIntervalMs)
+		{
+			const ULONGLONG now = ::GetTickCount64();
+			if (!kill_ops_mutex().try_lock())
+			{
+				return;
+			}
+			const ULONGLONG last = kill_ops_last_tick().load(std::memory_order_relaxed);
+			if (last != 0 && now - last < minIntervalMs)
+			{
+				kill_ops_mutex().unlock();
+				return;
+			}
+			kill_ops_last_tick().store(now, std::memory_order_relaxed);
+			locked_ = true;
+		}
+		~KillOpsGuard()
+		{
+			if (locked_)
+			{
+				kill_ops_mutex().unlock();
+			}
+		}
+		KillOpsGuard(const KillOpsGuard&) = delete;
+		KillOpsGuard& operator=(const KillOpsGuard&) = delete;
+		explicit operator bool() const noexcept
+		{
+			return locked_;
+		}
+
+	private:
+		bool locked_{false};
+	};
+
 	// 单文件复制：遇到共享冲突（环境子进程/杀软占用）时先重试，再强制结束占用程序后继续。
 	// 被占用文件与处理中的进程写进本线程槽位，进度框实时向用户说明。
 	bool copy_file_with_retry(const CopyTask& task, MigrationState& state, CopySlot& slot)
@@ -1122,6 +1197,44 @@ namespace
 					continue;
 				}
 			}
+			// "设备不存在/未就绪"：源盘或目标盘在迁移途中掉线（移动硬盘被拔出、休眠掉线、
+			// 盘符被重新分配、加密卷被锁定、过滤驱动拒绝）。重试没有意义，而且必须告诉用户
+			// 到底是哪一侧的盘不见了 —— 这种情况提示"关闭安全软件"毫无帮助。
+			if (err == ERROR_DEV_NOT_EXIST || err == ERROR_NOT_READY || err == ERROR_INVALID_DRIVE ||
+			    err == ERROR_UNRECOGNIZED_VOLUME)
+			{
+				const bool srcReady = volume_ready(task.src);
+				const bool dstReady = volume_ready(task.dst);
+				const std::wstring srcRoot = task.src.root_name().native();
+				const std::wstring dstRoot = task.dst.root_name().native();
+				std::wstring cause;
+				if (!srcReady && !dstReady)
+				{
+					cause = L"源磁盘与目标磁盘当前都无法访问：磁盘可能被拔出或掉线。\n"
+					        L"请检查两块磁盘的连接后，重新打开 eBox 再切换磁盘。";
+				}
+				else if (!srcReady)
+				{
+					cause = std::format(L"源磁盘 {} 当前无法访问：磁盘可能被拔出、休眠掉线或盘符发生变化。\n"
+					                    L"请重新连接该磁盘后，重新打开 eBox 再切换磁盘。",
+					                    srcRoot);
+				}
+				else if (!dstReady)
+				{
+					cause = std::format(L"目标磁盘 {} 当前无法访问：磁盘可能被拔出、休眠掉线或盘符发生变化。\n"
+					                    L"请重新连接该磁盘（确认盘符仍为 {}）后，重新打开 eBox 再切换磁盘。",
+					                    dstRoot, dstRoot);
+				}
+				else
+				{
+					cause = L"系统报告该路径所在的设备不存在，但源盘与目标盘目前都能访问，\n"
+					        L"通常是安全软件或磁盘过滤驱动拦截了读写。请关闭安全软件后重新打开 eBox 再切换磁盘。";
+				}
+				std::lock_guard lock{state.textMutex};
+				state.error = std::format(L"复制文件失败：\n源文件：{}\n目标文件：{}\n{}\n\n{}\n\n已保留原目录。",
+				                          task.src.native(), task.dst.native(), win_error_text(err), cause);
+				return false;
+			}
 			const bool retryable = err == ERROR_SHARING_VIOLATION || err == ERROR_LOCK_VIOLATION ||
 			                       err == ERROR_ACCESS_DENIED || err == ERROR_USER_MAPPED_FILE ||
 			                       err == ERROR_REQUEST_ABORTED || err == ERROR_OPERATION_ABORTED;
@@ -1155,11 +1268,16 @@ namespace
 					slot.waiting = task.src.native();
 				}
 			}
-			// 卡死或多次失败：先精确结束占用该文件的程序，再清扫数据目录下的环境子进程
+			// 卡死或多次失败：先精确结束占用该文件的程序，再清扫数据目录下的环境子进程。
+			// 多个复制线程同时遇到占用时只让其中一个执行（另一些继续重试），避免 8 份
+			// 全进程枚举/结束叠在一起，把进度条压成"长时间不动"。
 			if (stalled || attempt == 2 || attempt == 10 || attempt == 20)
 			{
-				kill_lockers(task.src.native(), state, &slot);
-				terminate_processes_under(state.sourceDir, state, &slot);
+				if (KillOpsGuard guard{3000})
+				{
+					kill_lockers(task.src.native(), state, &slot);
+					terminate_processes_under(state.sourceDir, state, &slot);
+				}
 			}
 			std::this_thread::sleep_for(std::chrono::milliseconds(250));
 		}
@@ -1237,35 +1355,55 @@ namespace
 			std::array<std::uint64_t, kMaxCopyThreads> lastAttempt{};
 			std::array<std::uint64_t, kMaxCopyThreads> lastBytes{};
 			std::array<ULONGLONG, kMaxCopyThreads> lastChange{};
+			std::array<ULONGLONG, kMaxCopyThreads> lastCancel{};
 			while (copying.load(std::memory_order_relaxed))
 			{
 				::Sleep(1000);
 				const ULONGLONG now = ::GetTickCount64();
+				// 其它线程已经失败（stop）时，同样要中断仍在阻塞的复制，
+				// 否则它们会把 worker 一直拖在这里，进度框永远关不掉。
+				const bool stopping = state.stop.load(std::memory_order_relaxed);
 				for (unsigned int i = 0; i < threads; ++i)
 				{
 					CopySlot& slot = state.slots[i];
 					if (!slot.active.load(std::memory_order_relaxed))
 					{
 						lastAttempt[i] = 0;
+						lastChange[i] = 0;
+						lastCancel[i] = 0;
 						continue;
 					}
 					const std::uint64_t attempt = slot.attempt.load(std::memory_order_relaxed);
 					const std::uint64_t bytes = slot.transferred.load(std::memory_order_relaxed);
 					if (attempt != lastAttempt[i] || bytes != lastBytes[i])
 					{
+						// 换了新的尝试/又有字节推进：说明这个线程还活着，重新计时
 						lastAttempt[i] = attempt;
 						lastBytes[i] = bytes;
 						lastChange[i] = now;
+						lastCancel[i] = 0;
 						continue;
 					}
-					if (now - lastChange[i] < kCopyStallMs ||
-						slot.cancel.exchange(true, std::memory_order_relaxed))
+					if (lastChange[i] == 0)
+					{
+						lastChange[i] = now;
+						continue;
+					}
+					if (!stopping && now - lastChange[i] < kCopyStallMs)
 					{
 						continue;
 					}
-					if (HANDLE h = handles[i].load(); h != nullptr)
+					// 卡死：置 cancel 让进度回调主动返回。CancelSynchronousIo 只发一次并不可靠，
+					// 过滤驱动吞掉后线程会永久阻塞在 CopyFileExW 里（表现为进度条一动不动），
+					// 因此每隔 kCancelRepeatMs 补发一次，直到该线程出现新的进展。
+					slot.cancel.store(true, std::memory_order_relaxed);
+					if (now - lastCancel[i] >= kCancelRepeatMs)
 					{
-						::CancelSynchronousIo(h);
+						lastCancel[i] = now;
+						if (HANDLE h = handles[i].load(); h != nullptr)
+						{
+							::CancelSynchronousIo(h);
+						}
 					}
 				}
 			}
@@ -1523,6 +1661,10 @@ namespace
 				}
 				std::array<unsigned char, 32> srcDigest{};
 				std::array<unsigned char, 32> dstDigest{};
+				{
+					std::lock_guard lock{state.textMutex};
+					state.verifyFile = (srcRoot / rel).native();
+				}
 				if (!sha256_file(srcRoot / rel, srcDigest))
 				{
 					error = std::format(L"数据目录迁移校验失败：无法读取源文件。\n{}\n"
@@ -1751,6 +1893,31 @@ namespace
 		}
 	}
 
+	// remove/remove_all 对只读文件一律失败（ERROR_ACCESS_DENIED）。迁移出来的缓存与
+	// 资源文件常带只读属性，不清掉就会进入"删不掉 → 结束占用者 → 仍然删不掉"的循环，
+	// 删除阶段看起来长期停在同一个百分比。
+	void clear_readonly_attr(const std::filesystem::path& path)
+	{
+		const DWORD attr = ::GetFileAttributesW(path.c_str());
+		if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_READONLY) != 0)
+		{
+			::SetFileAttributesW(path.c_str(), attr & ~static_cast<DWORD>(FILE_ATTRIBUTE_READONLY));
+		}
+	}
+
+	void clear_readonly_tree(const std::filesystem::path& root)
+	{
+		std::error_code ec;
+		const std::filesystem::recursive_directory_iterator end{};
+		for (std::filesystem::recursive_directory_iterator it{
+		         root, std::filesystem::directory_options::skip_permission_denied, ec};
+		     it != end; it.increment(ec))
+		{
+			clear_readonly_attr(it->path());
+		}
+		clear_readonly_attr(root);
+	}
+
 	// 删除单个文件：删不掉时按"被占用"处理——用 Restart Manager 查出占用该文件的程序
 	// 并强制结束，然后重试；Restart Manager 查不到（常被安全软件拦截）时，再把原数据
 	// 目录下的环境子进程清一遍（句柄通常被它们持有），最后再试。
@@ -1758,6 +1925,7 @@ namespace
 	bool delete_file_forcing(const std::filesystem::path& path, MigrationState& state,
 	                         const std::wstring& rootDir)
 	{
+		clear_readonly_attr(path);
 		std::error_code rmEc;
 		if (std::filesystem::remove(path, rmEc))
 		{
@@ -1773,6 +1941,7 @@ namespace
 		for (int i = 0; i < 10; ++i)
 		{
 			Sleep(200);
+			clear_readonly_attr(path);
 			if (std::filesystem::remove(path, rmEc))
 			{
 				state.delKilling.store(false);
@@ -1784,10 +1953,16 @@ namespace
 				return true;
 			}
 		}
-		terminate_processes_under(rootDir, state, nullptr);
+		// 全进程清扫很贵（可达数秒），多个删不掉的文件会把它重复做很多遍；
+		// 这里限频：刚有别的线程做过就跳过，只继续轮询删除。
+		if (KillOpsGuard guard{3000})
+		{
+			terminate_processes_under(rootDir, state, nullptr);
+		}
 		for (int i = 0; i < 15; ++i)
 		{
 			Sleep(200);
+			clear_readonly_attr(path);
 			if (std::filesystem::remove(path, rmEc))
 			{
 				state.delKilling.store(false);
@@ -1969,12 +2144,23 @@ namespace
 					}
 					const std::uint64_t verifyFiles = state->verifyFiles.load();
 					const std::uint64_t verifyTotal = state->verifyTotalFiles.load();
-					const std::wstring text =
+					std::wstring verifyFile;
+					if (state->textMutex.try_lock())
+					{
+						verifyFile = state->verifyFile;
+						state->textMutex.unlock();
+					}
+					std::wstring text =
 						verifyTotal > 0
 							? std::format(L"文件已复制完成，正在逐文件校验数据内容：{} / {} 个文件，请稍候…\n\n"
 							              L"每个文件都会比对大小与 SHA-256，确认与原目录完全一致后才切换数据目录。",
 							              verifyFiles, verifyTotal)
 							: std::wstring{L"文件已复制完成，正在校验数据，请稍候…"};
+					if (!verifyFile.empty())
+					{
+						// 校验大文件时 x / y 会长时间不动，显示当前文件证明仍在工作
+						text += std::format(L"\n\n正在校验：{}", file_display_name(verifyFile));
+					}
 					if (text != state->shownText)
 					{
 						state->shownText = text;
@@ -2008,6 +2194,7 @@ namespace
 			std::wstring closing;
 			std::wstring copying;
 			bool closingBlocked = false;
+			bool stalled = false;
 			int shownFiles = 0;
 			if (state->textMutex.try_lock())
 			{
@@ -2021,6 +2208,10 @@ namespace
 					if (waiting.empty() && !slot.waiting.empty())
 					{
 						waiting = slot.waiting;
+					}
+					if (slot.active.load(std::memory_order_relaxed) && slot.cancel.load(std::memory_order_relaxed))
+					{
+						stalled = true;
 					}
 					if (!slot.file.empty() && shownFiles < 3)
 					{
@@ -2047,6 +2238,13 @@ namespace
 			{
 				text = std::format(L"文件被占用，正在自动结束占用程序后继续…\n{}\n\n已复制 {} / {}",
 				                   waiting, format_size(done), format_size(total));
+			}
+			else if (stalled)
+			{
+				// 进度条按字节算，卡住时不推进：文字必须说明"正在中断并重试"，
+				// 否则用户会以为程序已经不工作了。
+				text = std::format(L"复制长时间没有进展，正在中断阻塞的写入并重试…\n{}\n\n已复制 {} / {}",
+				                   file_display_name(copying), format_size(done), format_size(total));
 			}
 			else
 			{
@@ -2346,6 +2544,8 @@ namespace
 				state.phase = 3;
 				{
 					std::error_code rmEc;
+					clear_readonly_tree(to / L"Env");
+					clear_readonly_tree(to / L"bin");
 					fs::remove_all(to / L"Env", rmEc);
 					fs::remove_all(to / L"bin", rmEc);
 				}
@@ -2463,6 +2663,8 @@ namespace
 					terminate_processes_under(rootDir, state, nullptr);
 					Sleep(300);
 					std::error_code cleanupEc;
+					clear_readonly_tree(from / L"Env");
+					clear_readonly_tree(from / L"bin");
 					fs::remove_all(from / L"Env", cleanupEc);
 					fs::remove_all(from / L"bin", cleanupEc);
 				}
@@ -2544,6 +2746,9 @@ namespace
 		{
 			done += L"\n\n原目录中的数据已删除。";
 		}
+		// 迁移在启动早期就已完成、DataDir 已写入，本次启动会直接使用新目录，
+		// 因此这里只提示结果，不需要用户重启。
+		done += L"\n\n无需重启，eBox 本次启动即使用新的数据目录。";
 		MessageBoxW(nullptr, done.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
 	}
 }
@@ -2555,6 +2760,19 @@ namespace
 	// 不检查返回值的 write_embedded_file），表现为环境再也启动不了、只能重装。
 	// 这里用「写入探针 + 内嵌资源大小比对」把写不进去的事实显性化，并引导/自动放行。
 	constexpr int REPAIR_BUTTON_ID = 100;
+
+	// 后台任务线程不能直接弹窗：模态框会挂到错误的线程上（甚至阻塞 UI 线程等它自己），
+	// 有 ui_invoke 时一律回到 UI 线程执行并等待返回；没有时说明本就在 UI 线程，直接执行。
+	template <typename Fn>
+	void run_on_ui(const UiInvoke& ui_invoke, Fn&& fn)
+	{
+		if (ui_invoke)
+		{
+			ui_invoke(std::function<void()>{std::forward<Fn>(fn)});
+			return;
+		}
+		fn();
+	}
 
 	struct RepairIssue
 	{
@@ -2967,7 +3185,8 @@ namespace
 	}
 
 	// 告知用户写入被拦截，并尝试自动放行。返回 true 表示已尝试加入信任区
-	bool offer_security_allowance(HWND owner, const std::vector<std::wstring>& blockedPaths)
+	bool offer_security_allowance(HWND owner, const std::vector<std::wstring>& blockedPaths,
+	                              const UiInvoke& ui_invoke)
 	{
 		std::wstring list;
 		for (const std::wstring& path : blockedPaths)
@@ -3002,21 +3221,27 @@ namespace
 		cfg.cButtons = 2;
 		cfg.nDefaultButton = IDYES;
 		int pressed = IDCANCEL;
-		TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+		run_on_ui(ui_invoke, [&] { TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr); });
 		if (pressed != IDYES)
 		{
 			return false;
 		}
 		if (add_defender_exclusions())
 		{
-			MessageBoxW(owner, L"已加入 Windows Defender 信任区，将自动重新修复。",
-			            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+			run_on_ui(ui_invoke, [&]
+			{
+				MessageBoxW(owner, L"已加入 Windows Defender 信任区，将自动重新修复。",
+				            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION);
+			});
 			return true;
 		}
-		MessageBoxW(owner,
-		            L"自动加入信任区失败（可能取消了管理员授权，或系统未启用 Windows Defender）。\n\n"
-		            L"请手动在安全软件的信任区 / 白名单中添加 eBox 数据目录，并放行 eBox.exe、eBoxInject32.exe。",
-		            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
+		run_on_ui(ui_invoke, [&]
+		{
+			MessageBoxW(owner,
+			            L"自动加入信任区失败（可能取消了管理员授权，或系统未启用 Windows Defender）。\n\n"
+			            L"请手动在安全软件的信任区 / 白名单中添加 eBox 数据目录，并放行 eBox.exe、eBoxInject32.exe。",
+			            MainApp::appName.data(), MB_OK | MB_ICONWARNING);
+		});
 		return false;
 	}
 
@@ -3367,14 +3592,22 @@ namespace
 
 int run_self_check_and_repair(HWND owner)
 {
+	return run_self_check_and_repair(owner, UiInvoke{});
+}
+
+int run_self_check_and_repair(HWND owner, const UiInvoke& ui_invoke)
+{
 	RepairReport scan;
 	run_repair_checks(false, scan);
 	if (scan.issues.empty())
 	{
-		MessageBoxW(owner,
-		            std::format(L"自检完成，未发现问题。\n\n已检查数据目录：{}\n共 {} 个环境的运行组件与注册表数据。",
-		                        scan.dataRoot, scan.envCount).c_str(),
-		            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		const std::wstring text = std::format(
+		    L"自检完成，未发现问题。\n\n已检查数据目录：{}\n共 {} 个环境的运行组件与注册表数据。",
+		    scan.dataRoot, scan.envCount);
+		run_on_ui(ui_invoke, [&]
+		{
+			MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		});
 		return 0;
 	}
 
@@ -3400,7 +3633,7 @@ int run_self_check_and_repair(HWND owner)
 		cfg.cButtons = 2;
 		cfg.nDefaultButton = REPAIR_BUTTON_ID;
 		int pressed = IDCANCEL;
-		TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+		run_on_ui(ui_invoke, [&] { TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr); });
 		if (pressed != REPAIR_BUTTON_ID)
 		{
 			return 2;
@@ -3410,7 +3643,7 @@ int run_self_check_and_repair(HWND owner)
 	bool defenderAllowed = false;
 	if (!scan.blockedPaths.empty())
 	{
-		defenderAllowed = offer_security_allowance(owner, scan.blockedPaths);
+		defenderAllowed = offer_security_allowance(owner, scan.blockedPaths, ui_invoke);
 	}
 
 	const auto count_repaired = [](const RepairReport& report)
@@ -3434,21 +3667,27 @@ int run_self_check_and_repair(HWND owner)
 	run_repair_checks(false, after);
 	if (after.issues.empty())
 	{
-		MessageBoxW(owner, std::format(L"修复完成：已解决 {} 个问题。", fixedCount).c_str(),
-		            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		const std::wstring text = std::format(L"修复完成：已解决 {} 个问题。", fixedCount);
+		run_on_ui(ui_invoke, [&]
+		{
+			MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		});
 		return 1;
 	}
 
 	// 仍有问题且此前未放行：再给一次自动放行机会（放行后立刻重试一轮）
 	if (!defenderAllowed && !after.blockedPaths.empty() &&
-		offer_security_allowance(owner, after.blockedPaths))
+		offer_security_allowance(owner, after.blockedPaths, ui_invoke))
 	{
 		run_repair_checks(true, repaired);
 		run_repair_checks(false, after);
 		if (after.issues.empty())
 		{
-			MessageBoxW(owner, std::format(L"修复完成：已解决 {} 个问题。", count_repaired(repaired)).c_str(),
-			            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+			const std::wstring text = std::format(L"修复完成：已解决 {} 个问题。", count_repaired(repaired));
+			run_on_ui(ui_invoke, [&]
+			{
+				MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+			});
 			return 1;
 		}
 	}
@@ -3465,11 +3704,16 @@ int run_self_check_and_repair(HWND owner)
 	                 L"若提示被杀毒软件拦截，请在其信任区 / 白名单中放行 eBox 数据目录与 eBox.exe、eBoxInject32.exe。";
 	cfg.pszExpandedInformation = remainingDetails.c_str();
 	cfg.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-	TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
+	run_on_ui(ui_invoke, [&] { TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr); });
 	return 2;
 }
 
 int run_wxwork_data_repair(HWND owner)
+{
+	return run_wxwork_data_repair(owner, UiInvoke{});
+}
+
+int run_wxwork_data_repair(HWND owner, const UiInvoke& ui_invoke)
 {
 	std::vector<WxWorkCorpIssue> issues;
 	std::size_t envCount = 0;
@@ -3491,7 +3735,10 @@ int run_wxwork_data_repair(HWND owner)
 		{
 			text += std::format(L"\n其中 {} 个企业没有企微本地备份，无法比对。", noBackupCount);
 		}
-		MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		run_on_ui(ui_invoke, [&]
+		{
+			MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		});
 		return 0;
 	}
 
@@ -3525,7 +3772,7 @@ int run_wxwork_data_repair(HWND owner)
 		cfg.cButtons = 2;
 		cfg.nDefaultButton = REPAIR_BUTTON_ID;
 		int pressed = IDCANCEL;
-		TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr);
+		run_on_ui(ui_invoke, [&] { TaskDialogIndirect(&cfg, &pressed, nullptr, nullptr); });
 		if (pressed != REPAIR_BUTTON_ID)
 		{
 			return 2;
@@ -3558,11 +3805,13 @@ int run_wxwork_data_repair(HWND owner)
 
 	if (failures.empty())
 	{
-		MessageBoxW(owner,
-		            std::format(L"修复完成：已回填 {} 个数据文件。\n\n"
-		                        L"请重新启动对应环境并登录企业微信，确认客户列表已恢复正常。",
-		                        fixedCount).c_str(),
-		            MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		const std::wstring text = std::format(L"修复完成：已回填 {} 个数据文件。\n\n"
+		                                      L"请重新启动对应环境并登录企业微信，确认客户列表已恢复正常。",
+		                                      fixedCount);
+		run_on_ui(ui_invoke, [&]
+		{
+			MessageBoxW(owner, text.c_str(), MainApp::appName.data(), MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+		});
 		return 1;
 	}
 
@@ -3583,7 +3832,7 @@ int run_wxwork_data_repair(HWND owner)
 	                 L"再点击「修复企业微信数据」重试。";
 	cfg.pszExpandedInformation = details.c_str();
 	cfg.dwCommonButtons = TDCBF_CLOSE_BUTTON;
-	TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr);
+	run_on_ui(ui_invoke, [&] { TaskDialogIndirect(&cfg, nullptr, nullptr, nullptr); });
 	return 2;
 }
 

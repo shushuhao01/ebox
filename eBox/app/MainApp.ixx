@@ -174,13 +174,13 @@ public:
 	// ===== 版本号（单一可信源，.rc 与 License.cpp 均引用此处）=====
 	static constexpr int kVerMajor = 3;
 	static constexpr int kVerMinor = 3;
-	static constexpr int kVerPatch = 2;
-	static constexpr int kVerCode  = 30302;  // 单调递增数字，用于版本比较
+	static constexpr int kVerPatch = 3;
+	static constexpr int kVerCode  = 30303;  // 单调递增数字，用于版本比较
 
 	static constexpr std::wstring_view appName{L"eBox"};
 	static constexpr std::string_view appNameA{"eBox"};
-	static constexpr std::wstring_view appVersion{L"v3.3.2"};
-	static constexpr std::wstring_view appUpdateDate{L"2026/10/31"};
+	static constexpr std::wstring_view appVersion{L"v3.3.3"};
+	static constexpr std::wstring_view appUpdateDate{L"2026/11/1"};
 
 	// ===== 自动升级配置 =====
 	// 按可靠性排序、逐个尝试，任一源成功即用；同一份 update.json 由发布流程同步到全部位置
@@ -541,11 +541,17 @@ export void show_require_elevation_message(std::wstring_view requester, std::wst
 // 返回 false 表示拉起新实例失败（挂起项已回滚，当前进程继续运行）。
 export bool request_data_dir_change(const std::wstring& targetDir);
 
+// 后台任务与用户交互的桥：任务体跑在后台线程（扫描 / 复制大量文件不能占用 UI 线程，
+// 否则设置窗口 5 秒后会被 Windows 标记为"未响应"），需要弹窗时用它回到 UI 线程执行并等待返回。
+export using UiInvoke = std::function<void(std::function<void()>)>;
+
 // 设置中心「检查与修复」：自检运行组件（bin）、环境注册表 hive、数据目录可写性，
 // 列出发现的问题并自动修复；检测到写入被安全软件拦截时会提示，并可尝试自动
 // 加入 Windows Defender 信任区（第三方安全软件只给出手动放行指引）。
 // 返回 0=未发现问题，1=问题已全部修复，2=仍有问题或用户取消。
+// 带 ui_invoke 的重载供设置中心在后台线程调用；弹窗一律经 ui_invoke 回到 UI 线程。
 export int run_self_check_and_repair(HWND owner);
+export int run_self_check_and_repair(HWND owner, const UiInvoke& ui_invoke);
 
 // 设置中心「修复企业微信数据」：把各环境 WXWork\<corp>\Data 与企微自带本地备份
 // （<corp>\Backup\<时间戳>\Data）按企业比对，回填缺失或异常缩小的库（crm.db、user.db 等）。
@@ -553,3 +559,4 @@ export int run_self_check_and_repair(HWND owner);
 // 需先退出对应环境，否则文件被占用会失败。
 // 返回 0=未发现问题，1=已修复，2=仍有问题或用户取消。
 export int run_wxwork_data_repair(HWND owner);
+export int run_wxwork_data_repair(HWND owner, const UiInvoke& ui_invoke);

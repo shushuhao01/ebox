@@ -87,9 +87,9 @@ namespace
 	// 换机/续期场景由发码工具生成，到期 = 原码剩余时间对应的日期，且新旧客户端均兼容
 	constexpr BYTE kLegacyFormatMinor = 7;
 
-	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.3.2）
+	// 应用版本号（联网上报用）：与 MainApp::appVersion 保持同步（v3.3.3）
 	// License 模块不依赖 MainApp 以免循环依赖，故在此单独维护
-	constexpr wchar_t kAppVersion[] = L"v3.3.2";
+	constexpr wchar_t kAppVersion[] = L"v3.3.3";
 
 	// 最近一次激活失败原因（供 UI 展示具体拒绝原因）
 	std::wstring& lastActivateErrorStorage()
@@ -691,7 +691,7 @@ namespace biz
 			const ParsedLicense parsed = parseAndVerifyCode(code);
 			if (!parsed.valid)
 			{
-				setLastActivateError(L"激活码无效或签名校验失败");
+				setLastActivateError(L"激活码无效或校验失败，请确认复制完整（EBOX- 开头）。");
 				return false;
 			}
 			// ===== 在线校验（联网授权版）=====
@@ -714,7 +714,10 @@ namespace biz
 			}
 			if (ar.exceeded)
 			{
-				setLastActivateError(L"该激活码已绑定其他电脑，请先在那台电脑上解绑。");
+				// 服务端权威判定：该码当前绑定在另一台设备上（每张绑定码仅 1 台）
+				setLastActivateError(
+					L"该激活码已绑定其他电脑，每张绑定码仅限 1 台设备。\n"
+					L"请在原电脑的「授权」页解绑获取换机码，或联系客服解绑后重试。");
 				return false;
 			}
 			if (!ar.ok)
@@ -747,8 +750,12 @@ namespace biz
 				}
 				else if (storedFp != machineFingerprint())
 				{
-					// 已绑定到其他机器：激活失败
-					setLastActivateError(L"该激活码已绑定其他电脑，无法在此电脑激活。");
+					// 本机历史上绑定过该码，但当前设备信息已与绑定时不同（重装/换硬件/系统升级等）。
+					// 注意：这与服务端 exceeded（真的绑在另一台电脑）不同，文案必须区分，否则用户会误解。
+					setLastActivateError(
+						L"本机设备信息与激活时不一致，该激活码无法在此电脑继续使用。\n"
+						L"常见原因：重装系统、更换硬盘、系统升级后分区变化。\n"
+						L"请用原激活码在旧环境解绑获取换机码，或联系客服处理。");
 					return false;
 				}
 			}
@@ -989,6 +996,83 @@ namespace biz
 		std::wstring lastActivateError()
 		{
 			return lastActivateErrorStorage();
+		}
+
+		InactiveReason inactiveReason()
+		{
+			// 服务端锁定优先：心跳收到 revoked/expired/kicked 时会清空本机激活码，
+			// 若先看"无激活码"就会误判成全新安装，丢失锁定原因。
+			if (licenseserver::serverLocked())
+			{
+				return InactiveReason::ServerLocked;
+			}
+			const std::wstring code = loadStoredCode();
+			if (code.empty())
+			{
+				return InactiveReason::NoCode;
+			}
+			const ParsedLicense parsed = parseAndVerifyCode(code);
+			if (!parsed.valid)
+			{
+				return InactiveReason::InvalidCode;
+			}
+			if (parsed.bound)
+			{
+				const std::wstring storedFp = loadBoundFp();
+				if (storedFp.empty())
+				{
+					return InactiveReason::IncompleteRecord;
+				}
+				if (storedFp != machineFingerprint())
+				{
+					return InactiveReason::FingerprintChanged;
+				}
+			}
+			// 时长制缺少首次激活时间：授权记录被部分清理，无法算出到期时间
+			if (parsed.isDurationFormat && loadActivatedAt() <= 0)
+			{
+				return InactiveReason::IncompleteRecord;
+			}
+			return InactiveReason::None;
+		}
+
+		std::wstring inactiveReasonText()
+		{
+			switch (inactiveReason())
+			{
+			case InactiveReason::ServerLocked:
+			{
+				const std::wstring st = licenseserver::serverStatus();
+				if (st == L"revoked")
+				{
+					return L"该激活码已被作废，本机授权已失效。\n请联系客服获取新的激活码。";
+				}
+				if (st == L"expired")
+				{
+					return L"该激活码已过期，本机授权已失效。\n请联系客服续期后重新激活。";
+				}
+				if (st == L"kicked")
+				{
+					return L"该激活码已在其他电脑激活，本机被强制下线。\n"
+					       L"如确需在本机使用，请先在原电脑解绑获取换机码，或联系客服。";
+				}
+				return L"本机授权已被服务端锁定。\n请联系客服核对授权状态。";
+			}
+			case InactiveReason::FingerprintChanged:
+				return L"本机设备信息与激活时不一致，需要重新激活。\n"
+				       L"常见原因：重装/升级系统、更换硬盘、旧 2Box 授权记录残留。\n"
+				       L"请先直接输入原激活码重试；若仍提示已绑定其他电脑，\n"
+				       L"请在原电脑解绑获取换机码，或联系客服处理。";
+			case InactiveReason::IncompleteRecord:
+				return L"本机授权记录不完整（可能被清理软件删除）。\n"
+				       L"请重新输入激活码；若提示已绑定其他电脑，请联系客服。";
+			case InactiveReason::InvalidCode:
+				return L"本机记录的激活码已失效（格式过旧或被修改）。\n请重新输入激活码。";
+			case InactiveReason::NoCode:
+			case InactiveReason::None:
+				break;
+			}
+			return {};
 		}
 
 		std::wstring onlineStatusText()

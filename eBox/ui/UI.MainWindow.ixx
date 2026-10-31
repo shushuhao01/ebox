@@ -169,4 +169,8 @@ namespace ui
 	{
 		return *g_main_wnd;
 	}
+
+	// 启动期询问数据盘（转发到 UI.Core，供 MainApp 在构造前调用；
+	// 与 MainApp 之间不直接依赖 UI.Core，避免模块循环引用）。
+	export bool prompt_first_run_data_dir();
 }

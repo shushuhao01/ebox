@@ -724,7 +724,7 @@ namespace ui
 	// 返回用户的操作意图。
 	export LicenseInfoResult license_info_dialog(const WindowBase* owner);
 
-	// 常见问题对话框：左侧分类（常见问题 / 妙用小技巧），右侧手风琴式问题列表。
+	// 常见问题对话框：左侧分类（常见问题 / 注意事项 / 功能详情 / 妙用小技巧），右侧手风琴式问题列表。
 	export void faq_dialog(const WindowBase* owner);
 
 	// 易歪歪安装位置检测提示：若检测到易歪歪安装在会被环境隔离重定向的系统用户目录内
@@ -751,4 +751,14 @@ namespace ui
 	// 设置对话框：展示并一键切换环境数据根目录（Env\bin 迁移到新盘，含空间校验与失败回滚）。
 	// runningEnvCount 为当前运行中的环境数（>0 时禁止切换，需先关闭环境）。
 	export void settings_dialog(const WindowBase* owner, std::size_t runningEnvCount);
+
+	// 启动后调用一次：后台统计当前数据目录的占用空间并缓存，
+	// 使设置里"数据存放位置"点击时立即出结果（否则要现场遍历上万个文件）。
+	export void warm_up_data_dir_size();
+
+	// 启动期（MainApp 构造之前）决定数据盘：
+	// 首次运行（注册表无 DataDir）或记录所在磁盘当前不可用时弹出选盘框，
+	// 选择后在所选盘创建 <盘>\eBoxData\Env 并把 DataDir 指向它。
+	// 返回 true 表示本次已由用户选定；取消/沿用既有记录返回 false。
+	export bool ensure_startup_data_dir();
 }
